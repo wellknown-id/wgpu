@@ -1,0 +1,17 @@
+[package]
+name = "wgpu-example-03-quickjs-html-renderer"
+edition = "2021"
+rust-version = "1.87"
+publish = false
+
+[dependencies]
+anyhow = "1.0.87"
+bytemuck = { version = "1.22", features = ["derive"] }
+env_logger = "0.11"
+glam = "0.32.0"
+image = { version = "0.25", default-features = false, features = ["jpeg", "png"] }
+pollster = "0.4"
+rquickjs = { version = "0.11.0", features = ["loader"] }
+serde_json = "1.0.143"
+wgpu = "29.0.0"
+winit = { version = "0.30.8", features = ["android-native-activity"] }

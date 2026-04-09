@@ -44,6 +44,10 @@ Bottom level categories:
 
 ### Added/New Features
 
+#### Examples
+
+- Add a standalone QuickJS HTML renderer example that runs a tiny three.js instancing scene on native `wgpu`.
+
 #### General
 
 - BLAS support for procedural AABB geometry (`BlasGeometrySizeDescriptors::AABBs`, `BlasAabbGeometry`, and related descriptors). By @dylanblokhuis in [#9290](https://github.com/gfx-rs/wgpu/pull/9290)

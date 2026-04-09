@@ -1,0 +1,31 @@
+{
+  "metadata": {
+    "version": 4.7,
+    "type": "Object"
+  },
+  "geometries": [
+    {
+      "uuid": "geom-box",
+      "type": "BoxGeometry",
+      "width": 1,
+      "height": 1,
+      "depth": 1,
+      "widthSegments": 1,
+      "heightSegments": 1,
+      "depthSegments": 1
+    }
+  ],
+  "materials": [
+    {
+      "uuid": "mat-basic",
+      "type": "MeshBasicMaterial",
+      "color": 16777215
+    }
+  ],
+  "object": {
+    "uuid": "root-mesh",
+    "type": "Mesh",
+    "geometry": "geom-box",
+    "material": "mat-basic"
+  }
+}
