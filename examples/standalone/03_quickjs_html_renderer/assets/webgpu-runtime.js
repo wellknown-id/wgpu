@@ -38,6 +38,27 @@ const GPUColorWrite = Object.freeze({
   ALL: 0xf,
 });
 
+const GPUFeatureName = Object.freeze({
+  'core-features-and-limits': 'core-features-and-limits',
+  'depth-clip-control': 'depth-clip-control',
+  'depth32float-stencil8': 'depth32float-stencil8',
+  'texture-compression-bc': 'texture-compression-bc',
+  'texture-compression-bc-sliced-3d': 'texture-compression-bc-sliced-3d',
+  'texture-compression-etc2': 'texture-compression-etc2',
+  'texture-compression-astc': 'texture-compression-astc',
+  'texture-compression-astc-sliced-3d': 'texture-compression-astc-sliced-3d',
+  'timestamp-query': 'timestamp-query',
+  'indirect-first-instance': 'indirect-first-instance',
+  'shader-f16': 'shader-f16',
+  'rg11b10ufloat-renderable': 'rg11b10ufloat-renderable',
+  'bgra8unorm-storage': 'bgra8unorm-storage',
+  'float32-filterable': 'float32-filterable',
+  'float32-blendable': 'float32-blendable',
+  'clip-distances': 'clip-distances',
+  'dual-source-blending': 'dual-source-blending',
+  'subgroups': 'subgroups',
+});
+
 const WEBGPU_RUNTIME_VERBOSE = false;
 
 function trace(message) {
@@ -1544,6 +1565,7 @@ export function installWebGPURuntime() {
   globalThis.GPUMapMode = GPUMapMode;
   globalThis.GPUShaderStage = GPUShaderStage;
   globalThis.GPUColorWrite = GPUColorWrite;
+  globalThis.GPUFeatureName = GPUFeatureName;
   globalThis.Headers = Headers;
   globalThis.Request = Request;
   globalThis.AbortSignal = AbortSignal;
@@ -1572,6 +1594,42 @@ export function installWebGPURuntime() {
   globalThis.navigator.gpu = new GPU();
   globalThis.__createCanvasElement = createCanvasElement;
   globalThis.HTMLVideoElement = HTMLVideoElement;
+
+  const documentTarget = createEventTarget();
+  const body = {
+    ...createEventTarget(documentTarget),
+    appendChild(child) { return child; },
+    removeChild(child) { return child; },
+    style: {},
+  };
+  globalThis.document = {
+    ...documentTarget,
+    body,
+    documentElement: { style: {} },
+    createElement(tag) {
+      if (tag === 'canvas') {
+        return createCanvasElement();
+      }
+      if (tag === 'video') {
+        return new HTMLVideoElement();
+      }
+      return {
+        ...createEventTarget(documentTarget),
+        tagName: tag.toUpperCase(),
+        style: {},
+        appendChild(child) { return child; },
+        removeChild(child) { return child; },
+        setAttribute() {},
+        getAttribute() { return null; },
+      };
+    },
+    createElementNS(_ns, tag) {
+      return globalThis.document.createElement(tag);
+    },
+    createTextNode(text) {
+      return { textContent: text };
+    },
+  };
 }
 
 installWebGPURuntime();

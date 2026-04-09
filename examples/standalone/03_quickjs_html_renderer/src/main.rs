@@ -19,6 +19,8 @@ use rquickjs::{
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use wgpu::util::DeviceExt;
+use html5ever::{local_name, parse_document, tendril::TendrilSink};
+use markup5ever_rcdom::{Handle, NodeData, RcDom};
 use winit::{
     application::ApplicationHandler,
     event::WindowEvent,
@@ -113,15 +115,21 @@ struct JsEngine {
 impl JsEngine {
     fn new(
         asset_dir: PathBuf,
+        html_file: &str,
         gpu: Rc<RefCell<GpuState>>,
         width: u32,
         height: u32,
         search: &str,
     ) -> Result<Self> {
+        let html = fs::read_to_string(asset_dir.join(html_file))
+            .with_context(|| format!("failed to read {html_file}"))?;
+        let parsed = parse_html(&html)?;
+
         let runtime = Runtime::new()?;
         runtime.set_loader(
             FsResolver {
                 root: asset_dir.clone(),
+                import_map: parsed.import_map,
             },
             FsLoader,
         );
@@ -140,19 +148,49 @@ impl JsEngine {
                 search,
             )?;
 
-            let html = fs::read_to_string(asset_dir.join("index.html")).map_err(|err| {
-                rquickjs::Error::new_loading_message("index.html", err.to_string())
-            })?;
-            let script = extract_module_script(&html)?;
             let entry_name = asset_dir.join("index.inline.js").display().to_string();
-            Module::evaluate(ctx, entry_name, script)?.finish::<()>()
+            let result = Module::evaluate(ctx.clone(), entry_name, parsed.module_script);
+            match &result {
+                Err(err) => {
+                    eprintln!("JS evaluate error: {err:?}");
+                    if let rquickjs::Error::Exception = err {
+                        let exception = ctx.catch();
+                        eprintln!("Exception: {exception:?}");
+                    }
+                    return result.map(|_| ());
+                }
+                Ok(promise) => {
+                    let finish_result = promise.finish::<()>();
+                    if let Err(ref err) = finish_result {
+                        eprintln!("JS finish error: {err:?}");
+                        if let rquickjs::Error::Exception = err {
+                            let exception = ctx.catch();
+                            let msg: String = exception
+                                .as_object()
+                                .and_then(|o| o.get("message").ok())
+                                .unwrap_or_else(|| format!("{exception:?}"));
+                            let stack: String = exception
+                                .as_object()
+                                .and_then(|o| o.get("stack").ok())
+                                .unwrap_or_default();
+                            eprintln!("JS Exception: {msg}");
+                            if !stack.is_empty() {
+                                eprintln!("Stack: {stack}");
+                            }
+                        }
+                    }
+                    finish_result
+                }
+            }
         })?;
 
-        Ok(Self {
+        let mut engine = Self {
             runtime,
             context,
             host,
-        })
+        };
+        engine.drain_jobs()?;
+        Ok(engine)
     }
 
     fn set_time_ms(&mut self, now_ms: f64) {
@@ -165,8 +203,27 @@ impl JsEngine {
             self.context.with(|ctx| -> JsResult<()> {
                 let callback = callback.restore(&ctx)?;
                 let now_ms = self.host.borrow().now_ms;
-                callback.call::<_, ()>((now_ms,))?;
-                Ok(())
+                let result: JsResult<()> = callback.call((now_ms,));
+                if let Err(ref err) = result {
+                    if let rquickjs::Error::Exception = err {
+                        let exception = ctx.catch();
+                        let msg: String = exception
+                            .as_object()
+                            .and_then(|o| o.get("message").ok())
+                            .unwrap_or_else(|| format!("{exception:?}"));
+                        let stack: String = exception
+                            .as_object()
+                            .and_then(|o| o.get("stack").ok())
+                            .unwrap_or_default();
+                        eprintln!("JS tick exception: {msg}");
+                        if !stack.is_empty() {
+                            eprintln!("Stack: {stack}");
+                        }
+                    } else {
+                        eprintln!("JS tick error: {err:?}");
+                    }
+                }
+                result
             })?;
         }
 
@@ -218,11 +275,30 @@ impl JsEngine {
 
 struct FsResolver {
     root: PathBuf,
+    import_map: HashMap<String, String>,
 }
 
 impl Resolver for FsResolver {
     fn resolve<'js>(&mut self, _ctx: &Ctx<'js>, base: &str, name: &str) -> JsResult<String> {
-        let candidate = if name.starts_with("./") || name.starts_with("../") {
+        let resolved_name = if let Some(mapped) = self.import_map.get(name) {
+            mapped.clone()
+        } else {
+            let prefix_match = self
+                .import_map
+                .iter()
+                .filter(|(k, _)| k.ends_with('/'))
+                .find(|(k, _)| name.starts_with(k.as_str()));
+            if let Some((prefix, target)) = prefix_match {
+                format!("{}{}", target, &name[prefix.len()..])
+            } else {
+                String::new()
+            }
+        };
+
+        let candidate = if !resolved_name.is_empty() {
+            let target = resolved_name.trim_start_matches("./");
+            self.root.join(target)
+        } else if name.starts_with("./") || name.starts_with("../") {
             let base = Path::new(base);
             let parent = base.parent().unwrap_or(self.root.as_path());
             parent.join(name)
@@ -1591,6 +1667,8 @@ globalThis.requestAnimationFrame = function(callback) {{
   return 1;
 }};
 globalThis.cancelAnimationFrame = function() {{}};
+globalThis.self = globalThis;
+globalThis.window = globalThis;
 "#
     ))?;
 
@@ -1607,15 +1685,82 @@ fn resolve_asset_path(root: &Path, path: &str) -> Result<PathBuf> {
     Ok(full_path)
 }
 
-fn extract_module_script(html: &str) -> JsResult<String> {
-    let start = html.find("<script type=\"module\">").ok_or_else(|| {
+struct ParsedHtml {
+    module_script: String,
+    import_map: HashMap<String, String>,
+}
+
+fn parse_html(html: &str) -> JsResult<ParsedHtml> {
+    let dom = parse_document(RcDom::default(), Default::default())
+        .from_utf8()
+        .read_from(&mut html.as_bytes())
+        .map_err(|err| {
+            rquickjs::Error::new_loading_message("index.html", err.to_string())
+        })?;
+
+    let mut module_script = None;
+    let mut import_map = HashMap::new();
+
+    fn collect_text(handle: &Handle) -> String {
+        let mut text = String::new();
+        for child in handle.children.borrow().iter() {
+            if let NodeData::Text { ref contents } = child.data {
+                text.push_str(&contents.borrow());
+            }
+        }
+        text
+    }
+
+    fn walk(
+        handle: &Handle,
+        module_script: &mut Option<String>,
+        import_map: &mut HashMap<String, String>,
+    ) {
+        if let NodeData::Element { ref name, ref attrs, .. } = handle.data {
+            if name.local == local_name!("script") {
+                let attrs_ref = attrs.borrow();
+                let type_attr = attrs_ref
+                    .iter()
+                    .find(|a| a.name.local == local_name!("type"))
+                    .map(|a| a.value.to_string());
+
+                match type_attr.as_deref() {
+                    Some("module") if module_script.is_none() => {
+                        *module_script = Some(collect_text(handle));
+                    }
+                    Some("importmap") => {
+                        let json_text = collect_text(handle);
+                        if let Ok(parsed) = serde_json::from_str::<Value>(&json_text) {
+                            if let Some(imports) = parsed.get("imports").and_then(|v| v.as_object())
+                            {
+                                for (key, val) in imports {
+                                    if let Some(target) = val.as_str() {
+                                        import_map
+                                            .insert(key.clone(), target.to_string());
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+        for child in handle.children.borrow().iter() {
+            walk(child, module_script, import_map);
+        }
+    }
+
+    walk(&dom.document, &mut module_script, &mut import_map);
+
+    let module_script = module_script.ok_or_else(|| {
         rquickjs::Error::new_loading_message("index.html", "missing module script")
     })?;
-    let start = start + "<script type=\"module\">".len();
-    let end = html[start..].find("</script>").ok_or_else(|| {
-        rquickjs::Error::new_loading_message("index.html", "unterminated module script")
-    })?;
-    Ok(html[start..start + end].trim().to_string())
+
+    Ok(ParsedHtml {
+        module_script,
+        import_map,
+    })
 }
 
 fn vec16(values: Vec<f32>, name: &'static str) -> JsResult<[f32; 16]> {
@@ -5011,13 +5156,16 @@ impl ApplicationHandler for App {
         ));
 
         let asset_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("assets");
-        let search = std::env::args().nth(1).unwrap_or_default();
-        let search = if search.is_empty() {
-            String::new()
+        let arg = std::env::args().nth(1).unwrap_or_default();
+        let (html_file, search) = if arg.ends_with(".html") {
+            (arg.clone(), String::new())
+        } else if arg.is_empty() {
+            ("index.html".to_string(), String::new())
         } else {
-            format!("?{search}")
+            ("index.html".to_string(), format!("?{arg}"))
         };
-        let js = JsEngine::new(asset_dir, gpu.clone(), 1280, 720, &search).unwrap();
+        let js = JsEngine::new(asset_dir, &html_file, gpu.clone(), 1280, 720, &search)
+            .unwrap_or_else(|err| panic!("failed to initialize JS engine: {err:#}"));
 
         self.start_time = Some(Instant::now());
         self.gpu = Some(gpu);
