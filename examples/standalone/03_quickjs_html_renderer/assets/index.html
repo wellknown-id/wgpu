@@ -9,6 +9,7 @@
       import './webgpu-runtime.js';
       import * as THREE from './vendor/three.webgpu.js';
       import { OrbitControls } from './vendor/OrbitControls.js';
+      import { GLTFLoader } from './vendor/GLTFLoader.js';
 
       let camera;
       let scene;
@@ -23,6 +24,8 @@
       const useFileLoaderSmoke = query === 'file-loader';
       const useObjectLoaderSmoke = query === 'object-loader';
       const useOrbitControlsSmoke = query === 'orbit-controls';
+      const useGltfLoaderSmoke = query === 'gltf-loader';
+      const useVideoSmoke = query === 'video';
       const useTextureSmoke = query === 'texture';
       const useCubeTextureSmoke = query === 'cube';
       const useCubeMaterialSmoke = query === 'cube-material';
@@ -62,12 +65,16 @@
           await initBufferGeometryLoaderSmoke();
         } else if (useFileLoaderSmoke) {
           await initFileLoaderSmoke();
+        } else if (useGltfLoaderSmoke) {
+          await initGltfLoaderSmoke();
         } else if (useCubeMaterialSmoke) {
           await initCubeMaterialSmoke();
         } else if (useCubeTextureSmoke) {
           await initCubeTextureSmoke();
         } else if (useTextureSmoke) {
           await initTextureSmoke();
+        } else if (useVideoSmoke) {
+          await initVideoSmoke();
         } else if (useShadowmapSmoke) {
           initShadowmapSmoke();
         } else if (usePostprocessingSmoke) {
@@ -213,6 +220,21 @@
         scene.add(mesh);
       }
 
+      async function initGltfLoaderSmoke() {
+        camera = new THREE.PerspectiveCamera(40, window.innerWidth / window.innerHeight, 1, 100);
+        camera.position.z = 5;
+        scene = new THREE.Scene();
+        scene.background = new THREE.Color(0x333333);
+
+        const light = new THREE.DirectionalLight(0xffffff, 3);
+        light.position.set(1, 1, 1);
+        scene.add(light);
+
+        const object = await new GLTFLoader().loadAsync('./Triangle.gltf');
+        mesh = object.scene.children[0];
+        scene.add(object.scene);
+      }
+
       function initOrbitControlsSmoke() {
         camera.position.set(0, 0, 2.5);
         camera.lookAt(0, 0, 0);
@@ -221,6 +243,27 @@
           new THREE.BoxGeometry(1.5, 1.5, 1.5),
           new THREE.MeshNormalMaterial(),
         );
+        scene.add(mesh);
+      }
+
+      async function initVideoSmoke() {
+        camera = new THREE.PerspectiveCamera(40, window.innerWidth / window.innerHeight, 1, 100);
+        camera.position.z = 5;
+        scene = new THREE.Scene();
+        scene.background = new THREE.Color(0x222222);
+
+        // Simulated video element
+        const video = new HTMLVideoElement();
+        video.src = 'dummy.mp4';
+        video.play();
+
+        const texture = new THREE.VideoTexture(video);
+        // Map texture properly
+        texture.colorSpace = THREE.SRGBColorSpace;
+        
+        const geometry = new THREE.PlaneGeometry(3, 3);
+        const material = new THREE.MeshBasicMaterial({ map: texture });
+        mesh = new THREE.Mesh(geometry, material);
         scene.add(mesh);
       }
 
@@ -387,7 +430,7 @@
           } else if (usePostprocessingSmoke) {
             mesh.rotation.x = now * 0.2;
             mesh.rotation.y = now * 0.6;
-          } else if (useObjectLoaderSmoke || useBufferGeometryLoaderSmoke || useFileLoaderSmoke || useTextureSmoke) {
+          } else if (useObjectLoaderSmoke || useBufferGeometryLoaderSmoke || useFileLoaderSmoke || useTextureSmoke || useGltfLoaderSmoke || useVideoSmoke) {
             mesh.rotation.z = now * 0.5;
           } else if (useComputeParticlesSmoke) {
             // do nothing

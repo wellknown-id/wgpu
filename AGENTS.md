@@ -9,7 +9,6 @@
 
 - You can test that the code builds by running `cargo build`. Don't pass `--release` unless there's a specific need to test a release build, it's much slower.
 - After making code changes, ensure the code is formatted by using `cargo fmt`, linted by using `cargo clippy --tests`. If there are no errors, you can use `cargo xtask test` and `cargo xtask cts --backend <backend>` to run tests (to fully validate a change, run both). On MacOS, the backend is `metal`. On Windows, the backend is `dx12`. On Linux, the backend is `vulkan`.
-- Do not perform commits yourself, ever.
 - Use the WebGPU and WGSL specifications as a reference to determine the correct behavior. Do not assume that a behavior is correct just because the CTS expects it.
 
 ## Changelog

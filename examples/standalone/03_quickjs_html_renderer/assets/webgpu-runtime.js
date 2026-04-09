@@ -1488,6 +1488,56 @@ function createCanvasElement() {
   return canvas;
 }
 
+class HTMLVideoElement {
+  constructor() {
+    this.videoWidth = 256;
+    this.videoHeight = 256;
+    this.readyState = 2; // HAVE_CURRENT_DATA
+    this.HAVE_CURRENT_DATA = 2;
+    this.__imageId = null;
+    this._playing = false;
+    this.currentTime = 0;
+    this.framerate = 30;
+    this.totalFrames = 60;
+    this._imageCache = {};
+    this._lastUpdate = 0;
+  }
+
+  play() {
+    if (this._playing) return;
+    this._playing = true;
+    this._lastUpdate = performance.now();
+    this._updateLoop();
+  }
+
+  pause() {
+    this._playing = false;
+  }
+
+  _updateLoop() {
+    if (!this._playing) return;
+    const now = performance.now();
+    const dt = (now - this._lastUpdate) / 1000.0;
+    this._lastUpdate = now;
+    
+    this.currentTime = (this.currentTime + dt) % (this.totalFrames / this.framerate);
+    const frameNumber = Math.floor(this.currentTime * this.framerate) + 1;
+    const frameString = String(frameNumber).padStart(4, '0');
+    const framePath = `assets/video_frames/frame_${frameString}.png`;
+    
+    if (!this._imageCache[framePath]) {
+      try {
+        this._imageCache[framePath] = __hostLoadImage(framePath);
+      } catch (e) {
+        console.warn('Failed to load video frame:', framePath);
+      }
+    }
+    this.__imageId = this._imageCache[framePath];
+    
+    requestAnimationFrame(() => this._updateLoop());
+  }
+}
+
 export function installWebGPURuntime() {
   globalThis.GPUBufferUsage = GPUBufferUsage;
   globalThis.GPUTextureUsage = GPUTextureUsage;
@@ -1521,6 +1571,7 @@ export function installWebGPURuntime() {
 
   globalThis.navigator.gpu = new GPU();
   globalThis.__createCanvasElement = createCanvasElement;
+  globalThis.HTMLVideoElement = HTMLVideoElement;
 }
 
 installWebGPURuntime();
