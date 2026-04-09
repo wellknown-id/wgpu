@@ -14,6 +14,7 @@
       let scene;
       let renderer;
       let mesh;
+      let computeNode = null;
       let canvas;
 
       const query = window.location.search.slice(1);
@@ -26,16 +27,21 @@
       const useCubeTextureSmoke = query === 'cube';
       const useCubeMaterialSmoke = query === 'cube-material';
       const useShadowmapSmoke = query === 'shadowmap';
+      const usePostprocessingSmoke = query === 'postprocessing';
+      const useComputeParticlesSmoke = query === 'compute_particles';
       const count = Math.pow(amount, 3);
       const dummy = new THREE.Object3D();
       let controls;
 
       console.warn('bootstrap start');
       init().catch((error) => {
-        console.error(error && error.stack ? error.stack : String(error));
+        console.error("ERROR MESSAGE:", error.message || String(error));
+        console.error("STACK TRACE:", error.stack || "no stack");
       });
 
-      async function init() {
+      let postProcessing;
+
+  async function init() {
         console.warn('init start');
         camera = new THREE.PerspectiveCamera(
           60,
@@ -64,6 +70,10 @@
           await initTextureSmoke();
         } else if (useShadowmapSmoke) {
           initShadowmapSmoke();
+        } else if (usePostprocessingSmoke) {
+          initPostprocessingSmoke();
+        } else if (useComputeParticlesSmoke) {
+          initComputeParticlesSmoke();
         } else {
           initInstancingScene();
         }
@@ -81,9 +91,16 @@
           renderer.shadowMap.enabled = true;
           renderer.shadowMap.type = THREE.PCFSoftShadowMap;
         }
+
+
         console.warn('before renderer.init');
         await renderer.init();
         console.warn('after renderer.init');
+
+        if (usePostprocessingSmoke) {
+          postProcessing = new THREE.PostProcessing(renderer);
+          postProcessing.outputNode = new THREE.PassNode('color', scene, camera);
+        }
         console.warn(`device.createRenderPipeline type: ${typeof renderer.backend.device.createRenderPipeline}`);
         renderer.clear();
 
@@ -266,6 +283,44 @@
         scene.add(plane);
       }
 
+      function initPostprocessingSmoke() {
+        console.warn('THREE exports containing pass:', Object.keys(THREE).filter(k => k.toLowerCase().includes('pass')).join(', '));
+        console.warn('THREE.TSL contains pass?', THREE.TSL && Object.keys(THREE.TSL).includes('pass'));
+        camera.position.z = 2;
+
+        const dirLight = new THREE.DirectionalLight(0xffffff, 1);
+        dirLight.position.set(5, 10, 5);
+        scene.add(dirLight);
+
+        mesh = new THREE.Mesh(
+          new THREE.BoxGeometry(1, 1, 1),
+          new THREE.MeshStandardMaterial({ color: 0xff0000 }),
+        );
+        scene.add(mesh);
+      }
+
+      function initComputeParticlesSmoke() {
+        console.warn("Starting initComputeParticlesSmoke");
+        camera.position.set(0, 0, 10);
+        camera.lookAt(0, 0, 0);
+
+        const particleCount = 1000;
+        
+        const positionBuffer = THREE.TSL.instancedArray(particleCount, 'vec3');
+        
+        computeNode = THREE.TSL.Fn(() => {
+           const pos = positionBuffer.element(THREE.TSL.instanceIndex);
+           pos.addAssign(THREE.TSL.vec3(0.01, 0.0, 0.0));
+        })().compute(particleCount);
+
+        mesh = new THREE.Mesh(
+            new THREE.PlaneGeometry(1, 1),
+            new THREE.MeshBasicMaterial({color: 0x00ff00})
+        );
+        scene.add(mesh);
+        console.warn("Finished initComputeParticlesSmoke");
+      }
+
       async function initCubeTextureSmoke() {
         camera.position.set(0, 0, 0.01);
         camera.lookAt(0, 0, -1);
@@ -312,7 +367,7 @@
 
       function animate() {
         try {
-          if (!mesh && !useCubeTextureSmoke) {
+          if (!mesh && !useCubeTextureSmoke && !useComputeParticlesSmoke) {
             return;
           }
 
@@ -329,8 +384,13 @@
           } else if (useShadowmapSmoke) {
             mesh.rotation.x = now * 0.5;
             mesh.rotation.y = now * 0.5;
+          } else if (usePostprocessingSmoke) {
+            mesh.rotation.x = now * 0.2;
+            mesh.rotation.y = now * 0.6;
           } else if (useObjectLoaderSmoke || useBufferGeometryLoaderSmoke || useFileLoaderSmoke || useTextureSmoke) {
             mesh.rotation.z = now * 0.5;
+          } else if (useComputeParticlesSmoke) {
+            // do nothing
           } else {
             mesh.rotation.x = Math.sin(now / 4);
             mesh.rotation.y = Math.sin(now / 2);
@@ -356,9 +416,24 @@
             mesh.instanceMatrix.needsUpdate = true;
           }
 
-          renderer.render(scene, camera);
+          if (useComputeParticlesSmoke && computeNode) {
+            console.warn('RUNNING COMPUTE NODE!');
+            try {
+                renderer.compute(computeNode);
+            } catch (e) {
+                console.error("COMPUTE CATCH ERROR:", e.message);
+                console.error(e.stack);
+            }
+          }
+
+          if (usePostprocessingSmoke && postProcessing) {
+            postProcessing.render();
+          } else {
+            renderer.render(scene, camera);
+          }
         } catch (error) {
-          console.error(error && error.stack ? error.stack : String(error));
+          console.error("ERROR MESSAGE:", error.message || String(error));
+          console.error("STACK TRACE:", error.stack || "no stack");
           throw error;
         }
       }

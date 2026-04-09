@@ -4826,6 +4826,7 @@ dependencies = [
  "image",
  "pollster",
  "rquickjs",
+ "serde",
  "serde_json",
  "wgpu",
  "winit",

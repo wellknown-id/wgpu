@@ -190,6 +190,27 @@ class GPUDevice {
     return new GPURenderPipeline(handle);
   }
 
+  async createRenderPipelineAsync(descriptor) {
+    trace(`createRenderPipelineAsync (falling back to sync)`);
+    return this.createRenderPipeline(descriptor);
+  }
+
+  createComputePipeline(descriptor) {
+    trace(`createComputePipeline`);
+    const payload = serializeComputePipelineDescriptor(descriptor);
+    trace(`createComputePipeline payload ${JSON.stringify(payload)}`);
+    const handle = __hostGpuCreateComputePipeline(
+      this.__handle,
+      JSON.stringify(payload),
+    );
+    return new GPUComputePipeline(handle);
+  }
+
+  async createComputePipelineAsync(descriptor) {
+    trace(`createComputePipelineAsync (falling back to sync)`);
+    return this.createComputePipeline(descriptor);
+  }
+
   createCommandEncoder(_descriptor = {}) {
     traceVerbose(`createCommandEncoder`);
     const handle = __hostGpuCreateCommandEncoder(this.__handle, '{}');
@@ -870,6 +891,19 @@ class GPURenderPipeline {
   }
 }
 
+class GPUComputePipeline {
+  constructor(handle) {
+    this.__handle = handle;
+  }
+
+  getBindGroupLayout(index) {
+    const info = JSON.parse(
+      __hostGpuComputePipelineGetBindGroupLayout(this.__handle, index),
+    );
+    return new GPUBindGroupLayout(info.handle, info.entries || []);
+  }
+}
+
 class GPUSampler {
   constructor(handle) {
     this.__handle = handle;
@@ -897,6 +931,60 @@ class GPUCommandEncoder {
     );
     return new GPURenderPassEncoder(handle);
   }
+
+  beginComputePass(descriptor) {
+    traceVerbose(`beginComputePass`);
+    const handleObj = descriptor 
+      ? __hostGpuBeginComputePass(this.__handle, JSON.stringify(descriptor))
+      : __hostGpuBeginComputePass(this.__handle, "null");
+    return new GPUComputePassEncoder(handleObj);
+  }
+
+  copyTextureToTexture(source, destination, copySize) {
+    traceVerbose(`copyTextureToTexture`);
+    __hostGpuCommandEncoderCopyTextureToTexture(
+      this.__handle,
+      JSON.stringify({
+        source: {
+          texture: source.texture.__handle,
+          mipLevel: source.mipLevel ?? 0,
+          origin: source.origin ?? [0, 0, 0],
+          aspect: source.aspect ?? 'all',
+        },
+        destination: {
+          texture: destination.texture.__handle,
+          mipLevel: destination.mipLevel ?? 0,
+          origin: destination.origin ?? [0, 0, 0],
+          aspect: destination.aspect ?? 'all',
+        },
+        copySize: normalizeTextureSize(copySize),
+      }),
+    );
+  }
+
+  copyTextureToBuffer(source, destination, copySize) {
+    traceVerbose(`copyTextureToBuffer`);
+    __hostGpuCommandEncoderCopyTextureToBuffer(
+      this.__handle,
+      JSON.stringify({
+        source: {
+          texture: source.texture.__handle,
+          mipLevel: source.mipLevel ?? 0,
+          origin: source.origin ?? [0, 0, 0],
+          aspect: source.aspect ?? 'all',
+        },
+        destination: {
+          buffer: destination.buffer.__handle,
+          offset: destination.offset ?? 0,
+          bytesPerRow: destination.bytesPerRow,
+          rowsPerImage: destination.rowsPerImage,
+        },
+        copySize: normalizeTextureSize(copySize),
+      }),
+    );
+  }
+
+  clearBuffer() {} // stub if used
 
   finish() {
     traceVerbose(`commandEncoder.finish`);
@@ -1002,6 +1090,55 @@ class GPURenderPassEncoder {
   }
 }
 
+class GPUComputePassEncoder {
+  constructor(handle) {
+    this.__handle = handle;
+  }
+
+  setPipeline(pipeline) {
+    traceVerbose(`computePass.setPipeline`);
+    __hostGpuComputePassEncoderSetPipeline(this.__handle, pipeline.__handle);
+  }
+
+  setBindGroup(index, bindGroup, dynamicOffsets = []) {
+    traceVerbose(`computePass.setBindGroup`);
+    __hostGpuComputePassEncoderSetBindGroup(
+      this.__handle,
+      index,
+      bindGroup.__handle,
+      Array.from(dynamicOffsets),
+    );
+  }
+
+  dispatchWorkgroups(workgroupCountX, workgroupCountY = 1, workgroupCountZ = 1) {
+    traceVerbose(`computePass.dispatchWorkgroups`);
+    __hostGpuComputePassEncoderDispatchWorkgroups(
+      this.__handle,
+      workgroupCountX,
+      workgroupCountY,
+      workgroupCountZ,
+    );
+  }
+
+  dispatchWorkgroupsIndirect(indirectBuffer, indirectOffset) {
+    traceVerbose(`computePass.dispatchWorkgroupsIndirect`);
+    __hostGpuComputePassEncoderDispatchWorkgroupsIndirect(
+      this.__handle,
+      indirectBuffer.__handle,
+      indirectOffset,
+    );
+  }
+
+  pushDebugGroup(groupLabel) {}
+  popDebugGroup() {}
+  insertDebugMarker(markerLabel) {}
+
+  end() {
+    traceVerbose(`computePass.end`);
+    __hostGpuComputePassEncoderEnd(this.__handle);
+  }
+}
+
 class GPUCommandBuffer {
   constructor(handle) {
     this.__handle = handle;
@@ -1097,6 +1234,18 @@ function asU8View(data, dataOffset = 0, size) {
   }
 
   throw new TypeError('Unsupported writeBuffer data source');
+}
+
+function serializeComputePipelineDescriptor(descriptor) {
+  return {
+    label: descriptor.label,
+    layout: descriptor.layout === 'auto' ? 'auto' : descriptor.layout?.__handle,
+    compute: {
+      module: descriptor.compute.module.__handle,
+      entryPoint: descriptor.compute.entryPoint,
+      constants: descriptor.compute.constants,
+    },
+  };
 }
 
 function serializeRenderPipelineDescriptor(descriptor) {

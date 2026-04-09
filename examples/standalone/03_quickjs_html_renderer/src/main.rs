@@ -16,6 +16,7 @@ use rquickjs::{
     loader::{Loader, Resolver},
     Context, Ctx, Function, Module, Object, Persistent, Runtime,
 };
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use wgpu::util::DeviceExt;
 use winit::{
@@ -890,6 +891,43 @@ fn install_host_api(
             },
         )?,
     )?;
+    let gpu_command_copy_texture_to_texture = gpu.clone();
+    globals.set(
+        "__hostGpuCommandEncoderCopyTextureToTexture",
+        Function::new(
+            ctx.clone(),
+            move |encoder_id: u32, descriptor_json: String| -> JsResult<()> {
+                gpu_command_copy_texture_to_texture
+                    .borrow_mut()
+                    .js_command_encoder_copy_texture_to_texture(encoder_id, &descriptor_json)
+                    .map_err(|err| {
+                        rquickjs::Error::new_loading_message(
+                            "GPUCommandEncoder.copyTextureToTexture",
+                            err.to_string(),
+                        )
+                    })
+            },
+        )?,
+    )?;
+
+    let gpu_command_copy_texture_to_buffer = gpu.clone();
+    globals.set(
+        "__hostGpuCommandEncoderCopyTextureToBuffer",
+        Function::new(
+            ctx.clone(),
+            move |encoder_id: u32, descriptor_json: String| -> JsResult<()> {
+                gpu_command_copy_texture_to_buffer
+                    .borrow_mut()
+                    .js_command_encoder_copy_texture_to_buffer(encoder_id, &descriptor_json)
+                    .map_err(|err| {
+                        rquickjs::Error::new_loading_message(
+                            "GPUCommandEncoder.copyTextureToBuffer",
+                            err.to_string(),
+                        )
+                    })
+            },
+        )?,
+    )?;
 
     let gpu_command_encoder_finish = gpu.clone();
     globals.set(
@@ -1179,6 +1217,134 @@ fn install_host_api(
                     })
             },
         )?,
+    )?;
+
+    let gpu_create_compute_pipeline = gpu.clone();
+    globals.set(
+        "__hostGpuCreateComputePipeline",
+        Function::new(
+            ctx.clone(),
+            move |device_id: u32, descriptor_json: String| -> JsResult<u32> {
+                gpu_create_compute_pipeline
+                    .borrow_mut()
+                    .js_create_compute_pipeline(device_id, &descriptor_json)
+                    .map_err(|err| {
+                        rquickjs::Error::new_loading_message(
+                            "GPUDevice.createComputePipeline",
+                            format!("{err:#}"),
+                        )
+                    })
+            },
+        ),
+    )?;
+
+    let gpu_compute_pipeline_get_bind_group_layout = gpu.clone();
+    globals.set(
+        "__hostGpuComputePipelineGetBindGroupLayout",
+        Function::new(
+            ctx.clone(),
+            move |pipeline_id: u32, index: u32| -> JsResult<String> {
+                gpu_compute_pipeline_get_bind_group_layout
+                    .borrow_mut()
+                    .js_compute_pipeline_get_bind_group_layout(pipeline_id, index)
+                    .and_then(|value| serde_json::to_string(&value).map_err(anyhow::Error::from))
+                    .map_err(|err| {
+                        rquickjs::Error::new_loading_message(
+                            "GPUComputePipeline.getBindGroupLayout",
+                            err.to_string(),
+                        )
+                    })
+            },
+        )?,
+    )?;
+
+    let gpu_begin_compute_pass = gpu.clone();
+    globals.set(
+        "__hostGpuBeginComputePass",
+        Function::new(
+            ctx.clone(),
+            move |encoder_id: u32, descriptor_json: String| -> JsResult<u32> {
+                gpu_begin_compute_pass
+                    .borrow_mut()
+                    .js_command_encoder_begin_compute_pass(encoder_id, &descriptor_json)
+                    .map_err(|err| {
+                        rquickjs::Error::new_loading_message(
+                            "GPUCommandEncoder.beginComputePass",
+                            format!("{err:#}"),
+                        )
+                    })
+            },
+        ),
+    )?;
+
+    let gpu_compute_pass_encoder_set_pipeline = gpu.clone();
+    globals.set(
+        "__hostGpuComputePassEncoderSetPipeline",
+        Function::new(
+            ctx.clone(),
+            move |pass_id: u32, pipeline_id: u32| -> JsResult<()> {
+                gpu_compute_pass_encoder_set_pipeline
+                    .borrow_mut()
+                    .js_compute_pass_encoder_set_pipeline(pass_id, pipeline_id)
+                    .map_err(|err| rquickjs::Error::new_loading_message("GPUComputePassEncoder.setPipeline", format!("{err:#}")))
+            },
+        ),
+    )?;
+
+    let gpu_compute_pass_encoder_set_bind_group = gpu.clone();
+    globals.set(
+        "__hostGpuComputePassEncoderSetBindGroup",
+        Function::new(
+            ctx.clone(),
+            move |pass_id: u32, index: u32, bind_group_id: u32, dynamic_offsets: Vec<u32>| -> JsResult<()> {
+                gpu_compute_pass_encoder_set_bind_group
+                    .borrow_mut()
+                    .js_compute_pass_encoder_set_bind_group(pass_id, index, bind_group_id, dynamic_offsets)
+                    .map_err(|err| rquickjs::Error::new_loading_message("GPUComputePassEncoder.setBindGroup", format!("{err:#}")))
+            },
+        ),
+    )?;
+
+    let gpu_compute_pass_encoder_dispatch_workgroups = gpu.clone();
+    globals.set(
+        "__hostGpuComputePassEncoderDispatchWorkgroups",
+        Function::new(
+            ctx.clone(),
+            move |pass_id: u32, x: u32, y: u32, z: u32| -> JsResult<()> {
+                gpu_compute_pass_encoder_dispatch_workgroups
+                    .borrow_mut()
+                    .js_compute_pass_encoder_dispatch_workgroups(pass_id, x, y, z)
+                    .map_err(|err| rquickjs::Error::new_loading_message("GPUComputePassEncoder.dispatchWorkgroups", format!("{err:#}")))
+            },
+        ),
+    )?;
+
+    let gpu_compute_pass_encoder_dispatch_workgroups_indirect = gpu.clone();
+    globals.set(
+        "__hostGpuComputePassEncoderDispatchWorkgroupsIndirect",
+        Function::new(
+            ctx.clone(),
+            move |pass_id: u32, buffer_id: u32, offset: u32| -> JsResult<()> {
+                gpu_compute_pass_encoder_dispatch_workgroups_indirect
+                    .borrow_mut()
+                    .js_compute_pass_encoder_dispatch_workgroups_indirect(pass_id, buffer_id, offset as u64)
+                    .map_err(|err| rquickjs::Error::new_loading_message("GPUComputePassEncoder.dispatchWorkgroupsIndirect", format!("{err:#}")))
+            },
+        ),
+    )?;
+
+    let gpu_compute_pass_encoder_end = gpu.clone();
+    globals.set(
+        "__hostGpuComputePassEncoderEnd",
+        Function::new(
+            ctx.clone(),
+            move |pass_id: u32| -> JsResult<()> {
+                gpu_compute_pass_encoder_end
+                    .borrow_mut()
+                    .js_compute_pass_encoder_end(pass_id)
+                    .map_err(|err| rquickjs::Error::new_loading_message("GPUComputePassEncoder.end", format!("{err:#}")))
+            },
+        ),
     )?;
 
     let geometry_host = host.clone();
@@ -1474,14 +1640,97 @@ struct GpuGeometry {
     index_count: u32,
 }
 
+#[derive(Deserialize, Debug)]
+#[serde(rename_all = "camelCase")]
+struct ComputePipelineDescriptorData {
+    layout: Option<u32>,
+    compute: ProgrammableStageData,
+    label: Option<String>,
+}
+
+#[derive(Deserialize, Debug)]
+#[serde(rename_all = "camelCase")]
+struct ProgrammableStageData {
+    module: u32,
+    entry_point: Option<String>,
+}
+
+#[derive(Debug)]
+enum ComputeCommand {
+    SetPipeline { pipeline_id: u32 },
+    SetBindGroup { index: u32, bind_group_id: u32, dynamic_offsets: Vec<u32> },
+    DispatchWorkgroups { x: u32, y: u32, z: u32 },
+    DispatchWorkgroupsIndirect { buffer_id: u32, offset: u64 },
+}
+
+struct RecordedComputePass {
+    label: Option<String>,
+    commands: Vec<ComputeCommand>,
+}
+
+struct JsComputePass {
+    encoder_id: u32,
+    label: Option<String>,
+    commands: Vec<ComputeCommand>,
+}
+
 enum JsTextureResource {
     Surface(wgpu::SurfaceTexture),
     Owned(wgpu::Texture),
 }
 
+#[derive(Deserialize, Debug)]
+#[serde(rename_all = "camelCase")]
+struct CopyTextureToTextureDescriptor {
+    source: CopyImageTextureDetails,
+    destination: CopyImageTextureDetails,
+    copy_size: [u32; 3],
+}
+
+#[derive(Deserialize, Debug)]
+#[serde(rename_all = "camelCase")]
+struct CopyTextureToBufferDescriptor {
+    source: CopyImageTextureDetails,
+    destination: CopyImageBufferDetails,
+    copy_size: [u32; 3],
+}
+
 struct JsCommandEncoder {
     encoder: wgpu::CommandEncoder,
-    recorded_passes: Vec<RecordedRenderPass>,
+    recorded_commands: Vec<RecordedEncoderCommand>,
+}
+
+#[derive(Deserialize, Debug)]
+#[serde(rename_all = "camelCase")]
+struct CopyImageTextureDetails {
+    texture: u32,
+    mip_level: u32,
+    origin: [u32; 3],
+    aspect: String,
+}
+
+#[derive(Deserialize, Debug)]
+#[serde(rename_all = "camelCase")]
+struct CopyImageBufferDetails {
+    buffer: u32,
+    offset: u64,
+    bytes_per_row: Option<u32>,
+    rows_per_image: Option<u32>,
+}
+
+enum RecordedEncoderCommand {
+    RenderPass(RecordedRenderPass),
+    ComputePass(RecordedComputePass),
+    CopyTextureToTexture {
+        source: CopyImageTextureDetails,
+        destination: CopyImageTextureDetails,
+        copy_size: [u32; 3],
+    },
+    CopyTextureToBuffer {
+        source: CopyImageTextureDetails,
+        destination: CopyImageBufferDetails,
+        copy_size: [u32; 3],
+    },
 }
 
 struct JsRenderBundleEncoder {
@@ -1608,6 +1857,12 @@ struct JsRenderPipeline {
     label: Option<String>,
 }
 
+struct JsComputePipeline {
+    pipeline: wgpu::ComputePipeline,
+    bind_group_layouts: HashMap<u32, u32>,
+    label: Option<String>,
+}
+
 struct JsSampler {
     sampler: wgpu::Sampler,
 }
@@ -1645,12 +1900,14 @@ struct GpuState {
     js_bind_groups: HashMap<u32, JsBindGroup>,
     js_shader_modules: HashMap<u32, JsShaderModule>,
     js_render_pipelines: HashMap<u32, JsRenderPipeline>,
+    js_compute_pipelines: HashMap<u32, JsComputePipeline>,
     js_samplers: HashMap<u32, JsSampler>,
     js_images: HashMap<u32, JsImage>,
     js_command_encoders: HashMap<u32, JsCommandEncoder>,
     js_render_bundle_encoders: HashMap<u32, JsRenderBundleEncoder>,
     js_render_bundles: HashMap<u32, JsRenderBundle>,
     js_render_passes: HashMap<u32, JsRenderPass>,
+    js_compute_passes: HashMap<u32, JsComputePass>,
     js_command_buffers: HashMap<u32, JsCommandBuffer>,
 }
 
@@ -1793,12 +2050,14 @@ impl GpuState {
             js_bind_groups: HashMap::new(),
             js_shader_modules: HashMap::new(),
             js_render_pipelines: HashMap::new(),
+            js_compute_pipelines: HashMap::new(),
             js_samplers: HashMap::new(),
             js_images: HashMap::new(),
             js_command_encoders: HashMap::new(),
             js_render_bundle_encoders: HashMap::new(),
             js_render_bundles: HashMap::new(),
             js_render_passes: HashMap::new(),
+            js_compute_passes: HashMap::new(),
             js_command_buffers: HashMap::new(),
         };
 
@@ -2021,7 +2280,7 @@ impl GpuState {
             id,
             JsCommandEncoder {
                 encoder,
-                recorded_passes: Vec::new(),
+                recorded_commands: Vec::new(),
             },
         );
         Ok(id)
@@ -2168,10 +2427,54 @@ impl GpuState {
             .js_command_encoders
             .get_mut(&render_pass.encoder_id)
             .ok_or_else(|| anyhow!("unknown command encoder handle {}", render_pass.encoder_id))?;
-        encoder.recorded_passes.push(RecordedRenderPass {
+        encoder.recorded_commands.push(RecordedEncoderCommand::RenderPass(RecordedRenderPass {
             descriptor: render_pass.descriptor,
             commands: render_pass.commands,
-        });
+        }));
+        Ok(())
+    }
+
+    fn js_command_encoder_copy_texture_to_texture(
+        &mut self,
+        encoder_id: u32,
+        descriptor_json: &str,
+    ) -> Result<()> {
+        let descriptor: CopyTextureToTextureDescriptor = serde_json::from_str(descriptor_json)?;
+        let encoder = self
+            .js_command_encoders
+            .get_mut(&encoder_id)
+            .ok_or_else(|| anyhow!("unknown command encoder handle {encoder_id}"))?;
+
+        encoder
+            .recorded_commands
+            .push(RecordedEncoderCommand::CopyTextureToTexture {
+                source: descriptor.source,
+                destination: descriptor.destination,
+                copy_size: descriptor.copy_size,
+            });
+
+        Ok(())
+    }
+
+    fn js_command_encoder_copy_texture_to_buffer(
+        &mut self,
+        encoder_id: u32,
+        descriptor_json: &str,
+    ) -> Result<()> {
+        let descriptor: CopyTextureToBufferDescriptor = serde_json::from_str(descriptor_json)?;
+        let encoder = self
+            .js_command_encoders
+            .get_mut(&encoder_id)
+            .ok_or_else(|| anyhow!("unknown command encoder handle {encoder_id}"))?;
+
+        encoder
+            .recorded_commands
+            .push(RecordedEncoderCommand::CopyTextureToBuffer {
+                source: descriptor.source,
+                destination: descriptor.destination,
+                copy_size: descriptor.copy_size,
+            });
+
         Ok(())
     }
 
@@ -2189,7 +2492,11 @@ impl GpuState {
             .remove(&encoder_id)
             .ok_or_else(|| anyhow!("unknown command encoder handle {encoder_id}"))?;
 
-        for pass in &encoder.recorded_passes {
+        for command in &encoder.recorded_commands {
+            let pass = match command {
+                RecordedEncoderCommand::RenderPass(pass) => pass,
+                _ => continue,
+            };
             let has_surface_target = pass.descriptor.color_attachments.iter().any(|attachment| {
                 self.js_texture_view_owners
                     .get(&attachment.view_id)
@@ -2394,8 +2701,125 @@ impl GpuState {
             }
         }
 
-        for pass in &encoder.recorded_passes {
-            self.replay_render_pass(&mut encoder.encoder, pass)?;
+        for command in &encoder.recorded_commands {
+            match command {
+                RecordedEncoderCommand::RenderPass(pass) => {
+                    self.replay_render_pass(&mut encoder.encoder, pass)?;
+                }
+                RecordedEncoderCommand::CopyTextureToTexture { source, destination, copy_size } => {
+                    let source_texture = match self.js_textures.get(&source.texture).ok_or_else(|| anyhow!("unknown source texture handle {}", source.texture))? {
+                        JsTextureResource::Owned(tex) => tex,
+                        _ => bail!("unsupported surface texture source"),
+                    };
+                    let destination_texture = match self.js_textures.get(&destination.texture).ok_or_else(|| anyhow!("unknown destination texture handle {}", destination.texture))? {
+                        JsTextureResource::Owned(tex) => tex,
+                        _ => bail!("unsupported surface texture destination"),
+                    };
+                    
+                    let aspect_fn = |a: &str| match a {
+                        "stencil-only" => wgpu::TextureAspect::StencilOnly,
+                        "depth-only" => wgpu::TextureAspect::DepthOnly,
+                        _ => wgpu::TextureAspect::All,
+                    };
+
+                    encoder.encoder.copy_texture_to_texture(
+                        wgpu::TexelCopyTextureInfo {
+                            texture: source_texture,
+                            mip_level: source.mip_level,
+                            origin: wgpu::Origin3d {
+                                x: source.origin[0],
+                                y: source.origin[1],
+                                z: source.origin[2],
+                            },
+                            aspect: aspect_fn(&source.aspect),
+                        },
+                        wgpu::TexelCopyTextureInfo {
+                            texture: destination_texture,
+                            mip_level: destination.mip_level,
+                            origin: wgpu::Origin3d {
+                                x: destination.origin[0],
+                                y: destination.origin[1],
+                                z: destination.origin[2],
+                            },
+                            aspect: aspect_fn(&destination.aspect),
+                        },
+                        wgpu::Extent3d {
+                            width: copy_size[0],
+                            height: copy_size[1],
+                            depth_or_array_layers: copy_size[2],
+                        },
+                    );
+                }
+                RecordedEncoderCommand::CopyTextureToBuffer { source, destination, copy_size } => {
+                    let source_texture = match self.js_textures.get(&source.texture).ok_or_else(|| anyhow!("unknown source texture handle {}", source.texture))? {
+                        JsTextureResource::Owned(tex) => tex,
+                        _ => bail!("unsupported surface texture source"),
+                    };
+                    let destination_buffer = self.js_buffers.get(&destination.buffer).ok_or_else(|| anyhow!("unknown destination buffer handle {}", destination.buffer))?;
+                    
+                    let aspect_fn = |a: &str| match a {
+                        "stencil-only" => wgpu::TextureAspect::StencilOnly,
+                        "depth-only" => wgpu::TextureAspect::DepthOnly,
+                        _ => wgpu::TextureAspect::All,
+                    };
+
+                    encoder.encoder.copy_texture_to_buffer(
+                        wgpu::TexelCopyTextureInfo {
+                            texture: source_texture,
+                            mip_level: source.mip_level,
+                            origin: wgpu::Origin3d {
+                                x: source.origin[0],
+                                y: source.origin[1],
+                                z: source.origin[2],
+                            },
+                            aspect: aspect_fn(&source.aspect),
+                        },
+                        wgpu::TexelCopyBufferInfo {
+                            buffer: &destination_buffer.buffer,
+                            layout: wgpu::TexelCopyBufferLayout {
+                                offset: destination.offset,
+                                bytes_per_row: destination.bytes_per_row,
+                                rows_per_image: destination.rows_per_image,
+                            },
+                        },
+                        wgpu::Extent3d {
+                            width: copy_size[0],
+                            height: copy_size[1],
+                            depth_or_array_layers: copy_size[2],
+                        },
+                    );
+                }
+                RecordedEncoderCommand::ComputePass(pass) => {
+                    let mut cmd_strings = Vec::new();
+                    
+                    let mut compute_pass = encoder.encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                        label: pass.label.as_deref(),
+                        timestamp_writes: None,
+                    });
+                    
+                    for pass_cmd in &pass.commands {
+                        cmd_strings.push(format!("{:?}", pass_cmd));
+                        match pass_cmd {
+                            ComputeCommand::SetPipeline { pipeline_id } => {
+                                let pipeline = self.js_compute_pipelines.get(pipeline_id).unwrap();
+                                compute_pass.set_pipeline(&pipeline.pipeline);
+                            }
+                            ComputeCommand::SetBindGroup { index, bind_group_id, dynamic_offsets } => {
+                                let bg = self.js_bind_groups.get(bind_group_id).unwrap();
+                                compute_pass.set_bind_group(*index, &bg.group, dynamic_offsets.as_slice());
+                            }
+                            ComputeCommand::DispatchWorkgroups { x, y, z } => {
+                                compute_pass.dispatch_workgroups(*x, *y, *z);
+                            }
+                            ComputeCommand::DispatchWorkgroupsIndirect { buffer_id, offset } => {
+                                let buffer = self.js_buffers.get(buffer_id).unwrap();
+                                compute_pass.dispatch_workgroups_indirect(&buffer.buffer, *offset);
+                            }
+                        }
+                    }
+                    println!("compute pass ops: commands=[{}]", cmd_strings.join(", "));
+                }
+            }
         }
 
         let command_buffer = encoder.encoder.finish();
@@ -3407,6 +3831,122 @@ impl GpuState {
         let id = self.next_js_id();
         self.js_shader_modules.insert(id, JsShaderModule { module });
         Ok(id)
+    }
+
+    fn js_create_compute_pipeline(&mut self, _device_id: u32, descriptor_json: &str) -> Result<u32> {
+        let descriptor: ComputePipelineDescriptorData = serde_json::from_str(descriptor_json)?;
+        
+        // Find shader module
+        let mut entry_point = Some("main");
+        if let Some(entry) = &descriptor.compute.entry_point {
+            entry_point = Some(entry.as_str());
+        }
+
+        let module = self.js_shader_modules.get(&descriptor.compute.module).ok_or_else(|| anyhow!("unknown shader module"))?;
+        
+        let bind_group_layouts = HashMap::new();
+        let pipeline_layout = if let Some(layout_id) = descriptor.layout {
+            let layout = self.js_pipeline_layouts.get(&layout_id).unwrap();
+            Some(&layout.layout)
+        } else {
+            None
+        };
+
+        let wgpu_descriptor = wgpu::ComputePipelineDescriptor {
+            label: descriptor.label.as_deref(),
+            layout: pipeline_layout,
+            module: &module.module,
+            entry_point,
+            compilation_options: Default::default(),
+            cache: None,
+        };
+
+        let pipeline = self.device.create_compute_pipeline(&wgpu_descriptor);
+        let id = self.js_next_id;
+        self.js_next_id += 1;
+        
+        self.js_compute_pipelines.insert(id, JsComputePipeline {
+            pipeline,
+            bind_group_layouts,
+            label: descriptor.label,
+        });
+
+        Ok(id)
+    }
+
+    fn js_compute_pipeline_get_bind_group_layout(&mut self, pipeline_id: u32, index: u32) -> Result<Value> {
+        if let Some(id) = self.js_compute_pipelines.get(&pipeline_id).unwrap().bind_group_layouts.get(&index) {
+            return Ok(serde_json::json!({ "handle": *id }));
+        }
+
+        let layout = {
+            let pipeline = self.js_compute_pipelines.get(&pipeline_id).unwrap();
+            pipeline.pipeline.get_bind_group_layout(index)
+        };
+
+        let id = self.js_next_id;
+        self.js_next_id += 1;
+        self.js_bind_group_layouts.insert(id, JsBindGroupLayout {
+            layout,
+        });
+        
+        self.js_compute_pipelines.get_mut(&pipeline_id).unwrap().bind_group_layouts.insert(index, id);
+        
+        Ok(serde_json::json!({ "handle": id }))
+    }
+
+    fn js_command_encoder_begin_compute_pass(&mut self, encoder_id: u32, descriptor_json: &str) -> Result<u32> {
+        let label = if descriptor_json != "null" {
+            let descriptor: Value = serde_json::from_str(descriptor_json)?;
+            descriptor.get("label").and_then(|v| v.as_str().map(|s| s.to_string()))
+        } else {
+            None
+        };
+        
+        let id = self.js_next_id;
+        self.js_next_id += 1;
+
+        self.js_compute_passes.insert(id, JsComputePass {
+            encoder_id,
+            label,
+            commands: Vec::new(),
+        });
+
+        Ok(id)
+    }
+
+    fn js_compute_pass_encoder_set_pipeline(&mut self, pass_id: u32, pipeline_id: u32) -> Result<()> {
+        let pass = self.js_compute_passes.get_mut(&pass_id).unwrap();
+        pass.commands.push(ComputeCommand::SetPipeline { pipeline_id });
+        Ok(())
+    }
+
+    fn js_compute_pass_encoder_set_bind_group(&mut self, pass_id: u32, index: u32, bind_group_id: u32, dynamic_offsets: Vec<u32>) -> Result<()> {
+        let pass = self.js_compute_passes.get_mut(&pass_id).unwrap();
+        pass.commands.push(ComputeCommand::SetBindGroup { index, bind_group_id, dynamic_offsets });
+        Ok(())
+    }
+
+    fn js_compute_pass_encoder_dispatch_workgroups(&mut self, pass_id: u32, x: u32, y: u32, z: u32) -> Result<()> {
+        let pass = self.js_compute_passes.get_mut(&pass_id).unwrap();
+        pass.commands.push(ComputeCommand::DispatchWorkgroups { x, y, z });
+        Ok(())
+    }
+
+    fn js_compute_pass_encoder_dispatch_workgroups_indirect(&mut self, pass_id: u32, buffer_id: u32, offset: u64) -> Result<()> {
+        let pass = self.js_compute_passes.get_mut(&pass_id).unwrap();
+        pass.commands.push(ComputeCommand::DispatchWorkgroupsIndirect { buffer_id, offset });
+        Ok(())
+    }
+
+    fn js_compute_pass_encoder_end(&mut self, pass_id: u32) -> Result<()> {
+        let pass = self.js_compute_passes.remove(&pass_id).unwrap();
+        let encoder = self.js_command_encoders.get_mut(&pass.encoder_id).unwrap();
+        encoder.recorded_commands.push(RecordedEncoderCommand::ComputePass(RecordedComputePass {
+            label: pass.label,
+            commands: pass.commands,
+        }));
+        Ok(())
     }
 
     fn js_create_render_pipeline(&mut self, _device_id: u32, descriptor_json: &str) -> Result<u32> {
