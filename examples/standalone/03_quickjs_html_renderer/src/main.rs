@@ -214,12 +214,22 @@ impl JsEngine {
     fn tick(&mut self) -> Result<()> {
         let callback = self.host.borrow().animation_loop.clone();
         if let Some(callback) = callback {
-            self.context.with(|ctx| -> JsResult<()> {
+            if let Err(e) = self.context.with(|ctx| -> JsResult<()> {
                 let callback = callback.restore(&ctx)?;
                 let now_ms = self.host.borrow().now_ms;
                 callback.call::<_, ()>((now_ms,))?;
                 Ok(())
-            })?;
+            }) {
+                self.context.with(|ctx| {
+                    if let Some(js_e) = ctx.catch().into_exception() {
+                        eprintln!("QuickJS Tick Exception: {:?}", js_e.message());
+                        if let Some(stack) = js_e.stack() {
+                            eprintln!("Stack: {}", stack);
+                        }
+                    }
+                });
+                return Err(anyhow!("QuickJS tick failed: {e}"));
+            }
         }
 
         self.drain_jobs()?;
@@ -229,7 +239,7 @@ impl JsEngine {
 
     fn resize(&mut self, width: u32, height: u32) -> Result<()> {
         let listeners = self.host.borrow().resize_listeners.clone();
-        self.context.with(|ctx| -> JsResult<()> {
+        if let Err(e) = self.context.with(|ctx| -> JsResult<()> {
             let globals = ctx.globals();
             globals.set("innerWidth", width as i32)?;
             globals.set("innerHeight", height as i32)?;
@@ -237,7 +247,17 @@ impl JsEngine {
                 listener.restore(&ctx)?.call::<_, ()>(())?;
             }
             Ok(())
-        })?;
+        }) {
+            self.context.with(|ctx| {
+                if let Some(js_e) = ctx.catch().into_exception() {
+                    eprintln!("QuickJS Resize Exception: {:?}", js_e.message());
+                    if let Some(stack) = js_e.stack() {
+                        eprintln!("Stack: {}", stack);
+                    }
+                }
+            });
+            return Err(anyhow!("QuickJS resize failed: {e}"));
+        }
 
         self.drain_jobs()?;
 
@@ -246,9 +266,17 @@ impl JsEngine {
 
     fn drain_jobs(&mut self) -> Result<()> {
         while self.runtime.is_job_pending() {
-            self.runtime
-                .execute_pending_job()
-                .map_err(|err| anyhow!("QuickJS pending job failed: {err}"))?;
+            if let Err(err) = self.runtime.execute_pending_job() {
+                self.context.with(|ctx| {
+                    if let Some(js_e) = ctx.catch().into_exception() {
+                        eprintln!("QuickJS Job Exception: {:?}", js_e.message());
+                        if let Some(stack) = js_e.stack() {
+                            eprintln!("Stack: {}", stack);
+                        }
+                    }
+                });
+                return Err(anyhow!("QuickJS pending job failed: {err}"));
+            }
         }
 
         Ok(())
@@ -2324,24 +2352,35 @@ impl GpuState {
             return Ok(texture_id);
         }
 
-        let surface_texture = match self.surface.get_current_texture() {
-            wgpu::CurrentSurfaceTexture::Success(texture) => texture,
-            wgpu::CurrentSurfaceTexture::Occluded | wgpu::CurrentSurfaceTexture::Timeout => {
-                bail!("surface is temporarily unavailable")
-            }
-            wgpu::CurrentSurfaceTexture::Suboptimal(_) | wgpu::CurrentSurfaceTexture::Outdated => {
-                self.configure_surface();
-                self.depth_view = Some(self.create_depth_view());
-                bail!("surface needs refresh")
-            }
-            wgpu::CurrentSurfaceTexture::Validation => {
-                bail!("surface validation failed")
-            }
-            wgpu::CurrentSurfaceTexture::Lost => {
-                self.surface = self.instance.create_surface(self.window.clone())?;
-                self.configure_surface();
-                self.depth_view = Some(self.create_depth_view());
-                bail!("surface was lost")
+        let mut retry = 0;
+        let surface_texture = loop {
+            match self.surface.get_current_texture() {
+                wgpu::CurrentSurfaceTexture::Success(texture) | wgpu::CurrentSurfaceTexture::Suboptimal(texture) => break texture,
+                wgpu::CurrentSurfaceTexture::Occluded | wgpu::CurrentSurfaceTexture::Timeout => {
+                    bail!("surface is temporarily unavailable")
+                }
+                wgpu::CurrentSurfaceTexture::Outdated => {
+                    if retry > 0 {
+                        // Sometimes X11/Wayland quirks cause endless Outdated events if size is totally squashed/hidden
+                        bail!("surface is perpetually outdated");
+                    }
+                    if self.size.width > 0 && self.size.height > 0 {
+                        self.configure_surface();
+                        self.depth_view = Some(self.create_depth_view());
+                    } else {
+                        bail!("surface size is 0x0");
+                    }
+                    retry += 1;
+                }
+                wgpu::CurrentSurfaceTexture::Validation => {
+                    bail!("surface validation failed")
+                }
+                wgpu::CurrentSurfaceTexture::Lost => {
+                    self.surface = self.instance.create_surface(self.window.clone())?;
+                    self.configure_surface();
+                    self.depth_view = Some(self.create_depth_view());
+                    bail!("surface was lost")
+                }
             }
         };
 
@@ -5313,7 +5352,8 @@ impl ApplicationHandler for App {
             }
             WindowEvent::RedrawRequested => {
                 if let Some(start_time) = self.start_time {
-                    js.set_time_ms(start_time.elapsed().as_secs_f64() * 1000.0);
+                    let ms = start_time.elapsed().as_secs_f64() * 1000.0;
+                    js.set_time_ms(ms);
                 }
 
                 if let Err(err) = js.tick() {
