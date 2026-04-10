@@ -1,0 +1,17 @@
+[package]
+name = "tmp_htmlsize"
+edition.workspace = true
+rust-version.workspace = true
+keywords.workspace = true
+license.workspace = true
+homepage.workspace = true
+repository.workspace = true
+version.workspace = true
+authors.workspace = true
+
+[dependencies]
+html5ever = "0.38.0"
+markup5ever_rcdom = "0.38.0"
+
+[lints]
+workspace = true

@@ -1436,9 +1436,7 @@ function defaultTextureBindingViewDimension(dimension, depthOrArrayLayers) {
 
 function createEventTarget(parent = null) {
   const listeners = new Map();
-
   return {
-    __listeners: listeners,
     __parent: parent,
     addEventListener(type, listener) {
       if (typeof listener !== 'function') {
@@ -1457,14 +1455,21 @@ function createEventTarget(parent = null) {
       if (!type) {
         return true;
       }
-      const payload = {
-        preventDefault() {},
-        ...event,
-        target: event?.target ?? this,
-        currentTarget: this,
-      };
-      for (const listener of listeners.get(type) || []) {
-        listener.call(this, payload);
+      event.preventDefault = event.preventDefault || function() {};
+      event.stopPropagation = event.stopPropagation || function() {};
+      event.stopImmediatePropagation = event.stopImmediatePropagation || function() {};
+      event.target = event.target ?? this;
+      event.currentTarget = this;
+      const tListeners = listeners.get(type) || [];
+      for (const listener of tListeners) {
+        try {
+            listener.call(this, event);
+        } catch (e) {
+            console.error(`[webgpu-runtime] Dispatch exception in ${type}: `, e);
+        }
+      }
+      if (this.__parent && this.__parent.dispatchEvent) {
+          this.__parent.dispatchEvent(event);
       }
       return true;
     },
@@ -1505,7 +1510,7 @@ function createCanvasElement() {
       return context;
     },
   };
-
+  globalThis.__activeCanvas = canvas;
   return canvas;
 }
 
@@ -1575,6 +1580,15 @@ export function installWebGPURuntime() {
   globalThis.DOMParser = DOMParser;
   globalThis.TextEncoder = TextEncoder;
   globalThis.TextDecoder = TextDecoder;
+  globalThis.Event = class Event {
+      constructor(type, options) {
+          this.type = type;
+          if (options) {
+              Object.assign(this, options);
+          }
+      }
+  };
+  globalThis.PointerEvent = class PointerEvent extends globalThis.Event {};
   globalThis.URL = URL;
   globalThis.Blob = Blob;
   globalThis.Response = Response;

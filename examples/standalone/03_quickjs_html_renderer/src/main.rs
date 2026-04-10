@@ -1,3 +1,5 @@
+mod ui_overlay;
+
 use std::{
     borrow::Cow,
     cell::RefCell,
@@ -16,11 +18,9 @@ use rquickjs::{
     loader::{Loader, Resolver},
     Context, Ctx, Function, Module, Object, Persistent, Runtime,
 };
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 use serde_json::Value;
 use wgpu::util::DeviceExt;
-use html5ever::{local_name, parse_document, tendril::TendrilSink};
-use markup5ever_rcdom::{Handle, NodeData, RcDom};
 use winit::{
     application::ApplicationHandler,
     event::WindowEvent,
@@ -115,21 +115,16 @@ struct JsEngine {
 impl JsEngine {
     fn new(
         asset_dir: PathBuf,
-        html_file: &str,
         gpu: Rc<RefCell<GpuState>>,
         width: u32,
         height: u32,
+        filename: &str,
         search: &str,
     ) -> Result<Self> {
-        let html = fs::read_to_string(asset_dir.join(html_file))
-            .with_context(|| format!("failed to read {html_file}"))?;
-        let parsed = parse_html(&html)?;
-
         let runtime = Runtime::new()?;
         runtime.set_loader(
             FsResolver {
                 root: asset_dir.clone(),
-                import_map: parsed.import_map,
             },
             FsLoader,
         );
@@ -148,49 +143,68 @@ impl JsEngine {
                 search,
             )?;
 
-            let entry_name = asset_dir.join("index.inline.js").display().to_string();
-            let result = Module::evaluate(ctx.clone(), entry_name, parsed.module_script);
-            match &result {
-                Err(err) => {
-                    eprintln!("JS evaluate error: {err:?}");
-                    if let rquickjs::Error::Exception = err {
-                        let exception = ctx.catch();
-                        eprintln!("Exception: {exception:?}");
-                    }
-                    return result.map(|_| ());
-                }
-                Ok(promise) => {
-                    let finish_result = promise.finish::<()>();
-                    if let Err(ref err) = finish_result {
-                        eprintln!("JS finish error: {err:?}");
-                        if let rquickjs::Error::Exception = err {
-                            let exception = ctx.catch();
-                            let msg: String = exception
-                                .as_object()
-                                .and_then(|o| o.get("message").ok())
-                                .unwrap_or_else(|| format!("{exception:?}"));
-                            let stack: String = exception
-                                .as_object()
-                                .and_then(|o| o.get("stack").ok())
-                                .unwrap_or_default();
-                            eprintln!("JS Exception: {msg}");
-                            if !stack.is_empty() {
-                                eprintln!("Stack: {stack}");
-                            }
-                        }
-                    }
-                    finish_result
-                }
-            }
+            let html = fs::read_to_string(asset_dir.join(filename))
+                .map_err(|err| rquickjs::Error::new_loading_message(filename, err.to_string()))?;
+            let script = extract_module_script(&html)?;
+            let entry_name = asset_dir
+                .join(filename)
+                .with_extension("inline.js")
+                .display()
+                .to_string();
+            Module::evaluate(ctx, entry_name, script)?.finish::<()>()
         })?;
 
-        let mut engine = Self {
+        Ok(Self {
             runtime,
             context,
             host,
-        };
-        engine.drain_jobs()?;
-        Ok(engine)
+        })
+    }
+
+    fn dispatch_mouse_event(&mut self, ev_type: &str, x: f64, y: f64) -> Result<()> {
+        self.context.with(|ctx| -> Result<()> {
+            let target = ctx
+                .globals()
+                .get::<_, Object>("__activeCanvas")
+                .or_else(|_| ctx.globals().get::<_, Object>("document"));
+
+            if let Ok(document) = target {
+                let has_pointer = ctx.globals().contains_key("PointerEvent").unwrap_or(false);
+                let fallback = if has_pointer { "PointerEvent" } else { "Event" };
+                if let Ok(event) = ctx.eval::<Object, _>(format!("new {fallback}('{ev_type}')")) {
+                    let _ = event.set("clientX", x);
+                    let _ = event.set("clientY", y);
+                    let _ = event.set("pageX", x);
+                    let _ = event.set("pageY", y);
+                    let _ = event.set("pointerId", 1);
+                    let _ = event.set("pointerType", "mouse");
+                    let _ = event.set("button", if ev_type == "pointermove" { -1 } else { 0 }); // Use -1 for pointermove to avoid pseudo-clicks
+                    let _ = event.set("isPrimary", true);
+                    let _ = event.set("ctrlKey", false);
+                    let _ = event.set("metaKey", false);
+                    let _ = event.set("shiftKey", false);
+
+                    let _ = ctx.globals().set("__tempEventTarget", document);
+                    let _ = ctx.globals().set("__tempEvent", event);
+                    if let Err(e) =
+                        ctx.eval::<(), _>("__tempEventTarget.dispatchEvent(__tempEvent)")
+                    {
+                        if let Some(ex) = ctx.catch().into_exception() {
+                            if let Some(msg) = ex.message() {
+                                println!("JS Exception: {}", msg);
+                            }
+                        } else {
+                            println!("Dispatch invoke error: {:?}", e);
+                        }
+                    }
+                } else {
+                    println!("Failed to eval new PointerEvent");
+                }
+            } else {
+                println!("Failed to find target");
+            }
+            Ok(())
+        })
     }
 
     fn set_time_ms(&mut self, now_ms: f64) {
@@ -203,27 +217,8 @@ impl JsEngine {
             self.context.with(|ctx| -> JsResult<()> {
                 let callback = callback.restore(&ctx)?;
                 let now_ms = self.host.borrow().now_ms;
-                let result: JsResult<()> = callback.call((now_ms,));
-                if let Err(ref err) = result {
-                    if let rquickjs::Error::Exception = err {
-                        let exception = ctx.catch();
-                        let msg: String = exception
-                            .as_object()
-                            .and_then(|o| o.get("message").ok())
-                            .unwrap_or_else(|| format!("{exception:?}"));
-                        let stack: String = exception
-                            .as_object()
-                            .and_then(|o| o.get("stack").ok())
-                            .unwrap_or_default();
-                        eprintln!("JS tick exception: {msg}");
-                        if !stack.is_empty() {
-                            eprintln!("Stack: {stack}");
-                        }
-                    } else {
-                        eprintln!("JS tick error: {err:?}");
-                    }
-                }
-                result
+                callback.call::<_, ()>((now_ms,))?;
+                Ok(())
             })?;
         }
 
@@ -275,30 +270,11 @@ impl JsEngine {
 
 struct FsResolver {
     root: PathBuf,
-    import_map: HashMap<String, String>,
 }
 
 impl Resolver for FsResolver {
     fn resolve<'js>(&mut self, _ctx: &Ctx<'js>, base: &str, name: &str) -> JsResult<String> {
-        let resolved_name = if let Some(mapped) = self.import_map.get(name) {
-            mapped.clone()
-        } else {
-            let prefix_match = self
-                .import_map
-                .iter()
-                .filter(|(k, _)| k.ends_with('/'))
-                .find(|(k, _)| name.starts_with(k.as_str()));
-            if let Some((prefix, target)) = prefix_match {
-                format!("{}{}", target, &name[prefix.len()..])
-            } else {
-                String::new()
-            }
-        };
-
-        let candidate = if !resolved_name.is_empty() {
-            let target = resolved_name.trim_start_matches("./");
-            self.root.join(target)
-        } else if name.starts_with("./") || name.starts_with("../") {
+        let candidate = if name.starts_with("./") || name.starts_with("../") {
             let base = Path::new(base);
             let parent = base.parent().unwrap_or(self.root.as_path());
             parent.join(name)
@@ -1362,7 +1338,12 @@ fn install_host_api(
                 gpu_compute_pass_encoder_set_pipeline
                     .borrow_mut()
                     .js_compute_pass_encoder_set_pipeline(pass_id, pipeline_id)
-                    .map_err(|err| rquickjs::Error::new_loading_message("GPUComputePassEncoder.setPipeline", format!("{err:#}")))
+                    .map_err(|err| {
+                        rquickjs::Error::new_loading_message(
+                            "GPUComputePassEncoder.setPipeline",
+                            format!("{err:#}"),
+                        )
+                    })
             },
         ),
     )?;
@@ -1372,11 +1353,25 @@ fn install_host_api(
         "__hostGpuComputePassEncoderSetBindGroup",
         Function::new(
             ctx.clone(),
-            move |pass_id: u32, index: u32, bind_group_id: u32, dynamic_offsets: Vec<u32>| -> JsResult<()> {
+            move |pass_id: u32,
+                  index: u32,
+                  bind_group_id: u32,
+                  dynamic_offsets: Vec<u32>|
+                  -> JsResult<()> {
                 gpu_compute_pass_encoder_set_bind_group
                     .borrow_mut()
-                    .js_compute_pass_encoder_set_bind_group(pass_id, index, bind_group_id, dynamic_offsets)
-                    .map_err(|err| rquickjs::Error::new_loading_message("GPUComputePassEncoder.setBindGroup", format!("{err:#}")))
+                    .js_compute_pass_encoder_set_bind_group(
+                        pass_id,
+                        index,
+                        bind_group_id,
+                        dynamic_offsets,
+                    )
+                    .map_err(|err| {
+                        rquickjs::Error::new_loading_message(
+                            "GPUComputePassEncoder.setBindGroup",
+                            format!("{err:#}"),
+                        )
+                    })
             },
         ),
     )?;
@@ -1390,7 +1385,12 @@ fn install_host_api(
                 gpu_compute_pass_encoder_dispatch_workgroups
                     .borrow_mut()
                     .js_compute_pass_encoder_dispatch_workgroups(pass_id, x, y, z)
-                    .map_err(|err| rquickjs::Error::new_loading_message("GPUComputePassEncoder.dispatchWorkgroups", format!("{err:#}")))
+                    .map_err(|err| {
+                        rquickjs::Error::new_loading_message(
+                            "GPUComputePassEncoder.dispatchWorkgroups",
+                            format!("{err:#}"),
+                        )
+                    })
             },
         ),
     )?;
@@ -1403,8 +1403,17 @@ fn install_host_api(
             move |pass_id: u32, buffer_id: u32, offset: u32| -> JsResult<()> {
                 gpu_compute_pass_encoder_dispatch_workgroups_indirect
                     .borrow_mut()
-                    .js_compute_pass_encoder_dispatch_workgroups_indirect(pass_id, buffer_id, offset as u64)
-                    .map_err(|err| rquickjs::Error::new_loading_message("GPUComputePassEncoder.dispatchWorkgroupsIndirect", format!("{err:#}")))
+                    .js_compute_pass_encoder_dispatch_workgroups_indirect(
+                        pass_id,
+                        buffer_id,
+                        offset as u64,
+                    )
+                    .map_err(|err| {
+                        rquickjs::Error::new_loading_message(
+                            "GPUComputePassEncoder.dispatchWorkgroupsIndirect",
+                            format!("{err:#}"),
+                        )
+                    })
             },
         ),
     )?;
@@ -1412,15 +1421,17 @@ fn install_host_api(
     let gpu_compute_pass_encoder_end = gpu.clone();
     globals.set(
         "__hostGpuComputePassEncoderEnd",
-        Function::new(
-            ctx.clone(),
-            move |pass_id: u32| -> JsResult<()> {
-                gpu_compute_pass_encoder_end
-                    .borrow_mut()
-                    .js_compute_pass_encoder_end(pass_id)
-                    .map_err(|err| rquickjs::Error::new_loading_message("GPUComputePassEncoder.end", format!("{err:#}")))
-            },
-        ),
+        Function::new(ctx.clone(), move |pass_id: u32| -> JsResult<()> {
+            gpu_compute_pass_encoder_end
+                .borrow_mut()
+                .js_compute_pass_encoder_end(pass_id)
+                .map_err(|err| {
+                    rquickjs::Error::new_loading_message(
+                        "GPUComputePassEncoder.end",
+                        format!("{err:#}"),
+                    )
+                })
+        }),
     )?;
 
     let geometry_host = host.clone();
@@ -1667,8 +1678,6 @@ globalThis.requestAnimationFrame = function(callback) {{
   return 1;
 }};
 globalThis.cancelAnimationFrame = function() {{}};
-globalThis.self = globalThis;
-globalThis.window = globalThis;
 "#
     ))?;
 
@@ -1685,82 +1694,15 @@ fn resolve_asset_path(root: &Path, path: &str) -> Result<PathBuf> {
     Ok(full_path)
 }
 
-struct ParsedHtml {
-    module_script: String,
-    import_map: HashMap<String, String>,
-}
-
-fn parse_html(html: &str) -> JsResult<ParsedHtml> {
-    let dom = parse_document(RcDom::default(), Default::default())
-        .from_utf8()
-        .read_from(&mut html.as_bytes())
-        .map_err(|err| {
-            rquickjs::Error::new_loading_message("index.html", err.to_string())
-        })?;
-
-    let mut module_script = None;
-    let mut import_map = HashMap::new();
-
-    fn collect_text(handle: &Handle) -> String {
-        let mut text = String::new();
-        for child in handle.children.borrow().iter() {
-            if let NodeData::Text { ref contents } = child.data {
-                text.push_str(&contents.borrow());
-            }
-        }
-        text
-    }
-
-    fn walk(
-        handle: &Handle,
-        module_script: &mut Option<String>,
-        import_map: &mut HashMap<String, String>,
-    ) {
-        if let NodeData::Element { ref name, ref attrs, .. } = handle.data {
-            if name.local == local_name!("script") {
-                let attrs_ref = attrs.borrow();
-                let type_attr = attrs_ref
-                    .iter()
-                    .find(|a| a.name.local == local_name!("type"))
-                    .map(|a| a.value.to_string());
-
-                match type_attr.as_deref() {
-                    Some("module") if module_script.is_none() => {
-                        *module_script = Some(collect_text(handle));
-                    }
-                    Some("importmap") => {
-                        let json_text = collect_text(handle);
-                        if let Ok(parsed) = serde_json::from_str::<Value>(&json_text) {
-                            if let Some(imports) = parsed.get("imports").and_then(|v| v.as_object())
-                            {
-                                for (key, val) in imports {
-                                    if let Some(target) = val.as_str() {
-                                        import_map
-                                            .insert(key.clone(), target.to_string());
-                                    }
-                                }
-                            }
-                        }
-                    }
-                    _ => {}
-                }
-            }
-        }
-        for child in handle.children.borrow().iter() {
-            walk(child, module_script, import_map);
-        }
-    }
-
-    walk(&dom.document, &mut module_script, &mut import_map);
-
-    let module_script = module_script.ok_or_else(|| {
+fn extract_module_script(html: &str) -> JsResult<String> {
+    let start = html.find("<script type=\"module\">").ok_or_else(|| {
         rquickjs::Error::new_loading_message("index.html", "missing module script")
     })?;
-
-    Ok(ParsedHtml {
-        module_script,
-        import_map,
-    })
+    let start = start + "<script type=\"module\">".len();
+    let end = html[start..].find("</script>").ok_or_else(|| {
+        rquickjs::Error::new_loading_message("index.html", "unterminated module script")
+    })?;
+    Ok(html[start..start + end].trim().to_string())
 }
 
 fn vec16(values: Vec<f32>, name: &'static str) -> JsResult<[f32; 16]> {
@@ -1802,10 +1744,23 @@ struct ProgrammableStageData {
 
 #[derive(Debug)]
 enum ComputeCommand {
-    SetPipeline { pipeline_id: u32 },
-    SetBindGroup { index: u32, bind_group_id: u32, dynamic_offsets: Vec<u32> },
-    DispatchWorkgroups { x: u32, y: u32, z: u32 },
-    DispatchWorkgroupsIndirect { buffer_id: u32, offset: u64 },
+    SetPipeline {
+        pipeline_id: u32,
+    },
+    SetBindGroup {
+        index: u32,
+        bind_group_id: u32,
+        dynamic_offsets: Vec<u32>,
+    },
+    DispatchWorkgroups {
+        x: u32,
+        y: u32,
+        z: u32,
+    },
+    DispatchWorkgroupsIndirect {
+        buffer_id: u32,
+        offset: u64,
+    },
 }
 
 struct RecordedComputePass {
@@ -2054,6 +2009,8 @@ struct GpuState {
     js_render_passes: HashMap<u32, JsRenderPass>,
     js_compute_passes: HashMap<u32, JsComputePass>,
     js_command_buffers: HashMap<u32, JsCommandBuffer>,
+    ui: Option<ui_overlay::UiOverlay>,
+    mouse: (f32, f32),
 }
 
 impl GpuState {
@@ -2168,6 +2125,8 @@ impl GpuState {
             mapped_at_creation: false,
         });
 
+        let ui = ui_overlay::UiOverlay::new(&device, &queue, surface_format);
+
         let mut state = Self {
             instance,
             window,
@@ -2204,6 +2163,8 @@ impl GpuState {
             js_render_passes: HashMap::new(),
             js_compute_passes: HashMap::new(),
             js_command_buffers: HashMap::new(),
+            ui: Some(ui),
+            mouse: (0.0, 0.0),
         };
 
         state.configure_surface();
@@ -2572,10 +2533,12 @@ impl GpuState {
             .js_command_encoders
             .get_mut(&render_pass.encoder_id)
             .ok_or_else(|| anyhow!("unknown command encoder handle {}", render_pass.encoder_id))?;
-        encoder.recorded_commands.push(RecordedEncoderCommand::RenderPass(RecordedRenderPass {
-            descriptor: render_pass.descriptor,
-            commands: render_pass.commands,
-        }));
+        encoder
+            .recorded_commands
+            .push(RecordedEncoderCommand::RenderPass(RecordedRenderPass {
+                descriptor: render_pass.descriptor,
+                commands: render_pass.commands,
+            }));
         Ok(())
     }
 
@@ -2851,16 +2814,26 @@ impl GpuState {
                 RecordedEncoderCommand::RenderPass(pass) => {
                     self.replay_render_pass(&mut encoder.encoder, pass)?;
                 }
-                RecordedEncoderCommand::CopyTextureToTexture { source, destination, copy_size } => {
-                    let source_texture = match self.js_textures.get(&source.texture).ok_or_else(|| anyhow!("unknown source texture handle {}", source.texture))? {
-                        JsTextureResource::Owned(tex) => tex,
-                        _ => bail!("unsupported surface texture source"),
-                    };
-                    let destination_texture = match self.js_textures.get(&destination.texture).ok_or_else(|| anyhow!("unknown destination texture handle {}", destination.texture))? {
-                        JsTextureResource::Owned(tex) => tex,
-                        _ => bail!("unsupported surface texture destination"),
-                    };
-                    
+                RecordedEncoderCommand::CopyTextureToTexture {
+                    source,
+                    destination,
+                    copy_size,
+                } => {
+                    let source_texture =
+                        match self.js_textures.get(&source.texture).ok_or_else(|| {
+                            anyhow!("unknown source texture handle {}", source.texture)
+                        })? {
+                            JsTextureResource::Owned(tex) => tex,
+                            _ => bail!("unsupported surface texture source"),
+                        };
+                    let destination_texture =
+                        match self.js_textures.get(&destination.texture).ok_or_else(|| {
+                            anyhow!("unknown destination texture handle {}", destination.texture)
+                        })? {
+                            JsTextureResource::Owned(tex) => tex,
+                            _ => bail!("unsupported surface texture destination"),
+                        };
+
                     let aspect_fn = |a: &str| match a {
                         "stencil-only" => wgpu::TextureAspect::StencilOnly,
                         "depth-only" => wgpu::TextureAspect::DepthOnly,
@@ -2895,13 +2868,23 @@ impl GpuState {
                         },
                     );
                 }
-                RecordedEncoderCommand::CopyTextureToBuffer { source, destination, copy_size } => {
-                    let source_texture = match self.js_textures.get(&source.texture).ok_or_else(|| anyhow!("unknown source texture handle {}", source.texture))? {
-                        JsTextureResource::Owned(tex) => tex,
-                        _ => bail!("unsupported surface texture source"),
-                    };
-                    let destination_buffer = self.js_buffers.get(&destination.buffer).ok_or_else(|| anyhow!("unknown destination buffer handle {}", destination.buffer))?;
-                    
+                RecordedEncoderCommand::CopyTextureToBuffer {
+                    source,
+                    destination,
+                    copy_size,
+                } => {
+                    let source_texture =
+                        match self.js_textures.get(&source.texture).ok_or_else(|| {
+                            anyhow!("unknown source texture handle {}", source.texture)
+                        })? {
+                            JsTextureResource::Owned(tex) => tex,
+                            _ => bail!("unsupported surface texture source"),
+                        };
+                    let destination_buffer =
+                        self.js_buffers.get(&destination.buffer).ok_or_else(|| {
+                            anyhow!("unknown destination buffer handle {}", destination.buffer)
+                        })?;
+
                     let aspect_fn = |a: &str| match a {
                         "stencil-only" => wgpu::TextureAspect::StencilOnly,
                         "depth-only" => wgpu::TextureAspect::DepthOnly,
@@ -2936,12 +2919,15 @@ impl GpuState {
                 }
                 RecordedEncoderCommand::ComputePass(pass) => {
                     let mut cmd_strings = Vec::new();
-                    
-                    let mut compute_pass = encoder.encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
-                        label: pass.label.as_deref(),
-                        timestamp_writes: None,
-                    });
-                    
+
+                    let mut compute_pass =
+                        encoder
+                            .encoder
+                            .begin_compute_pass(&wgpu::ComputePassDescriptor {
+                                label: pass.label.as_deref(),
+                                timestamp_writes: None,
+                            });
+
                     for pass_cmd in &pass.commands {
                         cmd_strings.push(format!("{:?}", pass_cmd));
                         match pass_cmd {
@@ -2949,9 +2935,17 @@ impl GpuState {
                                 let pipeline = self.js_compute_pipelines.get(pipeline_id).unwrap();
                                 compute_pass.set_pipeline(&pipeline.pipeline);
                             }
-                            ComputeCommand::SetBindGroup { index, bind_group_id, dynamic_offsets } => {
+                            ComputeCommand::SetBindGroup {
+                                index,
+                                bind_group_id,
+                                dynamic_offsets,
+                            } => {
                                 let bg = self.js_bind_groups.get(bind_group_id).unwrap();
-                                compute_pass.set_bind_group(*index, &bg.group, dynamic_offsets.as_slice());
+                                compute_pass.set_bind_group(
+                                    *index,
+                                    &bg.group,
+                                    dynamic_offsets.as_slice(),
+                                );
                             }
                             ComputeCommand::DispatchWorkgroups { x, y, z } => {
                                 compute_pass.dispatch_workgroups(*x, *y, *z);
@@ -3013,6 +3007,17 @@ impl GpuState {
             if let Some(JsTextureResource::Surface(surface_texture)) =
                 self.js_textures.remove(texture_id)
             {
+                let view = surface_texture.texture.create_view(&Default::default());
+                if let Some(ui) = self.ui.as_mut() {
+                    ui.draw(
+                        &self.device,
+                        &self.queue,
+                        &view,
+                        self.size.width as f32,
+                        self.size.height as f32,
+                        self.mouse,
+                    );
+                }
                 surface_texture.present();
             }
         }
@@ -3978,17 +3983,24 @@ impl GpuState {
         Ok(id)
     }
 
-    fn js_create_compute_pipeline(&mut self, _device_id: u32, descriptor_json: &str) -> Result<u32> {
+    fn js_create_compute_pipeline(
+        &mut self,
+        _device_id: u32,
+        descriptor_json: &str,
+    ) -> Result<u32> {
         let descriptor: ComputePipelineDescriptorData = serde_json::from_str(descriptor_json)?;
-        
+
         // Find shader module
         let mut entry_point = Some("main");
         if let Some(entry) = &descriptor.compute.entry_point {
             entry_point = Some(entry.as_str());
         }
 
-        let module = self.js_shader_modules.get(&descriptor.compute.module).ok_or_else(|| anyhow!("unknown shader module"))?;
-        
+        let module = self
+            .js_shader_modules
+            .get(&descriptor.compute.module)
+            .ok_or_else(|| anyhow!("unknown shader module"))?;
+
         let bind_group_layouts = HashMap::new();
         let pipeline_layout = if let Some(layout_id) = descriptor.layout {
             let layout = self.js_pipeline_layouts.get(&layout_id).unwrap();
@@ -4009,18 +4021,31 @@ impl GpuState {
         let pipeline = self.device.create_compute_pipeline(&wgpu_descriptor);
         let id = self.js_next_id;
         self.js_next_id += 1;
-        
-        self.js_compute_pipelines.insert(id, JsComputePipeline {
-            pipeline,
-            bind_group_layouts,
-            label: descriptor.label,
-        });
+
+        self.js_compute_pipelines.insert(
+            id,
+            JsComputePipeline {
+                pipeline,
+                bind_group_layouts,
+                label: descriptor.label,
+            },
+        );
 
         Ok(id)
     }
 
-    fn js_compute_pipeline_get_bind_group_layout(&mut self, pipeline_id: u32, index: u32) -> Result<Value> {
-        if let Some(id) = self.js_compute_pipelines.get(&pipeline_id).unwrap().bind_group_layouts.get(&index) {
+    fn js_compute_pipeline_get_bind_group_layout(
+        &mut self,
+        pipeline_id: u32,
+        index: u32,
+    ) -> Result<Value> {
+        if let Some(id) = self
+            .js_compute_pipelines
+            .get(&pipeline_id)
+            .unwrap()
+            .bind_group_layouts
+            .get(&index)
+        {
             return Ok(serde_json::json!({ "handle": *id }));
         }
 
@@ -4031,66 +4056,108 @@ impl GpuState {
 
         let id = self.js_next_id;
         self.js_next_id += 1;
-        self.js_bind_group_layouts.insert(id, JsBindGroupLayout {
-            layout,
-        });
-        
-        self.js_compute_pipelines.get_mut(&pipeline_id).unwrap().bind_group_layouts.insert(index, id);
-        
+        self.js_bind_group_layouts
+            .insert(id, JsBindGroupLayout { layout });
+
+        self.js_compute_pipelines
+            .get_mut(&pipeline_id)
+            .unwrap()
+            .bind_group_layouts
+            .insert(index, id);
+
         Ok(serde_json::json!({ "handle": id }))
     }
 
-    fn js_command_encoder_begin_compute_pass(&mut self, encoder_id: u32, descriptor_json: &str) -> Result<u32> {
+    fn js_command_encoder_begin_compute_pass(
+        &mut self,
+        encoder_id: u32,
+        descriptor_json: &str,
+    ) -> Result<u32> {
         let label = if descriptor_json != "null" {
             let descriptor: Value = serde_json::from_str(descriptor_json)?;
-            descriptor.get("label").and_then(|v| v.as_str().map(|s| s.to_string()))
+            descriptor
+                .get("label")
+                .and_then(|v| v.as_str().map(|s| s.to_string()))
         } else {
             None
         };
-        
+
         let id = self.js_next_id;
         self.js_next_id += 1;
 
-        self.js_compute_passes.insert(id, JsComputePass {
-            encoder_id,
-            label,
-            commands: Vec::new(),
-        });
+        self.js_compute_passes.insert(
+            id,
+            JsComputePass {
+                encoder_id,
+                label,
+                commands: Vec::new(),
+            },
+        );
 
         Ok(id)
     }
 
-    fn js_compute_pass_encoder_set_pipeline(&mut self, pass_id: u32, pipeline_id: u32) -> Result<()> {
+    fn js_compute_pass_encoder_set_pipeline(
+        &mut self,
+        pass_id: u32,
+        pipeline_id: u32,
+    ) -> Result<()> {
         let pass = self.js_compute_passes.get_mut(&pass_id).unwrap();
-        pass.commands.push(ComputeCommand::SetPipeline { pipeline_id });
+        pass.commands
+            .push(ComputeCommand::SetPipeline { pipeline_id });
         Ok(())
     }
 
-    fn js_compute_pass_encoder_set_bind_group(&mut self, pass_id: u32, index: u32, bind_group_id: u32, dynamic_offsets: Vec<u32>) -> Result<()> {
+    fn js_compute_pass_encoder_set_bind_group(
+        &mut self,
+        pass_id: u32,
+        index: u32,
+        bind_group_id: u32,
+        dynamic_offsets: Vec<u32>,
+    ) -> Result<()> {
         let pass = self.js_compute_passes.get_mut(&pass_id).unwrap();
-        pass.commands.push(ComputeCommand::SetBindGroup { index, bind_group_id, dynamic_offsets });
+        pass.commands.push(ComputeCommand::SetBindGroup {
+            index,
+            bind_group_id,
+            dynamic_offsets,
+        });
         Ok(())
     }
 
-    fn js_compute_pass_encoder_dispatch_workgroups(&mut self, pass_id: u32, x: u32, y: u32, z: u32) -> Result<()> {
+    fn js_compute_pass_encoder_dispatch_workgroups(
+        &mut self,
+        pass_id: u32,
+        x: u32,
+        y: u32,
+        z: u32,
+    ) -> Result<()> {
         let pass = self.js_compute_passes.get_mut(&pass_id).unwrap();
-        pass.commands.push(ComputeCommand::DispatchWorkgroups { x, y, z });
+        pass.commands
+            .push(ComputeCommand::DispatchWorkgroups { x, y, z });
         Ok(())
     }
 
-    fn js_compute_pass_encoder_dispatch_workgroups_indirect(&mut self, pass_id: u32, buffer_id: u32, offset: u64) -> Result<()> {
+    fn js_compute_pass_encoder_dispatch_workgroups_indirect(
+        &mut self,
+        pass_id: u32,
+        buffer_id: u32,
+        offset: u64,
+    ) -> Result<()> {
         let pass = self.js_compute_passes.get_mut(&pass_id).unwrap();
-        pass.commands.push(ComputeCommand::DispatchWorkgroupsIndirect { buffer_id, offset });
+        pass.commands
+            .push(ComputeCommand::DispatchWorkgroupsIndirect { buffer_id, offset });
         Ok(())
     }
 
     fn js_compute_pass_encoder_end(&mut self, pass_id: u32) -> Result<()> {
         let pass = self.js_compute_passes.remove(&pass_id).unwrap();
         let encoder = self.js_command_encoders.get_mut(&pass.encoder_id).unwrap();
-        encoder.recorded_commands.push(RecordedEncoderCommand::ComputePass(RecordedComputePass {
-            label: pass.label,
-            commands: pass.commands,
-        }));
+        encoder
+            .recorded_commands
+            .push(RecordedEncoderCommand::ComputePass(RecordedComputePass {
+                label: pass.label,
+                commands: pass.commands,
+            }));
         Ok(())
     }
 
@@ -4423,7 +4490,7 @@ impl GpuState {
     }
 
     fn upload_geometry(&mut self, geometry: GeometryUpload) -> Result<()> {
-        if geometry.positions.len() % 3 != 0 {
+        if !geometry.positions.len().is_multiple_of(3) {
             bail!("position array length must be divisible by 3");
         }
         if geometry.normals.len() != geometry.positions.len() {
@@ -5156,16 +5223,19 @@ impl ApplicationHandler for App {
         ));
 
         let asset_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("assets");
-        let arg = std::env::args().nth(1).unwrap_or_default();
-        let (html_file, search) = if arg.ends_with(".html") {
-            (arg.clone(), String::new())
-        } else if arg.is_empty() {
-            ("index.html".to_string(), String::new())
+        let arg = std::env::args()
+            .nth(1)
+            .unwrap_or_else(|| "index.html".to_string());
+
+        let (filename, search) = if let Some(idx) = arg.find('?') {
+            let search = format!("?{}", &arg[idx + 1..]);
+            let filename = arg[..idx].to_string();
+            (filename, search)
         } else {
-            ("index.html".to_string(), format!("?{arg}"))
+            (arg, String::new())
         };
-        let js = JsEngine::new(asset_dir, &html_file, gpu.clone(), 1280, 720, &search)
-            .unwrap_or_else(|err| panic!("failed to initialize JS engine: {err:#}"));
+
+        let js = JsEngine::new(asset_dir, gpu.clone(), 1280, 720, &filename, &search).unwrap();
 
         self.start_time = Some(Instant::now());
         self.gpu = Some(gpu);
@@ -5182,6 +5252,23 @@ impl ApplicationHandler for App {
         };
 
         match event {
+            WindowEvent::CursorMoved { position, .. } => {
+                gpu.borrow_mut().mouse = (position.x as f32, position.y as f32);
+                let _ = js.dispatch_mouse_event("pointermove", position.x, position.y);
+            }
+            WindowEvent::MouseInput {
+                state,
+                button: winit::event::MouseButton::Left,
+                ..
+            } => {
+                let ev_type = if state == winit::event::ElementState::Pressed {
+                    "pointerdown"
+                } else {
+                    "pointerup"
+                };
+                let mouse = gpu.borrow().mouse;
+                let _ = js.dispatch_mouse_event(ev_type, mouse.0 as f64, mouse.1 as f64);
+            }
             WindowEvent::CloseRequested => event_loop.exit(),
             WindowEvent::Resized(size) => {
                 gpu.borrow_mut().resize(size);

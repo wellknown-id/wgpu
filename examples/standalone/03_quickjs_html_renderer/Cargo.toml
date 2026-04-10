@@ -18,3 +18,5 @@ wgpu = "29.0.0"
 winit = { version = "0.30.8", features = ["android-native-activity"] }
 html5ever = "0.38"
 markup5ever_rcdom = "0.38"
+taffy = "0.10.0"
+font8x8 = "0.3.1"
