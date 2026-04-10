@@ -87,14 +87,36 @@
 				renderer.setAnimationLoop( animate );
 				document.body.appendChild( renderer.domElement );
 
-				const infoInfo = document.createElement('div');
-				infoInfo.style.position = 'absolute';
-				infoInfo.style.width = '100%';
-				infoInfo.style.top = '10px';
-				infoInfo.style.color = [1.0, 1.0, 1.0, 1.0];
-				infoInfo.style.backgroundColor = [0.0, 0.0, 0.0, 0.5]; 
-				infoInfo.textContent = "three.js - instancing raycast (pure DOM in QuickJS via Taffy + WGPU!)";
-				document.body.appendChild(infoInfo);
+				const container = document.createElement('div');
+				container.style.position = 'absolute';
+				container.style.width = '100%';
+				container.style.height = '100%';
+				container.style.justifyContent = 'center';
+				container.style.alignItems = 'flex-start';
+				
+				const infoCard = document.createElement('div');
+				infoCard.style.marginTop = '20px';
+				infoCard.style.padding = '20px';
+				infoCard.style.backgroundColor = 'rgba(21, 23, 28, 0.85)';
+				infoCard.style.flexDirection = 'column';
+				infoCard.style.alignItems = 'center';
+				infoCard.style.width = '450px';
+
+				const title = document.createElement('div');
+				title.style.color = '#4da6ff';
+				title.style.marginBottom = '10px';
+				title.style.fontSize = '24px';
+				title.textContent = "Three.js + QuickJS Native Layout";
+				
+				const subtitle = document.createElement('div');
+				subtitle.style.color = '#b0b5c0';
+				subtitle.style.fontSize = '12px';
+				subtitle.textContent = "Hover over instanced spheres. UI layout powered by Taffy (Flexbox)";
+
+				infoCard.appendChild(title);
+				infoCard.appendChild(subtitle);
+				container.appendChild(infoCard);
+				document.body.appendChild(container);
 
 				controls = new OrbitControls( camera, renderer.domElement );
 				controls.enableDamping = true;

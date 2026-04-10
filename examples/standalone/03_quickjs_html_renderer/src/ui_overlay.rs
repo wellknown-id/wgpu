@@ -56,6 +56,7 @@ pub struct UiNode {
     pub text: String,
     pub bg_color: [f32; 4],
     pub text_color: [f32; 4],
+    pub font_size: f32,
 }
 
 pub struct UiOverlay {
@@ -314,6 +315,7 @@ impl UiOverlay {
             text: String::new(),
             bg_color: [0.0, 0.0, 0.0, 0.0],
             text_color: [0.0, 0.0, 0.0, 0.0],
+            font_size: 16.0,
         });
 
         Self {
@@ -337,6 +339,7 @@ impl UiOverlay {
             text: String::new(),
             bg_color: [0.0, 0.0, 0.0, 0.0], // transparent by default
             text_color: [1.0, 1.0, 1.0, 1.0], // white text by default
+            font_size: 16.0,
         });
         id
     }
@@ -353,11 +356,12 @@ impl UiOverlay {
         }
     }
 
-    pub fn update_style(&mut self, id: u32, style: Style, bg_color: [f32; 4], text_color: [f32; 4]) {
+    pub fn update_style(&mut self, id: u32, style: Style, bg_color: [f32; 4], text_color: [f32; 4], font_size: f32) {
         if let Some(node) = self.nodes.get_mut(&id) {
             let _ = self.taffy.set_style(node.taffy_id, style);
             node.bg_color = bg_color;
             node.text_color = text_color;
+            node.font_size = font_size;
         }
     }
 
@@ -402,17 +406,19 @@ impl UiOverlay {
                     }
 
                     if !node.text.is_empty() {
-                        let mut cursor_x = l.location.x + 10.0;
-                        let cursor_y = l.location.y + 10.0;
+                        let fs = node.font_size;
+                        // Center vertically roughly
+                        let mut cursor_x = l.location.x + (l.size.width - (node.text.len() as f32 * fs)) / 2.0; 
+                        let cursor_y = l.location.y + (l.size.height - fs) / 2.0;
                         for c in node.text.chars() {
                             instances.push(UiInstance {
-                                rect: [cursor_x, cursor_y, 8.0, 8.0],
+                                rect: [cursor_x, cursor_y, fs, fs],
                                 color: node.text_color,
                                 glyph_index: c as i32,
                                 has_texture: 1,
                                 _pad: [0; 2],
                             });
-                            cursor_x += 8.0;
+                            cursor_x += fs;
                         }
                     }
                 }

@@ -1652,7 +1652,19 @@ export function installWebGPURuntime() {
         __uiId: uiId,
         style: new Proxy({}, {
            set(obj, prop, value) {
-               obj[prop] = value;
+               if (prop === 'padding') {
+                   obj['paddingTop'] = value;
+                   obj['paddingBottom'] = value;
+                   obj['paddingLeft'] = value;
+                   obj['paddingRight'] = value;
+               } else if (prop === 'margin') {
+                   obj['marginTop'] = value;
+                   obj['marginBottom'] = value;
+                   obj['marginLeft'] = value;
+                   obj['marginRight'] = value;
+               } else {
+                   obj[prop] = value;
+               }
                if (uiId !== undefined) __hostGpuUiUpdateStyle(uiId, obj);
                return true;
            }

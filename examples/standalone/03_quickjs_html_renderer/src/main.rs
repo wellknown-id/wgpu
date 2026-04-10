@@ -1573,10 +1573,70 @@ fn install_host_api(
                     }
                 };
 
+                let get_length_percentage_auto = |name: &str| -> taffy::prelude::LengthPercentageAuto {
+                    if let Ok(v) = style.get::<&str, f32>(name) {
+                        taffy::prelude::LengthPercentageAuto::length(v)
+                    } else if let Ok(s) = style.get::<&str, std::string::String>(name) {
+                        if s.ends_with('%') {
+                            s.trim_end_matches('%').parse::<f32>().ok().map(|p| taffy::prelude::LengthPercentageAuto::percent(p / 100.0)).unwrap_or(taffy::prelude::LengthPercentageAuto::auto())
+                        } else if s.ends_with("px") {
+                            s.trim_end_matches("px").parse::<f32>().ok().map(|v| taffy::prelude::LengthPercentageAuto::length(v)).unwrap_or(taffy::prelude::LengthPercentageAuto::auto())
+                        } else {
+                            taffy::prelude::LengthPercentageAuto::auto()
+                        }
+                    } else {
+                        taffy::prelude::LengthPercentageAuto::auto()
+                    }
+                };
+
+                let get_length_percentage = |name: &str| -> taffy::prelude::LengthPercentage {
+                    if let Ok(v) = style.get::<&str, f32>(name) {
+                        taffy::prelude::LengthPercentage::length(v)
+                    } else if let Ok(s) = style.get::<&str, std::string::String>(name) {
+                        if s.ends_with('%') {
+                            s.trim_end_matches('%').parse::<f32>().ok().map(|p| taffy::prelude::LengthPercentage::percent(p / 100.0)).unwrap_or(taffy::prelude::LengthPercentage::length(0.0))
+                        } else if s.ends_with("px") {
+                            s.trim_end_matches("px").parse::<f32>().ok().map(|v| taffy::prelude::LengthPercentage::length(v)).unwrap_or(taffy::prelude::LengthPercentage::length(0.0))
+                        } else {
+                            taffy::prelude::LengthPercentage::length(0.0)
+                        }
+                    } else {
+                        taffy::prelude::LengthPercentage::length(0.0)
+                    }
+                };
+
+                let padding = taffy::prelude::Rect {
+                    left: get_length_percentage("paddingLeft"),
+                    right: get_length_percentage("paddingRight"),
+                    top: get_length_percentage("paddingTop"),
+                    bottom: get_length_percentage("paddingBottom"),
+                };
+                let margin = taffy::prelude::Rect {
+                    left: get_length_percentage_auto("marginLeft"),
+                    right: get_length_percentage_auto("marginRight"),
+                    top: get_length_percentage_auto("marginTop"),
+                    bottom: get_length_percentage_auto("marginBottom"),
+                };
+
                 let flex_direction = if style.get::<&str, std::string::String>("flexDirection").unwrap_or_default() == "column" {
                     taffy::prelude::FlexDirection::Column
                 } else {
                     taffy::prelude::FlexDirection::Row
+                };
+
+                let align_items = match style.get::<&str, std::string::String>("alignItems").unwrap_or_default().as_str() {
+                    "center" => Some(taffy::prelude::AlignItems::Center),
+                    "flex-start" => Some(taffy::prelude::AlignItems::FlexStart),
+                    "flex-end" => Some(taffy::prelude::AlignItems::FlexEnd),
+                    _ => None,
+                };
+                
+                let justify_content = match style.get::<&str, std::string::String>("justifyContent").unwrap_or_default().as_str() {
+                    "center" => Some(taffy::prelude::JustifyContent::Center),
+                    "space-between" => Some(taffy::prelude::JustifyContent::SpaceBetween),
+                    "flex-start" => Some(taffy::prelude::JustifyContent::FlexStart),
+                    "flex-end" => Some(taffy::prelude::JustifyContent::FlexEnd),
+                    _ => None,
                 };
 
                 let t_style = taffy::prelude::Style {
@@ -1586,19 +1646,58 @@ fn install_host_api(
                         width: get_dimension("width"),
                         height: get_dimension("height"),
                     },
+                    padding,
+                    margin,
                     display: taffy::prelude::Display::Flex,
                     flex_direction,
+                    align_items,
+                    justify_content,
                     ..Default::default()
                 };
 
-                // color
-                let bg: Vec<f32> = style.get::<&str, Vec<f32>>("backgroundColor").unwrap_or_else(|_| vec![0.0, 0.0, 0.0, 0.0]);
-                let fg: Vec<f32> = style.get::<&str, Vec<f32>>("color").unwrap_or_else(|_| vec![1.0, 1.0, 1.0, 1.0]);
+                let parse_color = |name: &str, default: [f32; 4]| -> [f32; 4] {
+                    if let Ok(arr) = style.get::<&str, Vec<f32>>(name) {
+                        return [
+                            arr.get(0).copied().unwrap_or(default[0]),
+                            arr.get(1).copied().unwrap_or(default[1]),
+                            arr.get(2).copied().unwrap_or(default[2]),
+                            arr.get(3).copied().unwrap_or(default[3]),
+                        ];
+                    }
+                    if let Ok(string) = style.get::<&str, std::string::String>(name) {
+                        if string.starts_with("rgba(") {
+                            let parts: Vec<&str> = string.trim_start_matches("rgba(").trim_end_matches(')').split(',').collect();
+                            if parts.len() == 4 {
+                                return [
+                                    parts[0].trim().parse::<f32>().unwrap_or(0.0) / 255.0,
+                                    parts[1].trim().parse::<f32>().unwrap_or(0.0) / 255.0,
+                                    parts[2].trim().parse::<f32>().unwrap_or(0.0) / 255.0,
+                                    parts[3].trim().parse::<f32>().unwrap_or(1.0),
+                                ];
+                            }
+                        } else if string.starts_with('#') && string.len() >= 7 {
+                            let r = u8::from_str_radix(&string[1..3], 16).unwrap_or(0) as f32 / 255.0;
+                            let g = u8::from_str_radix(&string[3..5], 16).unwrap_or(0) as f32 / 255.0;
+                            let b = u8::from_str_radix(&string[5..7], 16).unwrap_or(0) as f32 / 255.0;
+                            let a = if string.len() == 9 { u8::from_str_radix(&string[7..9], 16).unwrap_or(255) as f32 / 255.0 } else { 1.0 };
+                            return [r, g, b, a];
+                        }
+                    }
+                    default
+                };
+                
+                let bg_color = parse_color("backgroundColor", [0.0, 0.0, 0.0, 0.0]);
+                let fg_color = parse_color("color", [1.0, 1.0, 1.0, 1.0]);
 
-                let bg_color = [bg.get(0).copied().unwrap_or(0.0), bg.get(1).copied().unwrap_or(0.0), bg.get(2).copied().unwrap_or(0.0), bg.get(3).copied().unwrap_or(0.0)];
-                let fg_color = [fg.get(0).copied().unwrap_or(1.0), fg.get(1).copied().unwrap_or(1.0), fg.get(2).copied().unwrap_or(1.0), fg.get(3).copied().unwrap_or(1.0)];
+                let font_size = if let Ok(s) = style.get::<&str, std::string::String>("fontSize") {
+                    s.trim_end_matches("px").trim().parse::<f32>().unwrap_or(16.0)
+                } else if let Ok(v) = style.get::<&str, f32>("fontSize") {
+                    v
+                } else {
+                    16.0
+                };
 
-                ui.update_style(id, t_style, bg_color, fg_color);
+                ui.update_style(id, t_style, bg_color, fg_color, font_size);
             }
             Ok(())
         })?,
