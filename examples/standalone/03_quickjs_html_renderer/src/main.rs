@@ -2612,7 +2612,7 @@ impl GpuState {
                     .is_some_and(|texture| matches!(texture, JsTextureResource::Surface(_)))
             });
 
-            let draw_count = pass
+            let _draw_count = pass
                 .commands
                 .iter()
                 .filter(|command| {
@@ -2624,7 +2624,7 @@ impl GpuState {
                 .count();
 
             if has_surface_target {
-                let command_kinds = pass
+                let _command_kinds = pass
                     .commands
                     .iter()
                     .map(|command| match command {
@@ -2640,7 +2640,7 @@ impl GpuState {
                         RenderCommand::DrawIndexed { .. } => "drawIndexed",
                     })
                     .collect::<Vec<_>>();
-                let bind_group_details = pass
+                let _bind_group_details = pass
                     .commands
                     .iter()
                     .filter_map(|command| match command {
@@ -2658,7 +2658,7 @@ impl GpuState {
                         _ => None,
                     })
                     .collect::<Vec<_>>();
-                let uniform_previews = pass
+                let _uniform_previews = pass
                     .commands
                     .iter()
                     .filter_map(|command| match command {
@@ -2699,44 +2699,14 @@ impl GpuState {
                     })
                     .flatten()
                     .collect::<Vec<_>>();
-                eprintln!(
-                    "surface attachment ops: draws={} commands={:?} bindGroups={:?} uniforms={:?} color load={:?} store={:?} clear={:?} depth load={:?} store={:?} clear={:?}",
-                    draw_count,
-                    command_kinds,
-                    bind_group_details,
-                    uniform_previews,
-                    pass.descriptor
-                        .color_attachments
-                        .first()
-                        .and_then(|attachment| attachment.load_op.as_deref()),
-                    pass.descriptor
-                        .color_attachments
-                        .first()
-                        .and_then(|attachment| attachment.store_op.as_deref()),
-                    pass.descriptor
-                        .color_attachments
-                        .first()
-                        .and_then(|attachment| attachment.clear_value.as_ref()),
-                    pass.descriptor
-                        .depth_stencil_attachment
-                        .as_ref()
-                        .and_then(|attachment| attachment.depth_load_op.as_deref()),
-                    pass.descriptor
-                        .depth_stencil_attachment
-                        .as_ref()
-                        .and_then(|attachment| attachment.depth_store_op.as_deref()),
-                    pass.descriptor
-                        .depth_stencil_attachment
-                        .as_ref()
-                        .and_then(|attachment| attachment.depth_clear_value)
-                );
+
             } else if pass.descriptor.color_attachments.iter().any(|attachment| {
                 self.js_texture_view_owners
                     .get(&attachment.view_id)
                     .and_then(|owner| self.js_textures.get(owner))
                     .is_some_and(|texture| matches!(texture, JsTextureResource::Owned(_)))
             }) {
-                let command_kinds = pass
+                let _command_kinds = pass
                     .commands
                     .iter()
                     .map(|command| match command {
@@ -2752,7 +2722,7 @@ impl GpuState {
                         RenderCommand::DrawIndexed { .. } => "drawIndexed",
                     })
                     .collect::<Vec<_>>();
-                let draw_details = pass
+                let _draw_details = pass
                     .commands
                     .iter()
                     .filter_map(|command| match command {
@@ -2776,36 +2746,7 @@ impl GpuState {
                         _ => None,
                     })
                     .collect::<Vec<_>>();
-                eprintln!(
-                    "offscreen attachment ops: draws={} commands={:?} details={:?} color load={:?} store={:?} clear={:?} depth load={:?} store={:?} clear={:?}",
-                    draw_count,
-                    command_kinds,
-                    draw_details,
-                    pass.descriptor
-                        .color_attachments
-                        .first()
-                        .and_then(|attachment| attachment.load_op.as_deref()),
-                    pass.descriptor
-                        .color_attachments
-                        .first()
-                        .and_then(|attachment| attachment.store_op.as_deref()),
-                    pass.descriptor
-                        .color_attachments
-                        .first()
-                        .and_then(|attachment| attachment.clear_value.as_ref()),
-                    pass.descriptor
-                        .depth_stencil_attachment
-                        .as_ref()
-                        .and_then(|attachment| attachment.depth_load_op.as_deref()),
-                    pass.descriptor
-                        .depth_stencil_attachment
-                        .as_ref()
-                        .and_then(|attachment| attachment.depth_store_op.as_deref()),
-                    pass.descriptor
-                        .depth_stencil_attachment
-                        .as_ref()
-                        .and_then(|attachment| attachment.depth_clear_value)
-                );
+
             }
         }
 
