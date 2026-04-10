@@ -228,7 +228,8 @@ impl JsEngine {
                         }
                     }
                 });
-                return Err(anyhow!("QuickJS tick failed: {e}"));
+                // DO NOT return Err! A tick error (like an Outdated surface) should just drop the JS frame,
+                // allowing the engine to retry on the next winit OS event loop RedrawRequested!
             }
         }
 
@@ -256,7 +257,7 @@ impl JsEngine {
                     }
                 }
             });
-            return Err(anyhow!("QuickJS resize failed: {e}"));
+            // DO NOT abort on resize exception!
         }
 
         self.drain_jobs()?;
@@ -275,7 +276,7 @@ impl JsEngine {
                         }
                     }
                 });
-                return Err(anyhow!("QuickJS pending job failed: {err}"));
+                // DO NOT abort!
             }
         }
 
