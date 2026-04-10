@@ -62,7 +62,9 @@ const GPUFeatureName = Object.freeze({
 const WEBGPU_RUNTIME_VERBOSE = false;
 
 function trace(message) {
-  __hostWarn(`[webgpu-runtime] ${message}`);
+  if (WEBGPU_RUNTIME_VERBOSE) {
+      __hostWarn(`[webgpu-runtime] ${message}`);
+  }
 }
 
 function traceVerbose(message) {
@@ -354,7 +356,6 @@ class GPUTexture {
       JSON.stringify(descriptor),
     );
     traceVerbose(`texture.createView from_tex=${this.__handle} new_view=${handle} desc=${JSON.stringify(descriptor)}`);
-    console.warn(`[JS] texture.createView from_tex=${this.__handle} new_view=${handle} desc=${JSON.stringify(descriptor)}`);
     const view = new GPUTextureView(handle);
     view.dimension = descriptor.dimension ?? this.textureBindingViewDimension;
     return view;
