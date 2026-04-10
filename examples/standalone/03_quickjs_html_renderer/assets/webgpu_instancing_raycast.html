@@ -116,7 +116,7 @@
 				mouse.y = - ( event.clientY / globalThis.innerHeight ) * 2 + 1;
 			}
 
-			async function animate() {
+			function animate() {
 
 				controls.update();
 
@@ -139,7 +139,7 @@
 
 				}
 
-				await renderer.renderAsync( scene, camera );
+				renderer.render( scene, camera );
 
 			}
 
