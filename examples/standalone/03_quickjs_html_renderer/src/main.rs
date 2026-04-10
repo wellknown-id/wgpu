@@ -1480,6 +1480,101 @@ fn install_host_api(
         })?,
     )?;
 
+    let ui_gpu = gpu.clone();
+    globals.set(
+        "__hostGpuUiCreateNode",
+        Function::new(ctx.clone(), move || -> JsResult<u32> {
+            if let Some(ui) = ui_gpu.borrow_mut().ui.as_mut() {
+                Ok(ui.create_node())
+            } else {
+                Ok(0)
+            }
+        })?,
+    )?;
+
+    let ui_gpu = gpu.clone();
+    globals.set(
+        "__hostGpuUiAppendChild",
+        Function::new(ctx.clone(), move |parent: u32, child: u32| -> JsResult<()> {
+            if let Some(ui) = ui_gpu.borrow_mut().ui.as_mut() {
+                ui.append_child(parent, child);
+            }
+            Ok(())
+        })?,
+    )?;
+
+    let ui_gpu = gpu.clone();
+    globals.set(
+        "__hostGpuUiSetText",
+        Function::new(ctx.clone(), move |id: u32, text: std::string::String| -> JsResult<()> {
+            if let Some(ui) = ui_gpu.borrow_mut().ui.as_mut() {
+                ui.set_text(id, text);
+            }
+            Ok(())
+        })?,
+    )?;
+
+    let ui_gpu = gpu.clone();
+    globals.set(
+        "__hostGpuUiUpdateStyle",
+        Function::new(ctx.clone(), move |id: u32, style: Object<'_>| -> JsResult<()> {
+            if let Some(ui) = ui_gpu.borrow_mut().ui.as_mut() {
+                let position = if style.get::<&str, std::string::String>("position").unwrap_or_default() == "absolute" {
+                    taffy::prelude::Position::Absolute
+                } else {
+                    taffy::prelude::Position::Relative
+                };
+                
+                let top = style.get::<&str, f32>("top").ok().map(|v| taffy::prelude::length(v)).unwrap_or(taffy::prelude::auto());
+                let left = style.get::<&str, f32>("left").ok().map(|v| taffy::prelude::length(v)).unwrap_or(taffy::prelude::auto());
+
+                let get_dimension = |name: &str| -> taffy::prelude::Dimension {
+                    if let Ok(v) = style.get::<&str, f32>(name) {
+                        taffy::prelude::Dimension::length(v)
+                    } else if let Ok(s) = style.get::<&str, std::string::String>(name) {
+                        if s.ends_with('%') {
+                            s.trim_end_matches('%').parse::<f32>().ok().map(|p| taffy::prelude::Dimension::percent(p / 100.0)).unwrap_or(taffy::prelude::Dimension::auto())
+                        } else if s.ends_with("px") {
+                            s.trim_end_matches("px").parse::<f32>().ok().map(|v| taffy::prelude::Dimension::length(v)).unwrap_or(taffy::prelude::Dimension::auto())
+                        } else {
+                            taffy::prelude::Dimension::auto()
+                        }
+                    } else {
+                        taffy::prelude::Dimension::auto()
+                    }
+                };
+
+                let flex_direction = if style.get::<&str, std::string::String>("flexDirection").unwrap_or_default() == "column" {
+                    taffy::prelude::FlexDirection::Column
+                } else {
+                    taffy::prelude::FlexDirection::Row
+                };
+
+                let t_style = taffy::prelude::Style {
+                    position,
+                    inset: taffy::prelude::Rect { top, left, right: taffy::prelude::auto(), bottom: taffy::prelude::auto() },
+                    size: taffy::prelude::Size {
+                        width: get_dimension("width"),
+                        height: get_dimension("height"),
+                    },
+                    display: taffy::prelude::Display::Flex,
+                    flex_direction,
+                    ..Default::default()
+                };
+
+                // color
+                let bg: Vec<f32> = style.get::<&str, Vec<f32>>("backgroundColor").unwrap_or_else(|_| vec![0.0, 0.0, 0.0, 0.0]);
+                let fg: Vec<f32> = style.get::<&str, Vec<f32>>("color").unwrap_or_else(|_| vec![1.0, 1.0, 1.0, 1.0]);
+
+                let bg_color = [bg.get(0).copied().unwrap_or(0.0), bg.get(1).copied().unwrap_or(0.0), bg.get(2).copied().unwrap_or(0.0), bg.get(3).copied().unwrap_or(0.0)];
+                let fg_color = [fg.get(0).copied().unwrap_or(1.0), fg.get(1).copied().unwrap_or(1.0), fg.get(2).copied().unwrap_or(1.0), fg.get(3).copied().unwrap_or(1.0)];
+
+                ui.update_style(id, t_style, bg_color, fg_color);
+            }
+            Ok(())
+        })?,
+    )?;
+
     let search = serde_json::to_string(search)
         .map_err(|err| rquickjs::Error::new_into_js_message("rust", "string", err.to_string()))?;
 

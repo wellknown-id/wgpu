@@ -1,6 +1,7 @@
 use bytemuck::{Pod, Zeroable};
 use font8x8::UnicodeFonts;
 use taffy::prelude::*;
+use std::collections::HashMap;
 use wgpu::util::DeviceExt;
 
 #[repr(C)]
@@ -50,12 +51,22 @@ impl UiInstance {
     }
 }
 
+pub struct UiNode {
+    pub taffy_id: NodeId,
+    pub text: String,
+    pub bg_color: [f32; 4],
+    pub text_color: [f32; 4],
+}
+
 pub struct UiOverlay {
     pub pipeline: wgpu::RenderPipeline,
     pub vertex_buffer: wgpu::Buffer,
     pub bind_group: wgpu::BindGroup,
     pub screen_buffer: wgpu::Buffer,
     pub taffy: TaffyTree,
+    pub nodes: HashMap<u32, UiNode>,
+    pub root_node: u32,
+    pub next_node_id: u32,
 }
 
 impl UiOverlay {
@@ -290,12 +301,63 @@ impl UiOverlay {
             usage: wgpu::BufferUsages::VERTEX,
         });
 
+        let mut taffy = TaffyTree::new();
+        let root_style = Style {
+            position: Position::Absolute,
+            size: Size { width: length(100.0), height: length(100.0) }, // replaced on compute_layout
+            ..Default::default()
+        };
+        let root_taffy = taffy.new_leaf(root_style).unwrap();
+        let mut nodes = HashMap::new();
+        nodes.insert(0, UiNode {
+            taffy_id: root_taffy,
+            text: String::new(),
+            bg_color: [0.0, 0.0, 0.0, 0.0],
+            text_color: [0.0, 0.0, 0.0, 0.0],
+        });
+
         Self {
             pipeline,
             vertex_buffer,
             bind_group,
             screen_buffer,
-            taffy: TaffyTree::new(),
+            taffy,
+            nodes,
+            root_node: 0,
+            next_node_id: 1,
+        }
+    }
+
+    pub fn create_node(&mut self) -> u32 {
+        let id = self.next_node_id;
+        self.next_node_id += 1;
+        let taffy_id = self.taffy.new_leaf(Style::default()).unwrap();
+        self.nodes.insert(id, UiNode {
+            taffy_id,
+            text: String::new(),
+            bg_color: [0.0, 0.0, 0.0, 0.0], // transparent by default
+            text_color: [1.0, 1.0, 1.0, 1.0], // white text by default
+        });
+        id
+    }
+
+    pub fn append_child(&mut self, parent: u32, child: u32) {
+        if let (Some(p), Some(c)) = (self.nodes.get(&parent), self.nodes.get(&child)) {
+            let _ = self.taffy.add_child(p.taffy_id, c.taffy_id);
+        }
+    }
+
+    pub fn set_text(&mut self, id: u32, text: String) {
+        if let Some(node) = self.nodes.get_mut(&id) {
+            node.text = text;
+        }
+    }
+
+    pub fn update_style(&mut self, id: u32, style: Style, bg_color: [f32; 4], text_color: [f32; 4]) {
+        if let Some(node) = self.nodes.get_mut(&id) {
+            let _ = self.taffy.set_style(node.taffy_id, style);
+            node.bg_color = bg_color;
+            node.text_color = text_color;
         }
     }
 
@@ -315,76 +377,50 @@ impl UiOverlay {
         );
 
         let mut instances = Vec::new();
-        self.taffy.clear();
-
-        // 1. Build test taffy layout mimicking <div id="info"> with some text
-        let title_style = Style {
-            position: Position::Absolute,
-            size: Size {
-                width: length(250.0),
-                height: length(60.0),
-            },
-            display: Display::Flex,
-            flex_direction: FlexDirection::Column,
-            justify_content: Some(JustifyContent::Center),
-            align_items: Some(AlignItems::Center),
-            ..Default::default()
-        };
-        let wrapper = self.taffy.new_leaf(title_style).unwrap();
-
-        self.taffy
-            .compute_layout(
-                wrapper,
+        if let Some(root) = self.nodes.get(&self.root_node) {
+            let _ = self.taffy.compute_layout(
+                root.taffy_id,
                 Size {
                     width: AvailableSpace::Definite(width),
                     height: AvailableSpace::Definite(height),
                 },
-            )
-            .unwrap();
+            );
 
-        let l = self.taffy.layout(wrapper).unwrap();
+            for (_, node) in &self.nodes {
+                if let Ok(l) = self.taffy.layout(node.taffy_id) {
+                    // Skip root node visually, and skip nodes with neither text nor bg
+                    if node.taffy_id == root.taffy_id { continue; }
 
-        // Hover state
-        let hovered = mouse.0 >= l.location.x
-            && mouse.0 <= l.location.x + l.size.width
-            && mouse.1 >= l.location.y
-            && mouse.1 <= l.location.y + l.size.height;
+                    if node.bg_color[3] > 0.0 {
+                        instances.push(UiInstance {
+                            rect: [l.location.x, l.location.y, l.size.width, l.size.height],
+                            color: node.bg_color,
+                            glyph_index: -1,
+                            has_texture: 0,
+                            _pad: [0; 2],
+                        });
+                    }
 
-        let bg_color = if hovered {
-            [0.0, 0.2, 0.6, 0.8]
-        } else {
-            [0.0, 0.0, 0.0, 0.6]
-        };
+                    if !node.text.is_empty() {
+                        let mut cursor_x = l.location.x + 10.0;
+                        let cursor_y = l.location.y + 10.0;
+                        for c in node.text.chars() {
+                            instances.push(UiInstance {
+                                rect: [cursor_x, cursor_y, 8.0, 8.0],
+                                color: node.text_color,
+                                glyph_index: c as i32,
+                                has_texture: 1,
+                                _pad: [0; 2],
+                            });
+                            cursor_x += 8.0;
+                        }
+                    }
+                }
+            }
+        }
 
-        // Background box
-        instances.push(UiInstance {
-            rect: [l.location.x, l.location.y, l.size.width, l.size.height],
-            color: bg_color,
-            glyph_index: -1,
-            has_texture: 0,
-            _pad: [0; 2],
-        });
-
-        // Text string
-        let text = "three.js Instancing";
-        let text_color = if hovered {
-            [1.0, 1.0, 0.0, 1.0]
-        } else {
-            [1.0, 1.0, 1.0, 1.0]
-        };
-        for (i, c) in text.chars().enumerate() {
-            instances.push(UiInstance {
-                rect: [
-                    l.location.x + 10.0 + (i as f32 * 8.0),
-                    l.location.y + 20.0,
-                    8.0,
-                    8.0,
-                ],
-                color: text_color,
-                glyph_index: c as i32,
-                has_texture: 1,
-                _pad: [0; 2],
-            });
+        if instances.is_empty() {
+            return;
         }
 
         let instance_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {

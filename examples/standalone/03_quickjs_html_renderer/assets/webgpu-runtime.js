@@ -1611,9 +1611,16 @@ export function installWebGPURuntime() {
   globalThis.HTMLVideoElement = HTMLVideoElement;
 
   const documentTarget = createEventTarget();
+  const bodyUiId = 0; // root node in Rust is 0
   const body = {
     ...createEventTarget(documentTarget),
-    appendChild(child) { return child; },
+    __uiId: bodyUiId,
+    appendChild(child) {
+        if (child && child.__uiId !== undefined) {
+             __hostGpuUiAppendChild(bodyUiId, child.__uiId);
+        }
+        return child; 
+    },
     removeChild(child) { return child; },
     style: {},
   };
@@ -1628,22 +1635,80 @@ export function installWebGPURuntime() {
       if (tag === 'video') {
         return new HTMLVideoElement();
       }
-      return {
+      
+      const isUi = tag === 'div' || tag === 'span' || tag === 'p' || tag === 'button' || tag === 'a' || tag === 'br';
+      let uiId = undefined;
+      if (isUi && typeof __hostGpuUiCreateNode !== 'undefined') {
+          uiId = __hostGpuUiCreateNode();
+          if (tag === 'br') {
+              // rough baseline for br natively
+              __hostGpuUiUpdateStyle(uiId, { width: '100%', height: '10px' });
+          }
+      }
+
+      const el = {
         ...createEventTarget(documentTarget),
         tagName: tag.toUpperCase(),
-        style: {},
-        appendChild(child) { return child; },
+        __uiId: uiId,
+        style: new Proxy({}, {
+           set(obj, prop, value) {
+               obj[prop] = value;
+               if (uiId !== undefined) __hostGpuUiUpdateStyle(uiId, obj);
+               return true;
+           }
+        }),
+        appendChild(child) {
+           if (uiId !== undefined && child && child.__uiId !== undefined) {
+               if (child.tagName === 'A' || child.tagName === 'SPAN') {
+                   // mock inline layout since we only have flex
+                   __hostGpuUiUpdateStyle(uiId, { flexDirection: 'row' });
+               }
+               __hostGpuUiAppendChild(uiId, child.__uiId);
+           }
+           if (child && child.textContent && uiId !== undefined) {
+               if (tag === 'a') {
+                   __hostGpuUiUpdateStyle(uiId, { color: [0.3, 0.5, 1.0, 1.0] });
+               }
+           }
+           return child;
+        },
         removeChild(child) { return child; },
         setAttribute() {},
         getAttribute() { return null; },
       };
+
+      let textContentStr = "";
+      Object.defineProperty(el, 'textContent', {
+          get() { return textContentStr; },
+          set(v) {
+              textContentStr = String(v);
+              if (uiId !== undefined) __hostGpuUiSetText(uiId, textContentStr);
+          }
+      });
+      Object.defineProperty(el, 'innerHTML', {
+          get() { return textContentStr; },
+          set(v) {
+              textContentStr = String(v);
+              // Simple innerHTML intercept to textContent for the demo
+              if (uiId !== undefined) {
+                 const cleaned = textContentStr.replace(/<[^>]*>?/gm, ''); // strip html
+                 __hostGpuUiSetText(uiId, cleaned);
+              }
+          }
+      });
+      return el;
     },
     createElementNS(_ns, tag) {
       return globalThis.document.createElement(tag);
     },
     createTextNode(text) {
-      return { textContent: text };
+      const el = globalThis.document.createElement('span');
+      el.textContent = text;
+      return el;
     },
+    getElementById(id) {
+        return null;
+    }
   };
 }
 

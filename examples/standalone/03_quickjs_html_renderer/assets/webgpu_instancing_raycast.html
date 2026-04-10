@@ -87,6 +87,15 @@
 				renderer.setAnimationLoop( animate );
 				document.body.appendChild( renderer.domElement );
 
+				const infoInfo = document.createElement('div');
+				infoInfo.style.position = 'absolute';
+				infoInfo.style.width = '100%';
+				infoInfo.style.top = '10px';
+				infoInfo.style.color = [1.0, 1.0, 1.0, 1.0];
+				infoInfo.style.backgroundColor = [0.0, 0.0, 0.0, 0.5]; 
+				infoInfo.textContent = "three.js - instancing raycast (pure DOM in QuickJS via Taffy + WGPU!)";
+				document.body.appendChild(infoInfo);
+
 				controls = new OrbitControls( camera, renderer.domElement );
 				controls.enableDamping = true;
 				controls.enableZoom = false;
