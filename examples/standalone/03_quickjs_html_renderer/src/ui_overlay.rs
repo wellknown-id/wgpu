@@ -1,7 +1,7 @@
 use bytemuck::{Pod, Zeroable};
 use font8x8::UnicodeFonts;
-use taffy::prelude::*;
 use std::collections::HashMap;
+use taffy::prelude::*;
 use wgpu::util::DeviceExt;
 
 #[repr(C)]
@@ -305,18 +305,24 @@ impl UiOverlay {
         let mut taffy = TaffyTree::new();
         let root_style = Style {
             position: Position::Absolute,
-            size: Size { width: length(100.0), height: length(100.0) }, // replaced on compute_layout
+            size: Size {
+                width: length(100.0),
+                height: length(100.0),
+            }, // replaced on compute_layout
             ..Default::default()
         };
         let root_taffy = taffy.new_leaf(root_style).unwrap();
         let mut nodes = HashMap::new();
-        nodes.insert(0, UiNode {
-            taffy_id: root_taffy,
-            text: String::new(),
-            bg_color: [0.0, 0.0, 0.0, 0.0],
-            text_color: [0.0, 0.0, 0.0, 0.0],
-            font_size: 16.0,
-        });
+        nodes.insert(
+            0,
+            UiNode {
+                taffy_id: root_taffy,
+                text: String::new(),
+                bg_color: [0.0, 0.0, 0.0, 0.0],
+                text_color: [0.0, 0.0, 0.0, 0.0],
+                font_size: 16.0,
+            },
+        );
 
         Self {
             pipeline,
@@ -334,13 +340,16 @@ impl UiOverlay {
         let id = self.next_node_id;
         self.next_node_id += 1;
         let taffy_id = self.taffy.new_leaf(Style::default()).unwrap();
-        self.nodes.insert(id, UiNode {
-            taffy_id,
-            text: String::new(),
-            bg_color: [0.0, 0.0, 0.0, 0.0], // transparent by default
-            text_color: [1.0, 1.0, 1.0, 1.0], // white text by default
-            font_size: 16.0,
-        });
+        self.nodes.insert(
+            id,
+            UiNode {
+                taffy_id,
+                text: String::new(),
+                bg_color: [0.0, 0.0, 0.0, 0.0], // transparent by default
+                text_color: [1.0, 1.0, 1.0, 1.0], // white text by default
+                font_size: 16.0,
+            },
+        );
         id
     }
 
@@ -356,7 +365,14 @@ impl UiOverlay {
         }
     }
 
-    pub fn update_style(&mut self, id: u32, style: Style, bg_color: [f32; 4], text_color: [f32; 4], font_size: f32) {
+    pub fn update_style(
+        &mut self,
+        id: u32,
+        style: Style,
+        bg_color: [f32; 4],
+        text_color: [f32; 4],
+        font_size: f32,
+    ) {
         if let Some(node) = self.nodes.get_mut(&id) {
             let _ = self.taffy.set_style(node.taffy_id, style);
             node.bg_color = bg_color;
@@ -393,7 +409,9 @@ impl UiOverlay {
             for (_, node) in &self.nodes {
                 if let Ok(l) = self.taffy.layout(node.taffy_id) {
                     // Skip root node visually, and skip nodes with neither text nor bg
-                    if node.taffy_id == root.taffy_id { continue; }
+                    if node.taffy_id == root.taffy_id {
+                        continue;
+                    }
 
                     if node.bg_color[3] > 0.0 {
                         instances.push(UiInstance {
@@ -408,7 +426,8 @@ impl UiOverlay {
                     if !node.text.is_empty() {
                         let fs = node.font_size;
                         // Center vertically roughly
-                        let mut cursor_x = l.location.x + (l.size.width - (node.text.len() as f32 * fs)) / 2.0; 
+                        let mut cursor_x =
+                            l.location.x + (l.size.width - (node.text.len() as f32 * fs)) / 2.0;
                         let cursor_y = l.location.y + (l.size.height - fs) / 2.0;
                         for c in node.text.chars() {
                             instances.push(UiInstance {
