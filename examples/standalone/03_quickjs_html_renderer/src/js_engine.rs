@@ -1,5 +1,6 @@
 use std::{
     cell::RefCell,
+    collections::HashMap,
     fs,
     path::{Path, PathBuf},
     rc::Rc,
@@ -41,9 +42,15 @@ impl JsEngine {
         search: &str,
     ) -> Result<Self> {
         let runtime = Runtime::new()?;
+
+        let html = fs::read_to_string(asset_dir.join(filename))?;
+        let (script, import_map) =
+            extract_module_script(&html).map_err(|e| anyhow::anyhow!("{e}"))?;
+
         runtime.set_loader(
             FsResolver {
                 root: asset_dir.clone(),
+                import_map,
             },
             FsLoader,
         );
@@ -62,9 +69,6 @@ impl JsEngine {
                 search,
             )?;
 
-            let html = fs::read_to_string(asset_dir.join(filename))
-                .map_err(|err| rquickjs::Error::new_loading_message(filename, err.to_string()))?;
-            let script = extract_module_script(&html)?;
             let entry_name = asset_dir
                 .join(filename)
                 .with_extension("inline.js")
@@ -216,10 +220,14 @@ impl JsEngine {
 
 struct FsResolver {
     root: PathBuf,
+    import_map: HashMap<String, String>,
 }
 
 impl Resolver for FsResolver {
     fn resolve<'js>(&mut self, _ctx: &Ctx<'js>, base: &str, name: &str) -> JsResult<String> {
+        let resolved_name = self.resolve_import_map(name);
+        let name = resolved_name.as_deref().unwrap_or(name);
+
         let candidate = if name.starts_with("./") || name.starts_with("../") {
             let base = Path::new(base);
             let parent = base.parent().unwrap_or(self.root.as_path());
@@ -234,6 +242,21 @@ impl Resolver for FsResolver {
             .map_err(|err| rquickjs::Error::new_resolving_message(base, name, err.to_string()))?;
 
         Ok(resolved.display().to_string())
+    }
+}
+
+impl FsResolver {
+    fn resolve_import_map(&self, name: &str) -> Option<String> {
+        if let Some(mapped) = self.import_map.get(name) {
+            return Some(mapped.clone());
+        }
+        for (prefix, target) in &self.import_map {
+            if prefix.ends_with('/') && name.starts_with(prefix.as_str()) {
+                let suffix = &name[prefix.len()..];
+                return Some(format!("{target}{suffix}"));
+            }
+        }
+        None
     }
 }
 
@@ -257,7 +280,9 @@ pub(crate) fn resolve_asset_path(root: &Path, path: &str) -> Result<PathBuf> {
     Ok(full_path)
 }
 
-fn extract_module_script(html: &str) -> JsResult<String> {
+fn extract_module_script(html: &str) -> JsResult<(String, HashMap<String, String>)> {
+    let import_map = extract_import_map(html);
+
     let start = html.find("<script type=\"module\">").ok_or_else(|| {
         rquickjs::Error::new_loading_message("index.html", "missing module script")
     })?;
@@ -265,7 +290,36 @@ fn extract_module_script(html: &str) -> JsResult<String> {
     let end = html[start..].find("</script>").ok_or_else(|| {
         rquickjs::Error::new_loading_message("index.html", "unterminated module script")
     })?;
-    Ok(html[start..start + end].trim().to_string())
+    Ok((html[start..start + end].trim().to_string(), import_map))
+}
+
+fn extract_import_map(html: &str) -> HashMap<String, String> {
+    let mut map = HashMap::new();
+    let marker = "<script type=\"importmap\">";
+    let Some(start) = html.find(marker) else {
+        return map;
+    };
+    let start = start + marker.len();
+    let Some(end) = html[start..].find("</script>") else {
+        return map;
+    };
+    let json_str = &html[start..start + end];
+    let Ok(parsed) = serde_json::from_str::<serde_json::Value>(json_str) else {
+        return map;
+    };
+    if let Some(imports) = parsed.get("imports").and_then(|v| v.as_object()) {
+        for (key, value) in imports {
+            if let Some(target) = value.as_str() {
+                let resolved = if target.starts_with("https://") || target.starts_with("http://") {
+                    continue;
+                } else {
+                    target.to_string()
+                };
+                map.insert(key.clone(), resolved);
+            }
+        }
+    }
+    map
 }
 
 pub(crate) fn vec16(values: Vec<f32>, name: &'static str) -> JsResult<[f32; 16]> {

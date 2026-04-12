@@ -101,8 +101,10 @@ class GPU {
 class GPUAdapter {
   constructor(handle) {
     this.__handle = handle;
-    this.features = new GPUSupportedFeatures();
-    this.limits = new GPUSupportedLimits();
+    const featureNames = __hostGpuGetDeviceFeatures();
+    this.features = new GPUSupportedFeatures(featureNames);
+    const limitsJson = __hostGpuGetDeviceLimits();
+    this.limits = new GPUSupportedLimits(JSON.parse(limitsJson));
     this.info = {};
     this.isFallbackAdapter = false;
   }
@@ -117,10 +119,14 @@ class GPUAdapter {
 class GPUDevice {
   constructor(handle) {
     this.__handle = handle;
-    this.features = new GPUSupportedFeatures();
-    this.limits = new GPUSupportedLimits();
+    const featureNames = __hostGpuGetDeviceFeatures();
+    this.features = new GPUSupportedFeatures(featureNames);
+    const limitsJson = __hostGpuGetDeviceLimits();
+    this.limits = new GPUSupportedLimits(JSON.parse(limitsJson));
     this.queue = new GPUQueue(__hostGpuGetQueue(handle));
     this.lost = new Promise(() => {});
+    this.__nextQuerySetId = 1;
+    this.__querySets = new Map();
   }
 
   createBuffer(descriptor) {
@@ -232,6 +238,14 @@ class GPUDevice {
   async createComputePipelineAsync(descriptor) {
     trace(`createComputePipelineAsync (falling back to sync)`);
     return this.createComputePipeline(descriptor);
+  }
+
+  createQuerySet(descriptor) {
+    trace(`createQuerySet ${JSON.stringify(descriptor)}`);
+    const id = this.__nextQuerySetId++;
+    const qs = new GPUQuerySet(id, descriptor);
+    this.__querySets.set(id, qs);
+    return qs;
   }
 
   createCommandEncoder(_descriptor = {}) {
@@ -363,6 +377,7 @@ class GPUTexture {
 
   destroy() {
     trace(`texture.destroy`);
+    __hostGpuTextureDestroy(this.__handle);
   }
 }
 
@@ -857,6 +872,16 @@ class GPUBuffer {
     }
     __hostGpuBufferUnmap(this.__handle);
   }
+
+  async mapAsync(mode, offset = 0, size = 0) {
+    trace(`buffer.mapAsync`);
+    __hostGpuBufferMapAsync(this.__handle, mode, offset, size);
+  }
+
+  destroy() {
+    trace(`buffer.destroy`);
+    __hostGpuBufferDestroy(this.__handle);
+  }
 }
 
 class GPUBindGroupLayout {
@@ -940,6 +965,17 @@ class GPUTextureView {
   }
 }
 
+class GPUQuerySet {
+  constructor(id, descriptor) {
+    this.__id = id;
+    this.type = descriptor.type || 'occlusion';
+    this.count = descriptor.count || 0;
+    this.label = descriptor.label || '';
+  }
+
+  destroy() {}
+}
+
 class GPUCommandEncoder {
   constructor(handle) {
     this.__handle = handle;
@@ -1007,6 +1043,26 @@ class GPUCommandEncoder {
   }
 
   clearBuffer() {} // stub if used
+
+  copyBufferToBuffer(source, sourceOffset, destination, destOffset, size) {
+    traceVerbose(`copyBufferToBuffer`);
+    __hostGpuCommandEncoderCopyBufferToBuffer(
+      this.__handle,
+      source.__handle,
+      sourceOffset,
+      destination.__handle,
+      destOffset,
+      size,
+    );
+  }
+
+  resolveQuerySet(_querySet, _firstQuery, _queryCount, _destination, _destinationOffset) {
+    traceVerbose(`resolveQuerySet (stub)`);
+  }
+
+  writeTimestamp(_querySet, _queryIndex) {
+    traceVerbose(`writeTimestamp (stub)`);
+  }
 
   finish() {
     traceVerbose(`commandEncoder.finish`);
@@ -1103,12 +1159,30 @@ class GPURenderPassEncoder {
     __hostGpuRenderPassEnd(this.__handle);
   }
 
+  drawIndirect(indirectBuffer, indirectOffset) {
+    traceVerbose(`pass.drawIndirect`);
+    __hostGpuRenderPassDrawIndirect(this.__handle, indirectBuffer.__handle, indirectOffset);
+  }
+
+  drawIndexedIndirect(indirectBuffer, indirectOffset) {
+    traceVerbose(`pass.drawIndexedIndirect`);
+    __hostGpuRenderPassDrawIndexedIndirect(this.__handle, indirectBuffer.__handle, indirectOffset);
+  }
+
   executeBundles(bundles) {
     traceVerbose(`pass.executeBundles`);
     __hostGpuRenderPassExecuteBundles(
       this.__handle,
       JSON.stringify(bundles.map((bundle) => bundle.__handle)),
     );
+  }
+
+  beginOcclusionQuery(_queryIndex) {
+    traceVerbose(`pass.beginOcclusionQuery (stub)`);
+  }
+
+  endOcclusionQuery() {
+    traceVerbose(`pass.endOcclusionQuery (stub)`);
   }
 }
 
@@ -1301,6 +1375,7 @@ function serializeRenderPipelineDescriptor(descriptor) {
                   format: target.format,
                   isCanvasTarget: target.format === navigator.gpu.getPreferredCanvasFormat(),
                   writeMask: target.writeMask,
+                  blend: target.blend || null,
                 }
               : null,
           ),
@@ -1596,11 +1671,21 @@ export function installWebGPURuntime() {
   globalThis.fetch = fetch;
   globalThis.createImageBitmap = createImageBitmap;
   globalThis.ImageBitmap = ImageBitmap;
+  let __nextTimerId = 1;
+  const __pendingTimers = new Map();
   globalThis.setTimeout = (callback, _delay = 0) => {
-    Promise.resolve().then(callback);
-    return 0;
+    const id = __nextTimerId++;
+    __pendingTimers.set(id, true);
+    Promise.resolve().then(() => {
+      if (__pendingTimers.delete(id)) {
+        callback();
+      }
+    });
+    return id;
   };
-  globalThis.clearTimeout = () => {};
+  globalThis.clearTimeout = (id) => {
+    __pendingTimers.delete(id);
+  };
 
   if (!globalThis.navigator) {
     globalThis.navigator = {};

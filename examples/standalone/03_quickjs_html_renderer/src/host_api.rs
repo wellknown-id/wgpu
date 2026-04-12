@@ -117,6 +117,25 @@ pub(crate) fn install_host_api(
         )?,
     )?;
 
+    let gpu_get_device_features = gpu.clone();
+    globals.set(
+        "__hostGpuGetDeviceFeatures",
+        Function::new(ctx.clone(), move || -> Vec<String> {
+            gpu_get_device_features.borrow().js_get_device_features()
+        })?,
+    )?;
+
+    let gpu_get_device_limits = gpu.clone();
+    globals.set(
+        "__hostGpuGetDeviceLimits",
+        Function::new(ctx.clone(), move || -> String {
+            gpu_get_device_limits
+                .borrow()
+                .js_get_device_limits()
+                .to_string()
+        })?,
+    )?;
+
     let gpu_get_queue = gpu.clone();
     globals.set(
         "__hostGpuGetQueue",
@@ -684,6 +703,118 @@ pub(crate) fn install_host_api(
                     })
             },
         )?,
+    )?;
+
+    let gpu_render_pass_draw_indirect = gpu.clone();
+    globals.set(
+        "__hostGpuRenderPassDrawIndirect",
+        Function::new(
+            ctx.clone(),
+            move |render_pass_id: u32, buffer_id: u32, offset: u64| -> JsResult<()> {
+                gpu_render_pass_draw_indirect
+                    .borrow_mut()
+                    .js_render_pass_draw_indirect(render_pass_id, buffer_id, offset)
+                    .map_err(|err| {
+                        rquickjs::Error::new_loading_message(
+                            "GPURenderPassEncoder.drawIndirect",
+                            err.to_string(),
+                        )
+                    })
+            },
+        )?,
+    )?;
+
+    let gpu_render_pass_draw_indexed_indirect = gpu.clone();
+    globals.set(
+        "__hostGpuRenderPassDrawIndexedIndirect",
+        Function::new(
+            ctx.clone(),
+            move |render_pass_id: u32, buffer_id: u32, offset: u64| -> JsResult<()> {
+                gpu_render_pass_draw_indexed_indirect
+                    .borrow_mut()
+                    .js_render_pass_draw_indexed_indirect(render_pass_id, buffer_id, offset)
+                    .map_err(|err| {
+                        rquickjs::Error::new_loading_message(
+                            "GPURenderPassEncoder.drawIndexedIndirect",
+                            err.to_string(),
+                        )
+                    })
+            },
+        )?,
+    )?;
+
+    let gpu_copy_buffer_to_buffer = gpu.clone();
+    globals.set(
+        "__hostGpuCommandEncoderCopyBufferToBuffer",
+        Function::new(
+            ctx.clone(),
+            move |encoder_id: u32,
+                  source_id: u32,
+                  source_offset: u64,
+                  dest_id: u32,
+                  dest_offset: u64,
+                  size: u64|
+                  -> JsResult<()> {
+                gpu_copy_buffer_to_buffer
+                    .borrow_mut()
+                    .js_command_encoder_copy_buffer_to_buffer(
+                        encoder_id,
+                        source_id,
+                        source_offset,
+                        dest_id,
+                        dest_offset,
+                        size,
+                    )
+                    .map_err(|err| {
+                        rquickjs::Error::new_loading_message(
+                            "GPUCommandEncoder.copyBufferToBuffer",
+                            err.to_string(),
+                        )
+                    })
+            },
+        )?,
+    )?;
+
+    let gpu_buffer_map_async = gpu.clone();
+    globals.set(
+        "__hostGpuBufferMapAsync",
+        Function::new(
+            ctx.clone(),
+            move |buffer_id: u32, mode: u32, offset: u64, size: u64| -> JsResult<()> {
+                gpu_buffer_map_async
+                    .borrow_mut()
+                    .js_buffer_map_async(buffer_id, mode, offset, size)
+                    .map_err(|err| {
+                        rquickjs::Error::new_loading_message("GPUBuffer.mapAsync", err.to_string())
+                    })
+            },
+        )?,
+    )?;
+
+    let gpu_buffer_destroy = gpu.clone();
+    globals.set(
+        "__hostGpuBufferDestroy",
+        Function::new(ctx.clone(), move |buffer_id: u32| -> JsResult<()> {
+            gpu_buffer_destroy
+                .borrow_mut()
+                .js_buffer_destroy(buffer_id)
+                .map_err(|err| {
+                    rquickjs::Error::new_loading_message("GPUBuffer.destroy", err.to_string())
+                })
+        })?,
+    )?;
+
+    let gpu_texture_destroy = gpu.clone();
+    globals.set(
+        "__hostGpuTextureDestroy",
+        Function::new(ctx.clone(), move |texture_id: u32| -> JsResult<()> {
+            gpu_texture_destroy
+                .borrow_mut()
+                .js_texture_destroy(texture_id)
+                .map_err(|err| {
+                    rquickjs::Error::new_loading_message("GPUTexture.destroy", err.to_string())
+                })
+        })?,
     )?;
 
     let gpu_command_encoder_finish = gpu.clone();

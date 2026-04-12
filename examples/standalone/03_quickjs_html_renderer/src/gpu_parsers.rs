@@ -112,14 +112,48 @@ pub(crate) fn parse_texture_aspect(value: &str) -> Result<wgpu::TextureAspect> {
 
 pub(crate) fn parse_texture_format(value: &str) -> Result<wgpu::TextureFormat> {
     match value {
+        "r8unorm" => Ok(wgpu::TextureFormat::R8Unorm),
+        "r8snorm" => Ok(wgpu::TextureFormat::R8Snorm),
+        "r8uint" => Ok(wgpu::TextureFormat::R8Uint),
+        "r8sint" => Ok(wgpu::TextureFormat::R8Sint),
+        "r16uint" => Ok(wgpu::TextureFormat::R16Uint),
+        "r16sint" => Ok(wgpu::TextureFormat::R16Sint),
+        "r16float" => Ok(wgpu::TextureFormat::R16Float),
+        "rg8unorm" => Ok(wgpu::TextureFormat::Rg8Unorm),
+        "rg8snorm" => Ok(wgpu::TextureFormat::Rg8Snorm),
+        "rg8uint" => Ok(wgpu::TextureFormat::Rg8Uint),
+        "rg8sint" => Ok(wgpu::TextureFormat::Rg8Sint),
+        "r32uint" => Ok(wgpu::TextureFormat::R32Uint),
+        "r32sint" => Ok(wgpu::TextureFormat::R32Sint),
+        "r32float" => Ok(wgpu::TextureFormat::R32Float),
+        "rg16uint" => Ok(wgpu::TextureFormat::Rg16Uint),
+        "rg16sint" => Ok(wgpu::TextureFormat::Rg16Sint),
+        "rg16float" => Ok(wgpu::TextureFormat::Rg16Float),
         "rgba8unorm" => Ok(wgpu::TextureFormat::Rgba8Unorm),
         "rgba8unorm-srgb" => Ok(wgpu::TextureFormat::Rgba8UnormSrgb),
+        "rgba8snorm" => Ok(wgpu::TextureFormat::Rgba8Snorm),
+        "rgba8uint" => Ok(wgpu::TextureFormat::Rgba8Uint),
+        "rgba8sint" => Ok(wgpu::TextureFormat::Rgba8Sint),
         "bgra8unorm" => Ok(wgpu::TextureFormat::Bgra8Unorm),
         "bgra8unorm-srgb" => Ok(wgpu::TextureFormat::Bgra8UnormSrgb),
+        "rgb10a2unorm" => Ok(wgpu::TextureFormat::Rgb10a2Unorm),
+        "rg11b10ufloat" => Ok(wgpu::TextureFormat::Rg11b10Ufloat),
+        "rgb9e5ufloat" => Ok(wgpu::TextureFormat::Rgb9e5Ufloat),
+        "rg32uint" => Ok(wgpu::TextureFormat::Rg32Uint),
+        "rg32sint" => Ok(wgpu::TextureFormat::Rg32Sint),
+        "rg32float" => Ok(wgpu::TextureFormat::Rg32Float),
+        "rgba16uint" => Ok(wgpu::TextureFormat::Rgba16Uint),
+        "rgba16sint" => Ok(wgpu::TextureFormat::Rgba16Sint),
         "rgba16float" => Ok(wgpu::TextureFormat::Rgba16Float),
+        "rgba32uint" => Ok(wgpu::TextureFormat::Rgba32Uint),
+        "rgba32sint" => Ok(wgpu::TextureFormat::Rgba32Sint),
+        "rgba32float" => Ok(wgpu::TextureFormat::Rgba32Float),
+        "depth16unorm" => Ok(wgpu::TextureFormat::Depth16Unorm),
         "depth24plus" => Ok(wgpu::TextureFormat::Depth24Plus),
         "depth24plus-stencil8" => Ok(wgpu::TextureFormat::Depth24PlusStencil8),
         "depth32float" => Ok(wgpu::TextureFormat::Depth32Float),
+        "depth32float-stencil8" => Ok(wgpu::TextureFormat::Depth32FloatStencil8),
+        "stencil8" => Ok(wgpu::TextureFormat::Stencil8),
         other => bail!("unsupported texture format {other}"),
     }
 }
@@ -173,17 +207,46 @@ pub(crate) fn parse_vertex_buffer_layout(value: &Value) -> Result<ParsedVertexBu
 
 pub(crate) fn parse_vertex_format(value: &str) -> Result<wgpu::VertexFormat> {
     match value {
+        "uint8" => Ok(wgpu::VertexFormat::Uint8),
+        "uint8x2" => Ok(wgpu::VertexFormat::Uint8x2),
+        "uint8x4" => Ok(wgpu::VertexFormat::Uint8x4),
+        "sint8" => Ok(wgpu::VertexFormat::Sint8),
+        "sint8x2" => Ok(wgpu::VertexFormat::Sint8x2),
+        "sint8x4" => Ok(wgpu::VertexFormat::Sint8x4),
+        "unorm8" => Ok(wgpu::VertexFormat::Unorm8),
+        "unorm8x2" => Ok(wgpu::VertexFormat::Unorm8x2),
+        "unorm8x4" => Ok(wgpu::VertexFormat::Unorm8x4),
+        "snorm8" => Ok(wgpu::VertexFormat::Snorm8),
+        "snorm8x2" => Ok(wgpu::VertexFormat::Snorm8x2),
+        "snorm8x4" => Ok(wgpu::VertexFormat::Snorm8x4),
+        "uint16" => Ok(wgpu::VertexFormat::Uint16),
+        "uint16x2" => Ok(wgpu::VertexFormat::Uint16x2),
+        "uint16x4" => Ok(wgpu::VertexFormat::Uint16x4),
+        "sint16" => Ok(wgpu::VertexFormat::Sint16),
+        "sint16x2" => Ok(wgpu::VertexFormat::Sint16x2),
+        "sint16x4" => Ok(wgpu::VertexFormat::Sint16x4),
+        "unorm16" => Ok(wgpu::VertexFormat::Unorm16),
+        "unorm16x2" => Ok(wgpu::VertexFormat::Unorm16x2),
+        "unorm16x4" => Ok(wgpu::VertexFormat::Unorm16x4),
+        "snorm16" => Ok(wgpu::VertexFormat::Snorm16),
+        "snorm16x2" => Ok(wgpu::VertexFormat::Snorm16x2),
+        "snorm16x4" => Ok(wgpu::VertexFormat::Snorm16x4),
+        "float16" => Ok(wgpu::VertexFormat::Float16),
+        "float16x2" => Ok(wgpu::VertexFormat::Float16x2),
+        "float16x4" => Ok(wgpu::VertexFormat::Float16x4),
         "float32" => Ok(wgpu::VertexFormat::Float32),
         "float32x2" => Ok(wgpu::VertexFormat::Float32x2),
         "float32x3" => Ok(wgpu::VertexFormat::Float32x3),
         "float32x4" => Ok(wgpu::VertexFormat::Float32x4),
-        "uint16" => Ok(wgpu::VertexFormat::Uint16),
-        "uint16x2" => Ok(wgpu::VertexFormat::Uint16x2),
-        "uint16x4" => Ok(wgpu::VertexFormat::Uint16x4),
         "uint32" => Ok(wgpu::VertexFormat::Uint32),
         "uint32x2" => Ok(wgpu::VertexFormat::Uint32x2),
         "uint32x3" => Ok(wgpu::VertexFormat::Uint32x3),
         "uint32x4" => Ok(wgpu::VertexFormat::Uint32x4),
+        "sint32" => Ok(wgpu::VertexFormat::Sint32),
+        "sint32x2" => Ok(wgpu::VertexFormat::Sint32x2),
+        "sint32x3" => Ok(wgpu::VertexFormat::Sint32x3),
+        "sint32x4" => Ok(wgpu::VertexFormat::Sint32x4),
+        "unorm10-10-10-2" => Ok(wgpu::VertexFormat::Unorm10_10_10_2),
         other => bail!("unsupported vertex format {other}"),
     }
 }
@@ -214,7 +277,7 @@ pub(crate) fn parse_color_target_state(value: &Value) -> Result<Option<wgpu::Col
         } else {
             format
         },
-        blend: None,
+        blend: parse_blend_state(value.get("blend"))?,
         write_mask: wgpu::ColorWrites::from_bits_truncate(
             value
                 .get("writeMask")
@@ -223,6 +286,80 @@ pub(crate) fn parse_color_target_state(value: &Value) -> Result<Option<wgpu::Col
                 .try_into()?,
         ),
     }))
+}
+
+fn parse_blend_state(value: Option<&Value>) -> Result<Option<wgpu::BlendState>> {
+    let Some(value) = value else {
+        return Ok(None);
+    };
+    if value.is_null() {
+        return Ok(None);
+    }
+
+    let color = value
+        .get("color")
+        .ok_or_else(|| anyhow!("blend state missing color component"))?;
+    let alpha = value
+        .get("alpha")
+        .ok_or_else(|| anyhow!("blend state missing alpha component"))?;
+
+    Ok(Some(wgpu::BlendState {
+        color: parse_blend_component(color)?,
+        alpha: parse_blend_component(alpha)?,
+    }))
+}
+
+fn parse_blend_component(value: &Value) -> Result<wgpu::BlendComponent> {
+    Ok(wgpu::BlendComponent {
+        src_factor: parse_blend_factor(
+            value
+                .get("srcFactor")
+                .and_then(Value::as_str)
+                .unwrap_or("one"),
+        )?,
+        dst_factor: parse_blend_factor(
+            value
+                .get("dstFactor")
+                .and_then(Value::as_str)
+                .unwrap_or("zero"),
+        )?,
+        operation: parse_blend_operation(
+            value
+                .get("operation")
+                .and_then(Value::as_str)
+                .unwrap_or("add"),
+        )?,
+    })
+}
+
+fn parse_blend_factor(value: &str) -> Result<wgpu::BlendFactor> {
+    match value {
+        "zero" => Ok(wgpu::BlendFactor::Zero),
+        "one" => Ok(wgpu::BlendFactor::One),
+        "src" => Ok(wgpu::BlendFactor::Src),
+        "one-minus-src" => Ok(wgpu::BlendFactor::OneMinusSrc),
+        "src-alpha" => Ok(wgpu::BlendFactor::SrcAlpha),
+        "one-minus-src-alpha" => Ok(wgpu::BlendFactor::OneMinusSrcAlpha),
+        "dst" => Ok(wgpu::BlendFactor::Dst),
+        "one-minus-dst" => Ok(wgpu::BlendFactor::OneMinusDst),
+        "dst-alpha" => Ok(wgpu::BlendFactor::DstAlpha),
+        "one-minus-dst-alpha" => Ok(wgpu::BlendFactor::OneMinusDstAlpha),
+        "src-alpha-saturated" => Ok(wgpu::BlendFactor::SrcAlphaSaturated),
+        "constant" => Ok(wgpu::BlendFactor::Constant),
+        "one-minus-constant" => Ok(wgpu::BlendFactor::OneMinusConstant),
+        other => bail!("unsupported blend factor {other}"),
+    }
+}
+
+fn parse_blend_operation(value: &str) -> Result<wgpu::BlendOperation> {
+    match value {
+        "add" => Ok(wgpu::BlendOperation::Add),
+        "subtract" => Ok(wgpu::BlendOperation::Subtract),
+        "reverse-subtract" => Ok(wgpu::BlendOperation::ReverseSubtract),
+        "min" => Ok(wgpu::BlendOperation::Min),
+        "max" => Ok(wgpu::BlendOperation::Max),
+        other => bail!("unsupported blend operation {other}"),
+    }
 }
 
 pub(crate) fn parse_primitive_state(value: &Value) -> Result<wgpu::PrimitiveState> {

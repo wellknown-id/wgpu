@@ -121,6 +121,13 @@ pub(crate) enum RecordedEncoderCommand {
         destination: CopyImageBufferDetails,
         copy_size: [u32; 3],
     },
+    CopyBufferToBuffer {
+        source_id: u32,
+        source_offset: u64,
+        destination_id: u32,
+        destination_offset: u64,
+        size: u64,
+    },
 }
 
 pub(crate) struct JsRenderBundleEncoder {
@@ -201,6 +208,14 @@ pub(crate) enum RenderCommand {
         first_index: u32,
         base_vertex: i32,
         first_instance: u32,
+    },
+    DrawIndirect {
+        buffer_id: u32,
+        offset: u64,
+    },
+    DrawIndexedIndirect {
+        buffer_id: u32,
+        offset: u64,
     },
 }
 
@@ -529,6 +544,90 @@ impl GpuState {
 
     pub(crate) fn js_request_device(&mut self, _adapter_id: u32) -> Result<u32> {
         Ok(1)
+    }
+
+    pub(crate) fn js_get_device_features(&self) -> Vec<String> {
+        let mut features = vec!["core-features-and-limits".to_string()];
+        let f = self.device.features();
+        if f.contains(wgpu::Features::DEPTH_CLIP_CONTROL) {
+            features.push("depth-clip-control".to_string());
+        }
+        if f.contains(wgpu::Features::DEPTH32FLOAT_STENCIL8) {
+            features.push("depth32float-stencil8".to_string());
+        }
+        if f.contains(wgpu::Features::TEXTURE_COMPRESSION_BC) {
+            features.push("texture-compression-bc".to_string());
+        }
+        if f.contains(wgpu::Features::TEXTURE_COMPRESSION_ETC2) {
+            features.push("texture-compression-etc2".to_string());
+        }
+        if f.contains(wgpu::Features::TEXTURE_COMPRESSION_ASTC) {
+            features.push("texture-compression-astc".to_string());
+        }
+        if f.contains(wgpu::Features::TIMESTAMP_QUERY) {
+            features.push("timestamp-query".to_string());
+        }
+        if f.contains(wgpu::Features::INDIRECT_FIRST_INSTANCE) {
+            features.push("indirect-first-instance".to_string());
+        }
+        if f.contains(wgpu::Features::SHADER_F16) {
+            features.push("shader-f16".to_string());
+        }
+        if f.contains(wgpu::Features::RG11B10UFLOAT_RENDERABLE) {
+            features.push("rg11b10ufloat-renderable".to_string());
+        }
+        if f.contains(wgpu::Features::BGRA8UNORM_STORAGE) {
+            features.push("bgra8unorm-storage".to_string());
+        }
+        if f.contains(wgpu::Features::FLOAT32_FILTERABLE) {
+            features.push("float32-filterable".to_string());
+        }
+        if f.contains(wgpu::Features::FLOAT32_BLENDABLE) {
+            features.push("float32-blendable".to_string());
+        }
+        if f.contains(wgpu::Features::CLIP_DISTANCES) {
+            features.push("clip-distances".to_string());
+        }
+        if f.contains(wgpu::Features::DUAL_SOURCE_BLENDING) {
+            features.push("dual-source-blending".to_string());
+        }
+        if f.contains(wgpu::Features::SUBGROUP) {
+            features.push("subgroups".to_string());
+        }
+        features
+    }
+
+    pub(crate) fn js_get_device_limits(&self) -> serde_json::Value {
+        let l = self.device.limits();
+        serde_json::json!({
+            "maxTextureDimension1D": l.max_texture_dimension_1d,
+            "maxTextureDimension2D": l.max_texture_dimension_2d,
+            "maxTextureDimension3D": l.max_texture_dimension_3d,
+            "maxTextureArrayLayers": l.max_texture_array_layers,
+            "maxBindGroups": l.max_bind_groups,
+            "maxBindingsPerBindGroup": l.max_bindings_per_bind_group,
+            "maxDynamicUniformBuffersPerPipelineLayout": l.max_dynamic_uniform_buffers_per_pipeline_layout,
+            "maxDynamicStorageBuffersPerPipelineLayout": l.max_dynamic_storage_buffers_per_pipeline_layout,
+            "maxSampledTexturesPerShaderStage": l.max_sampled_textures_per_shader_stage,
+            "maxSamplersPerShaderStage": l.max_samplers_per_shader_stage,
+            "maxStorageBuffersPerShaderStage": l.max_storage_buffers_per_shader_stage,
+            "maxStorageTexturesPerShaderStage": l.max_storage_textures_per_shader_stage,
+            "maxUniformBuffersPerShaderStage": l.max_uniform_buffers_per_shader_stage,
+            "maxUniformBufferBindingSize": l.max_uniform_buffer_binding_size,
+            "maxStorageBufferBindingSize": l.max_storage_buffer_binding_size,
+            "minUniformBufferOffsetAlignment": l.min_uniform_buffer_offset_alignment,
+            "minStorageBufferOffsetAlignment": l.min_storage_buffer_offset_alignment,
+            "maxVertexBuffers": l.max_vertex_buffers,
+            "maxBufferSize": l.max_buffer_size,
+            "maxVertexAttributes": l.max_vertex_attributes,
+            "maxVertexBufferArrayStride": l.max_vertex_buffer_array_stride,
+            "maxComputeWorkgroupStorageSize": l.max_compute_workgroup_storage_size,
+            "maxComputeInvocationsPerWorkgroup": l.max_compute_invocations_per_workgroup,
+            "maxComputeWorkgroupSizeX": l.max_compute_workgroup_size_x,
+            "maxComputeWorkgroupSizeY": l.max_compute_workgroup_size_y,
+            "maxComputeWorkgroupSizeZ": l.max_compute_workgroup_size_z,
+            "maxComputeWorkgroupsPerDimension": l.max_compute_workgroups_per_dimension,
+        })
     }
 
     pub(crate) fn js_get_queue(&self, _device_id: u32) -> u32 {
@@ -1007,7 +1106,10 @@ impl GpuState {
                 .filter(|command| {
                     matches!(
                         command,
-                        RenderCommand::Draw { .. } | RenderCommand::DrawIndexed { .. }
+                        RenderCommand::Draw { .. }
+                            | RenderCommand::DrawIndexed { .. }
+                            | RenderCommand::DrawIndirect { .. }
+                            | RenderCommand::DrawIndexedIndirect { .. }
                     )
                 })
                 .count();
@@ -1027,6 +1129,8 @@ impl GpuState {
                         RenderCommand::ExecuteBundles { .. } => "executeBundles",
                         RenderCommand::Draw { .. } => "draw",
                         RenderCommand::DrawIndexed { .. } => "drawIndexed",
+                        RenderCommand::DrawIndirect { .. } => "drawIndirect",
+                        RenderCommand::DrawIndexedIndirect { .. } => "drawIndexedIndirect",
                     })
                     .collect::<Vec<_>>();
                 let _bind_group_details = pass
@@ -1108,6 +1212,8 @@ impl GpuState {
                         RenderCommand::ExecuteBundles { .. } => "executeBundles",
                         RenderCommand::Draw { .. } => "draw",
                         RenderCommand::DrawIndexed { .. } => "drawIndexed",
+                        RenderCommand::DrawIndirect { .. } => "drawIndirect",
+                        RenderCommand::DrawIndexedIndirect { .. } => "drawIndexedIndirect",
                     })
                     .collect::<Vec<_>>();
                 let _draw_details = pass
@@ -1243,6 +1349,33 @@ impl GpuState {
                             height: copy_size[1],
                             depth_or_array_layers: copy_size[2],
                         },
+                    );
+                }
+                RecordedEncoderCommand::CopyBufferToBuffer {
+                    source_id,
+                    source_offset,
+                    destination_id,
+                    destination_offset,
+                    size,
+                } => {
+                    let source_buffer = &self
+                        .js_buffers
+                        .get(source_id)
+                        .ok_or_else(|| anyhow!("unknown source buffer handle {source_id}"))?
+                        .buffer;
+                    let destination_buffer = &self
+                        .js_buffers
+                        .get(destination_id)
+                        .ok_or_else(|| {
+                            anyhow!("unknown destination buffer handle {destination_id}")
+                        })?
+                        .buffer;
+                    encoder.encoder.copy_buffer_to_buffer(
+                        source_buffer,
+                        *source_offset,
+                        destination_buffer,
+                        *destination_offset,
+                        *size,
                     );
                 }
                 RecordedEncoderCommand::ComputePass(pass) => {
@@ -1571,6 +1704,22 @@ impl GpuState {
                 );
             }
             RenderCommand::ExecuteBundles { .. } => {}
+            RenderCommand::DrawIndirect { buffer_id, offset } => {
+                let buffer = &self
+                    .js_buffers
+                    .get(buffer_id)
+                    .ok_or_else(|| anyhow!("unknown buffer handle {buffer_id}"))?
+                    .buffer;
+                render_pass.draw_indirect(buffer, *offset);
+            }
+            RenderCommand::DrawIndexedIndirect { buffer_id, offset } => {
+                let buffer = &self
+                    .js_buffers
+                    .get(buffer_id)
+                    .ok_or_else(|| anyhow!("unknown buffer handle {buffer_id}"))?
+                    .buffer;
+                render_pass.draw_indexed_indirect(buffer, *offset);
+            }
         }
 
         Ok(())
@@ -2020,6 +2169,107 @@ impl GpuState {
         Ok(())
     }
 
+    pub(crate) fn js_render_pass_draw_indirect(
+        &mut self,
+        render_pass_id: u32,
+        buffer_id: u32,
+        offset: u64,
+    ) -> Result<()> {
+        let render_pass = self
+            .js_render_passes
+            .get_mut(&render_pass_id)
+            .ok_or_else(|| anyhow!("unknown render pass handle {render_pass_id}"))?;
+        render_pass
+            .commands
+            .push(RenderCommand::DrawIndirect { buffer_id, offset });
+        Ok(())
+    }
+
+    pub(crate) fn js_render_pass_draw_indexed_indirect(
+        &mut self,
+        render_pass_id: u32,
+        buffer_id: u32,
+        offset: u64,
+    ) -> Result<()> {
+        let render_pass = self
+            .js_render_passes
+            .get_mut(&render_pass_id)
+            .ok_or_else(|| anyhow!("unknown render pass handle {render_pass_id}"))?;
+        render_pass
+            .commands
+            .push(RenderCommand::DrawIndexedIndirect { buffer_id, offset });
+        Ok(())
+    }
+
+    pub(crate) fn js_command_encoder_copy_buffer_to_buffer(
+        &mut self,
+        encoder_id: u32,
+        source_id: u32,
+        source_offset: u64,
+        destination_id: u32,
+        destination_offset: u64,
+        size: u64,
+    ) -> Result<()> {
+        let encoder = self
+            .js_command_encoders
+            .get_mut(&encoder_id)
+            .ok_or_else(|| anyhow!("unknown command encoder handle {encoder_id}"))?;
+        encoder
+            .recorded_commands
+            .push(RecordedEncoderCommand::CopyBufferToBuffer {
+                source_id,
+                source_offset,
+                destination_id,
+                destination_offset,
+                size,
+            });
+        Ok(())
+    }
+
+    pub(crate) fn js_buffer_map_async(
+        &mut self,
+        buffer_id: u32,
+        _mode: u32,
+        offset: u64,
+        size: u64,
+    ) -> Result<()> {
+        let js_buffer = self
+            .js_buffers
+            .get(&buffer_id)
+            .ok_or_else(|| anyhow!("unknown buffer handle {buffer_id}"))?;
+        let slice = if size > 0 {
+            js_buffer.buffer.slice(offset..offset + size)
+        } else {
+            js_buffer.buffer.slice(..)
+        };
+        let (sender, receiver) = std::sync::mpsc::channel();
+        slice.map_async(wgpu::MapMode::Read, move |result| {
+            let _ = sender.send(result);
+        });
+        let _ = self.device.poll(wgpu::PollType::Wait {
+            submission_index: None,
+            timeout: None,
+        });
+        receiver.recv()??;
+        Ok(())
+    }
+
+    pub(crate) fn js_buffer_destroy(&mut self, buffer_id: u32) -> Result<()> {
+        if let Some(js_buffer) = self.js_buffers.remove(&buffer_id) {
+            js_buffer.buffer.destroy();
+        }
+        Ok(())
+    }
+
+    pub(crate) fn js_texture_destroy(&mut self, texture_id: u32) -> Result<()> {
+        if let Some(JsTextureResource::Owned(texture)) = self.js_textures.remove(&texture_id) {
+            texture.destroy();
+        }
+        self.js_texture_view_owners
+            .retain(|_, owner| *owner != texture_id);
+        Ok(())
+    }
+
     pub(crate) fn js_render_bundle_finish(&mut self, bundle_id: u32) -> Result<u32> {
         let bundle = self
             .js_render_bundle_encoders
@@ -2139,6 +2389,35 @@ impl GpuState {
                     sample_type,
                     view_dimension,
                     multisampled,
+                }
+            } else if let Some(storage_texture) = entry.get("storageTexture") {
+                let access = match storage_texture
+                    .get("access")
+                    .and_then(Value::as_str)
+                    .unwrap_or("write-only")
+                {
+                    "write-only" => wgpu::StorageTextureAccess::WriteOnly,
+                    "read-only" => wgpu::StorageTextureAccess::ReadOnly,
+                    "read-write" => wgpu::StorageTextureAccess::ReadWrite,
+                    other => bail!("unsupported storage texture access {other}"),
+                };
+                let format = parse_texture_format(
+                    storage_texture
+                        .get("format")
+                        .and_then(Value::as_str)
+                        .ok_or_else(|| anyhow!("storage texture missing format"))?,
+                )?;
+                let view_dimension = parse_texture_view_dimension(
+                    storage_texture
+                        .get("viewDimension")
+                        .and_then(Value::as_str)
+                        .unwrap_or("2d"),
+                )?;
+
+                wgpu::BindingType::StorageTexture {
+                    access,
+                    format,
+                    view_dimension,
                 }
             } else {
                 bail!("unsupported bind group layout entry kind");
@@ -2621,10 +2900,6 @@ impl GpuState {
             .map(parse_primitive_state)
             .transpose()?
             .unwrap_or_default();
-        let primitive = wgpu::PrimitiveState {
-            cull_mode: None,
-            ..primitive
-        };
         let depth_stencil = descriptor
             .get("depthStencil")
             .filter(|value| !value.is_null())
