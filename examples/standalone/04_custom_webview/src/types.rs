@@ -1,0 +1,166 @@
+#[derive(Debug, Clone)]
+pub struct DomNode {
+    pub tag: String,
+    pub id: Option<String>,
+    pub classes: Vec<String>,
+    pub inline_style: String,
+    pub text: String,
+    pub children: Vec<DomNode>,
+}
+
+#[derive(Debug, Clone)]
+pub struct ComputedStyle {
+    pub display: Display,
+    pub flex_direction: FlexDirection,
+    pub justify_content: JustifyContent,
+    pub align_items: AlignItems,
+    pub width: Dimension,
+    pub height: Dimension,
+    pub min_width: Dimension,
+    pub min_height: Dimension,
+    pub padding: Edges,
+    pub margin: Edges,
+    pub gap: f32,
+    pub flex_grow: f32,
+    pub flex_shrink: f32,
+    pub flex_basis: Dimension,
+    pub background_color: [f32; 4],
+    pub color: [f32; 4],
+    pub font_size: f32,
+    pub border_width: f32,
+    pub border_color: [f32; 4],
+    pub border_radius: f32,
+    pub overflow_hidden: bool,
+}
+
+impl Default for ComputedStyle {
+    fn default() -> Self {
+        Self {
+            display: Display::Block,
+            flex_direction: FlexDirection::Row,
+            justify_content: JustifyContent::Start,
+            align_items: AlignItems::Stretch,
+            width: Dimension::Auto,
+            height: Dimension::Auto,
+            min_width: Dimension::Auto,
+            min_height: Dimension::Auto,
+            padding: Edges::zero(),
+            margin: Edges::zero(),
+            gap: 0.0,
+            flex_grow: 0.0,
+            flex_shrink: 1.0,
+            flex_basis: Dimension::Auto,
+            background_color: [0.0; 4],
+            color: [1.0, 1.0, 1.0, 1.0],
+            font_size: 16.0,
+            border_width: 0.0,
+            border_color: [0.0; 4],
+            border_radius: 0.0,
+            overflow_hidden: false,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum Display {
+    Block,
+    Flex,
+    Inline,
+    None,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub enum FlexDirection {
+    Row,
+    Column,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub enum JustifyContent {
+    Start,
+    Center,
+    End,
+    SpaceBetween,
+    SpaceAround,
+    SpaceEvenly,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub enum AlignItems {
+    Start,
+    Center,
+    End,
+    Stretch,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub enum Dimension {
+    Px(f32),
+    Percent(f32),
+    Auto,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct Edges {
+    pub top: f32,
+    pub right: f32,
+    pub bottom: f32,
+    pub left: f32,
+}
+
+impl Edges {
+    pub fn zero() -> Self {
+        Self {
+            top: 0.0,
+            right: 0.0,
+            bottom: 0.0,
+            left: 0.0,
+        }
+    }
+
+    pub fn uniform(v: f32) -> Self {
+        Self {
+            top: v,
+            right: v,
+            bottom: v,
+            left: v,
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct LayoutRect {
+    pub x: f32,
+    pub y: f32,
+    pub w: f32,
+    pub h: f32,
+}
+
+#[derive(Debug, Clone)]
+pub enum DrawCommand {
+    Rect {
+        rect: LayoutRect,
+        color: [f32; 4],
+        border_radius: f32,
+    },
+    Border {
+        rect: LayoutRect,
+        color: [f32; 4],
+        width: f32,
+        radius: f32,
+    },
+    Text {
+        text: String,
+        x: f32,
+        y: f32,
+        max_width: f32,
+        color: [f32; 4],
+        font_size: f32,
+    },
+}
+
+pub struct StyledNode {
+    pub dom_node: DomNode,
+    pub style: ComputedStyle,
+    pub children: Vec<StyledNode>,
+}

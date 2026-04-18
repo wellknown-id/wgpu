@@ -1,0 +1,18 @@
+[package]
+name = "wgpu-example-04-custom-webview"
+edition = "2021"
+rust-version = "1.87"
+publish = false
+
+[dependencies]
+anyhow = "1.0.87"
+bytemuck = { version = "1.22", features = ["derive"] }
+cosmic-text = "0.12"
+env_logger = "0.11"
+html5ever = "0.38"
+markup5ever_rcdom = "0.38"
+pollster = "0.4"
+rquickjs = { version = "0.11.0", features = ["loader"] }
+taffy = "0.10.0"
+wgpu = "29.0.0"
+winit = { version = "0.30.8", features = ["android-native-activity"] }

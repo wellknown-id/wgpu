@@ -1,0 +1,159 @@
+<!DOCTYPE html>
+<html>
+<head>
+<style>
+  body {
+    background: #1a1a2e;
+    color: #e0e0e0;
+    font-size: 16;
+    padding: 0;
+    margin: 0;
+  }
+  .header {
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    background: #16213e;
+    padding: 20;
+    height: 64;
+  }
+  .header h1 {
+    color: #e94560;
+    font-size: 28;
+  }
+  .subtitle {
+    display: flex;
+    justify-content: center;
+    padding: 12;
+    background: #0f3460;
+  }
+  .subtitle p {
+    color: #a7c5eb;
+    font-size: 14;
+  }
+  .container {
+    display: flex;
+    flex-direction: row;
+    padding: 24;
+    gap: 20;
+  }
+  .card {
+    background: #16213e;
+    padding: 20;
+    flex: 1;
+    border-radius: 8;
+  }
+  .card h2 {
+    color: #e94560;
+    font-size: 20;
+  }
+  .card p {
+    color: #a7c5eb;
+    font-size: 14;
+  }
+  .btn {
+    background: #e94560;
+    color: #ffffff;
+    padding: 14;
+    margin: 8;
+    justify-content: center;
+    align-items: center;
+    display: flex;
+    border-radius: 6;
+    font-size: 16;
+  }
+  #counter {
+    color: #53d8fb;
+    font-size: 48;
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    padding: 20;
+  }
+  .features {
+    display: flex;
+    flex-direction: column;
+    padding: 24;
+    gap: 12;
+  }
+  .feature-row {
+    display: flex;
+    flex-direction: row;
+    gap: 16;
+  }
+  .feature {
+    background: #0f3460;
+    padding: 16;
+    flex: 1;
+    border-radius: 6;
+  }
+  .feature h3 {
+    color: #e94560;
+    font-size: 16;
+  }
+  .feature p {
+    color: #8899aa;
+    font-size: 13;
+  }
+</style>
+</head>
+<body>
+  <div class="header">
+    <h1>Custom Webview Engine</h1>
+  </div>
+  <div class="subtitle">
+    <p>GPU-accelerated HTML/CSS/JS rendering powered by wgpu</p>
+  </div>
+  <div class="container">
+    <div class="card">
+      <h2>Interactive Demo</h2>
+      <p>Click the button below to increment the counter. This exercises the full pipeline: JS event handler mutates the DOM, layout recomputes, and the frame re-renders.</p>
+      <div class="btn" id="increment">Click to Increment</div>
+    </div>
+    <div class="card">
+      <h2>Counter</h2>
+      <div id="counter">0</div>
+    </div>
+  </div>
+  <div class="features">
+    <div class="feature-row">
+      <div class="feature">
+        <h3>HTML Parsing</h3>
+        <p>html5ever parses the DOM tree from raw HTML markup</p>
+      </div>
+      <div class="feature">
+        <h3>CSS Cascade</h3>
+        <p>lightningcss resolves selectors and computed styles</p>
+      </div>
+      <div class="feature">
+        <h3>Flexbox Layout</h3>
+        <p>Taffy computes positions via flex and block algorithms</p>
+      </div>
+    </div>
+    <div class="feature-row">
+      <div class="feature">
+        <h3>Text Shaping</h3>
+        <p>cosmic-text with rustybuzz for production quality text</p>
+      </div>
+      <div class="feature">
+        <h3>GPU Rendering</h3>
+        <p>wgpu draws rects and glyphs via instanced rendering</p>
+      </div>
+      <div class="feature">
+        <h3>JavaScript</h3>
+        <p>QuickJS provides DOM interactivity and event handling</p>
+      </div>
+    </div>
+  </div>
+  <script>
+    var count = 0;
+    var btn = document.getElementById('increment');
+    var counter = document.getElementById('counter');
+    btn.addEventListener('click', function() {
+      count = count + 1;
+      counter.textContent = String(count);
+      console.log('Counter: ' + count);
+    });
+  </script>
+</body>
+</html>

@@ -1,0 +1,844 @@
+use std::borrow::Cow;
+use std::collections::HashMap;
+use std::sync::Arc;
+
+use anyhow::{anyhow, Result};
+use bytemuck::{Pod, Zeroable};
+use cosmic_text::{
+    Attrs, Buffer as CosmicBuffer, Family, FontSystem, Metrics, Shaping, SwashCache,
+};
+use wgpu::util::DeviceExt;
+use winit::{event_loop::OwnedDisplayHandle, window::Window};
+
+use crate::types::DrawCommand;
+
+#[repr(C)]
+#[derive(Clone, Copy, Pod, Zeroable)]
+struct Vertex {
+    position: [f32; 2],
+    uv: [f32; 2],
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Pod, Zeroable)]
+struct RectInstance {
+    rect: [f32; 4], // x, y, w, h
+    color: [f32; 4],
+    radius: f32,
+    border: f32,
+    border_color: [f32; 4],
+    _pad: [f32; 2],
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Pod, Zeroable)]
+struct GlyphInstance {
+    rect: [f32; 4],    // x, y, w, h in screen pixels
+    uv_rect: [f32; 4], // u0, v0, u1, v1 in atlas UV
+    color: [f32; 4],
+}
+
+struct GlyphAtlas {
+    texture: wgpu::Texture,
+    view: wgpu::TextureView,
+    width: u32,
+    height: u32,
+    cursor_x: u32,
+    cursor_y: u32,
+    row_height: u32,
+    cache: HashMap<GlyphKey, GlyphEntry>,
+}
+
+#[derive(Hash, Eq, PartialEq, Clone)]
+struct GlyphKey {
+    glyph_id: u16,
+    font_size_tenths: u32,
+}
+
+#[derive(Clone)]
+struct GlyphEntry {
+    uv: [f32; 4],
+    width: u32,
+    height: u32,
+    offset_x: i32,
+    offset_y: i32,
+}
+
+const ATLAS_SIZE: u32 = 2048;
+
+impl GlyphAtlas {
+    fn new(device: &wgpu::Device) -> Self {
+        let texture = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("glyph atlas"),
+            size: wgpu::Extent3d {
+                width: ATLAS_SIZE,
+                height: ATLAS_SIZE,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::R8Unorm,
+            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+            view_formats: &[],
+        });
+        let view = texture.create_view(&Default::default());
+
+        Self {
+            texture,
+            view,
+            width: ATLAS_SIZE,
+            height: ATLAS_SIZE,
+            cursor_x: 0,
+            cursor_y: 0,
+            row_height: 0,
+            cache: HashMap::new(),
+        }
+    }
+
+    fn get_or_insert(
+        &mut self,
+        queue: &wgpu::Queue,
+        font_system: &mut FontSystem,
+        swash_cache: &mut SwashCache,
+        cache_key: cosmic_text::CacheKey,
+        font_size: f32,
+    ) -> Option<GlyphEntry> {
+        let key = GlyphKey {
+            glyph_id: cache_key.glyph_id,
+            font_size_tenths: (font_size * 10.0) as u32,
+        };
+
+        if let Some(entry) = self.cache.get(&key) {
+            return Some(entry.clone());
+        }
+
+        let image = swash_cache.get_image_uncached(font_system, cache_key)?;
+
+        let w = image.placement.width;
+        let h = image.placement.height;
+        if w == 0 || h == 0 {
+            let entry = GlyphEntry {
+                uv: [0.0; 4],
+                width: 0,
+                height: 0,
+                offset_x: image.placement.left,
+                offset_y: image.placement.top,
+            };
+            self.cache.insert(key, entry.clone());
+            return Some(entry);
+        }
+
+        if self.cursor_x + w > self.width {
+            self.cursor_x = 0;
+            self.cursor_y += self.row_height + 1;
+            self.row_height = 0;
+        }
+        if self.cursor_y + h > self.height {
+            return None;
+        }
+
+        let alpha_data: Vec<u8> = match image.content {
+            cosmic_text::SwashContent::Mask => image.data.clone(),
+            cosmic_text::SwashContent::Color => image
+                .data
+                .chunks(4)
+                .map(|px| px.get(3).copied().unwrap_or(255))
+                .collect(),
+            cosmic_text::SwashContent::SubpixelMask => image
+                .data
+                .chunks(3)
+                .map(|px| {
+                    let r = px[0] as u16;
+                    let g = px.get(1).copied().unwrap_or(0) as u16;
+                    let b = px.get(2).copied().unwrap_or(0) as u16;
+                    ((r + g + b) / 3) as u8
+                })
+                .collect(),
+        };
+
+        queue.write_texture(
+            wgpu::TexelCopyTextureInfo {
+                texture: &self.texture,
+                mip_level: 0,
+                origin: wgpu::Origin3d {
+                    x: self.cursor_x,
+                    y: self.cursor_y,
+                    z: 0,
+                },
+                aspect: wgpu::TextureAspect::All,
+            },
+            &alpha_data,
+            wgpu::TexelCopyBufferLayout {
+                offset: 0,
+                bytes_per_row: Some(w),
+                rows_per_image: Some(h),
+            },
+            wgpu::Extent3d {
+                width: w,
+                height: h,
+                depth_or_array_layers: 1,
+            },
+        );
+
+        let u0 = self.cursor_x as f32 / self.width as f32;
+        let v0 = self.cursor_y as f32 / self.height as f32;
+        let u1 = (self.cursor_x + w) as f32 / self.width as f32;
+        let v1 = (self.cursor_y + h) as f32 / self.height as f32;
+
+        let entry = GlyphEntry {
+            uv: [u0, v0, u1, v1],
+            width: w,
+            height: h,
+            offset_x: image.placement.left,
+            offset_y: image.placement.top,
+        };
+
+        self.cursor_x += w + 1;
+        self.row_height = self.row_height.max(h);
+        self.cache.insert(key, entry.clone());
+
+        Some(entry)
+    }
+}
+
+const RECT_SHADER: &str = r#"
+struct ScreenUniform {
+    size: vec2<f32>,
+};
+@group(0) @binding(0) var<uniform> screen: ScreenUniform;
+
+struct RectInput {
+    @location(0) pos: vec2<f32>,
+    @location(1) uv: vec2<f32>,
+    @location(2) rect: vec4<f32>,
+    @location(3) color: vec4<f32>,
+    @location(4) radius: f32,
+    @location(5) border: f32,
+    @location(6) border_color: vec4<f32>,
+};
+
+struct RectOutput {
+    @builtin(position) pos: vec4<f32>,
+    @location(0) color: vec4<f32>,
+    @location(1) local_pos: vec2<f32>,
+    @location(2) rect_size: vec2<f32>,
+    @location(3) radius: f32,
+    @location(4) border: f32,
+    @location(5) border_color: vec4<f32>,
+};
+
+@vertex
+fn vs_rect(in: RectInput) -> RectOutput {
+    var out: RectOutput;
+    let x = in.rect.x + in.pos.x * in.rect.z;
+    let y = in.rect.y + in.pos.y * in.rect.w;
+    let nx = (x / screen.size.x) * 2.0 - 1.0;
+    let ny = (1.0 - (y / screen.size.y)) * 2.0 - 1.0;
+    out.pos = vec4<f32>(nx, ny, 0.0, 1.0);
+    out.color = in.color;
+    out.local_pos = vec2<f32>(in.pos.x * in.rect.z, in.pos.y * in.rect.w);
+    out.rect_size = vec2<f32>(in.rect.z, in.rect.w);
+    out.radius = in.radius;
+    out.border = in.border;
+    out.border_color = in.border_color;
+    return out;
+}
+
+fn rounded_rect_sdf(pos: vec2<f32>, half_size: vec2<f32>, radius: f32) -> f32 {
+    let q = abs(pos) - half_size + vec2<f32>(radius);
+    return min(max(q.x, q.y), 0.0) + length(max(q, vec2<f32>(0.0))) - radius;
+}
+
+@fragment
+fn fs_rect(in: RectOutput) -> @location(0) vec4<f32> {
+    let half_size = in.rect_size * 0.5;
+    let centered = in.local_pos - half_size;
+    let r = min(in.radius, min(half_size.x, half_size.y));
+    let dist = rounded_rect_sdf(centered, half_size, r);
+
+    if dist > 0.5 {
+        discard;
+    }
+
+    let alpha = 1.0 - smoothstep(-0.5, 0.5, dist);
+
+    if in.border > 0.0 {
+        let inner_dist = rounded_rect_sdf(centered, half_size - vec2(in.border), max(r - in.border, 0.0));
+        let inner_alpha = smoothstep(-0.5, 0.5, inner_dist);
+        let fill = in.color * (1.0 - inner_alpha);
+        let border_fill = in.border_color * inner_alpha;
+        return vec4<f32>((fill.rgb + border_fill.rgb), alpha * max(fill.a, border_fill.a));
+    }
+
+    return vec4<f32>(in.color.rgb, in.color.a * alpha);
+}
+"#;
+
+const GLYPH_SHADER: &str = r#"
+struct ScreenUniform {
+    size: vec2<f32>,
+};
+@group(0) @binding(0) var<uniform> screen: ScreenUniform;
+@group(0) @binding(1) var glyph_tex: texture_2d<f32>;
+@group(0) @binding(2) var glyph_sampler: sampler;
+
+struct GlyphInput {
+    @location(0) pos: vec2<f32>,
+    @location(1) uv: vec2<f32>,
+    @location(2) rect: vec4<f32>,
+    @location(3) uv_rect: vec4<f32>,
+    @location(4) color: vec4<f32>,
+};
+
+struct GlyphOutput {
+    @builtin(position) pos: vec4<f32>,
+    @location(0) uv: vec2<f32>,
+    @location(1) color: vec4<f32>,
+};
+
+@vertex
+fn vs_glyph(in: GlyphInput) -> GlyphOutput {
+    var out: GlyphOutput;
+    let x = in.rect.x + in.pos.x * in.rect.z;
+    let y = in.rect.y + in.pos.y * in.rect.w;
+    let nx = (x / screen.size.x) * 2.0 - 1.0;
+    let ny = (1.0 - (y / screen.size.y)) * 2.0 - 1.0;
+    out.pos = vec4<f32>(nx, ny, 0.0, 1.0);
+    let u = in.uv_rect.x + in.uv.x * (in.uv_rect.z - in.uv_rect.x);
+    let v = in.uv_rect.y + in.uv.y * (in.uv_rect.w - in.uv_rect.y);
+    out.uv = vec2<f32>(u, v);
+    out.color = in.color;
+    return out;
+}
+
+@fragment
+fn fs_glyph(in: GlyphOutput) -> @location(0) vec4<f32> {
+    let coverage = textureSample(glyph_tex, glyph_sampler, in.uv).r;
+    return vec4<f32>(in.color.rgb, in.color.a * coverage);
+}
+"#;
+
+pub struct GpuState {
+    pub window: Arc<Window>,
+    pub device: wgpu::Device,
+    pub queue: wgpu::Queue,
+    pub surface: wgpu::Surface<'static>,
+    pub surface_format: wgpu::TextureFormat,
+    pub size: winit::dpi::PhysicalSize<u32>,
+
+    screen_buffer: wgpu::Buffer,
+    vertex_buffer: wgpu::Buffer,
+
+    rect_pipeline: wgpu::RenderPipeline,
+    rect_bind_group: wgpu::BindGroup,
+
+    glyph_pipeline: wgpu::RenderPipeline,
+    glyph_bind_group: wgpu::BindGroup,
+
+    atlas: GlyphAtlas,
+    pub font_system: FontSystem,
+    swash_cache: SwashCache,
+}
+
+impl GpuState {
+    pub async fn new(display: OwnedDisplayHandle, window: Arc<Window>) -> Result<Self> {
+        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_with_display_handle(
+            Box::new(display),
+        ));
+        let adapter = instance
+            .request_adapter(&wgpu::RequestAdapterOptions::default())
+            .await?;
+
+        let (device, queue) = adapter
+            .request_device(&wgpu::DeviceDescriptor::default())
+            .await?;
+
+        let size = window.inner_size();
+        let surface = instance.create_surface(window.clone())?;
+        let caps = surface.get_capabilities(&adapter);
+        let surface_format = caps
+            .formats
+            .first()
+            .copied()
+            .ok_or_else(|| anyhow!("no surface format"))?;
+
+        surface.configure(
+            &device,
+            &wgpu::SurfaceConfiguration {
+                usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+                format: surface_format,
+                width: size.width.max(1),
+                height: size.height.max(1),
+                present_mode: wgpu::PresentMode::AutoVsync,
+                alpha_mode: wgpu::CompositeAlphaMode::Auto,
+                view_formats: vec![],
+                desired_maximum_frame_latency: 2,
+            },
+        );
+
+        let screen_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("screen uniform"),
+            size: 16,
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+
+        let vertex_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("quad verts"),
+            contents: bytemuck::cast_slice(&[
+                Vertex {
+                    position: [0.0, 0.0],
+                    uv: [0.0, 0.0],
+                },
+                Vertex {
+                    position: [1.0, 0.0],
+                    uv: [1.0, 0.0],
+                },
+                Vertex {
+                    position: [0.0, 1.0],
+                    uv: [0.0, 1.0],
+                },
+                Vertex {
+                    position: [1.0, 0.0],
+                    uv: [1.0, 0.0],
+                },
+                Vertex {
+                    position: [1.0, 1.0],
+                    uv: [1.0, 1.0],
+                },
+                Vertex {
+                    position: [0.0, 1.0],
+                    uv: [0.0, 1.0],
+                },
+            ]),
+            usage: wgpu::BufferUsages::VERTEX,
+        });
+
+        let atlas = GlyphAtlas::new(&device);
+
+        // -- rect pipeline --
+        let rect_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("rect bgl"),
+            entries: &[wgpu::BindGroupLayoutEntry {
+                binding: 0,
+                visibility: wgpu::ShaderStages::VERTEX,
+                ty: wgpu::BindingType::Buffer {
+                    ty: wgpu::BufferBindingType::Uniform,
+                    has_dynamic_offset: false,
+                    min_binding_size: None,
+                },
+                count: None,
+            }],
+        });
+        let rect_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("rect bg"),
+            layout: &rect_bgl,
+            entries: &[wgpu::BindGroupEntry {
+                binding: 0,
+                resource: screen_buffer.as_entire_binding(),
+            }],
+        });
+        let rect_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("rect shader"),
+            source: wgpu::ShaderSource::Wgsl(Cow::Borrowed(RECT_SHADER)),
+        });
+        let rect_pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("rect pl"),
+            bind_group_layouts: &[Some(&rect_bgl)],
+            immediate_size: 0,
+        });
+        let rect_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("rect pipeline"),
+            layout: Some(&rect_pipeline_layout),
+            vertex: wgpu::VertexState {
+                module: &rect_shader,
+                entry_point: Some("vs_rect"),
+                compilation_options: Default::default(),
+                buffers: &[
+                    wgpu::VertexBufferLayout {
+                        array_stride: std::mem::size_of::<Vertex>() as u64,
+                        step_mode: wgpu::VertexStepMode::Vertex,
+                        attributes: &wgpu::vertex_attr_array![0 => Float32x2, 1 => Float32x2],
+                    },
+                    wgpu::VertexBufferLayout {
+                        array_stride: std::mem::size_of::<RectInstance>() as u64,
+                        step_mode: wgpu::VertexStepMode::Instance,
+                        attributes: &wgpu::vertex_attr_array![
+                            2 => Float32x4,
+                            3 => Float32x4,
+                            4 => Float32,
+                            5 => Float32,
+                            6 => Float32x4,
+                        ],
+                    },
+                ],
+            },
+            fragment: Some(wgpu::FragmentState {
+                module: &rect_shader,
+                entry_point: Some("fs_rect"),
+                compilation_options: Default::default(),
+                targets: &[Some(wgpu::ColorTargetState {
+                    format: surface_format,
+                    blend: Some(wgpu::BlendState::ALPHA_BLENDING),
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
+            }),
+            primitive: wgpu::PrimitiveState {
+                topology: wgpu::PrimitiveTopology::TriangleList,
+                ..Default::default()
+            },
+            depth_stencil: None,
+            multisample: Default::default(),
+            multiview_mask: None,
+            cache: None,
+        });
+
+        // -- glyph pipeline --
+        let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
+            mag_filter: wgpu::FilterMode::Linear,
+            min_filter: wgpu::FilterMode::Linear,
+            ..Default::default()
+        });
+        let glyph_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("glyph bgl"),
+            entries: &[
+                wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: wgpu::ShaderStages::VERTEX,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Uniform,
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 1,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: false,
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 2,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                    count: None,
+                },
+            ],
+        });
+        let glyph_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("glyph bg"),
+            layout: &glyph_bgl,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: screen_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::TextureView(&atlas.view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: wgpu::BindingResource::Sampler(&sampler),
+                },
+            ],
+        });
+        let glyph_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("glyph shader"),
+            source: wgpu::ShaderSource::Wgsl(Cow::Borrowed(GLYPH_SHADER)),
+        });
+        let glyph_pipeline_layout =
+            device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                label: Some("glyph pl"),
+                bind_group_layouts: &[Some(&glyph_bgl)],
+                immediate_size: 0,
+            });
+        let glyph_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("glyph pipeline"),
+            layout: Some(&glyph_pipeline_layout),
+            vertex: wgpu::VertexState {
+                module: &glyph_shader,
+                entry_point: Some("vs_glyph"),
+                compilation_options: Default::default(),
+                buffers: &[
+                    wgpu::VertexBufferLayout {
+                        array_stride: std::mem::size_of::<Vertex>() as u64,
+                        step_mode: wgpu::VertexStepMode::Vertex,
+                        attributes: &wgpu::vertex_attr_array![0 => Float32x2, 1 => Float32x2],
+                    },
+                    wgpu::VertexBufferLayout {
+                        array_stride: std::mem::size_of::<GlyphInstance>() as u64,
+                        step_mode: wgpu::VertexStepMode::Instance,
+                        attributes: &wgpu::vertex_attr_array![
+                            2 => Float32x4,
+                            3 => Float32x4,
+                            4 => Float32x4,
+                        ],
+                    },
+                ],
+            },
+            fragment: Some(wgpu::FragmentState {
+                module: &glyph_shader,
+                entry_point: Some("fs_glyph"),
+                compilation_options: Default::default(),
+                targets: &[Some(wgpu::ColorTargetState {
+                    format: surface_format,
+                    blend: Some(wgpu::BlendState::ALPHA_BLENDING),
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
+            }),
+            primitive: wgpu::PrimitiveState {
+                topology: wgpu::PrimitiveTopology::TriangleList,
+                ..Default::default()
+            },
+            depth_stencil: None,
+            multisample: Default::default(),
+            multiview_mask: None,
+            cache: None,
+        });
+
+        let font_system = FontSystem::new();
+        let swash_cache = SwashCache::new();
+
+        Ok(Self {
+            window,
+            device,
+            queue,
+            surface,
+            surface_format,
+            size,
+            screen_buffer,
+            vertex_buffer,
+            rect_pipeline,
+            rect_bind_group,
+            glyph_pipeline,
+            glyph_bind_group,
+            atlas,
+            font_system,
+            swash_cache,
+        })
+    }
+
+    pub fn resize(&mut self, new_size: winit::dpi::PhysicalSize<u32>) {
+        if new_size.width == 0 || new_size.height == 0 {
+            return;
+        }
+        self.size = new_size;
+        self.surface.configure(
+            &self.device,
+            &wgpu::SurfaceConfiguration {
+                usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+                format: self.surface_format,
+                width: new_size.width,
+                height: new_size.height,
+                present_mode: wgpu::PresentMode::AutoVsync,
+                alpha_mode: wgpu::CompositeAlphaMode::Auto,
+                view_formats: vec![],
+                desired_maximum_frame_latency: 2,
+            },
+        );
+    }
+
+    pub fn render(&mut self, commands: &[DrawCommand], clear_color: [f32; 4]) {
+        let frame = match self.surface.get_current_texture() {
+            wgpu::CurrentSurfaceTexture::Success(t)
+            | wgpu::CurrentSurfaceTexture::Suboptimal(t) => t,
+            _ => return,
+        };
+        let view = frame.texture.create_view(&Default::default());
+
+        self.queue.write_buffer(
+            &self.screen_buffer,
+            0,
+            bytemuck::cast_slice(&[
+                self.size.width as f32,
+                self.size.height as f32,
+                0.0_f32,
+                0.0_f32,
+            ]),
+        );
+
+        let mut rect_instances = Vec::new();
+        let mut glyph_instances = Vec::new();
+
+        for cmd in commands {
+            match cmd {
+                DrawCommand::Rect {
+                    rect,
+                    color,
+                    border_radius,
+                } => {
+                    rect_instances.push(RectInstance {
+                        rect: [rect.x, rect.y, rect.w, rect.h],
+                        color: *color,
+                        radius: *border_radius,
+                        border: 0.0,
+                        border_color: [0.0; 4],
+                        _pad: [0.0; 2],
+                    });
+                }
+                DrawCommand::Border {
+                    rect,
+                    color,
+                    width,
+                    radius,
+                } => {
+                    rect_instances.push(RectInstance {
+                        rect: [rect.x, rect.y, rect.w, rect.h],
+                        color: [0.0, 0.0, 0.0, 0.0],
+                        radius: *radius,
+                        border: *width,
+                        border_color: *color,
+                        _pad: [0.0; 2],
+                    });
+                }
+                DrawCommand::Text {
+                    text,
+                    x,
+                    y,
+                    max_width,
+                    color,
+                    font_size,
+                } => {
+                    self.rasterize_text(
+                        text,
+                        *x,
+                        *y,
+                        *max_width,
+                        *color,
+                        *font_size,
+                        &mut glyph_instances,
+                    );
+                }
+            }
+        }
+
+        let mut encoder = self
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("webview encoder"),
+            });
+
+        {
+            let mut rpass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("clear pass"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: &view,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(wgpu::Color {
+                            r: clear_color[0] as f64,
+                            g: clear_color[1] as f64,
+                            b: clear_color[2] as f64,
+                            a: clear_color[3] as f64,
+                        }),
+                        store: wgpu::StoreOp::Store,
+                    },
+                    depth_slice: None,
+                })],
+                depth_stencil_attachment: None,
+                timestamp_writes: None,
+                occlusion_query_set: None,
+                multiview_mask: None,
+            });
+
+            if !rect_instances.is_empty() {
+                let instance_buf =
+                    self.device
+                        .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                            label: Some("rect instances"),
+                            contents: bytemuck::cast_slice(&rect_instances),
+                            usage: wgpu::BufferUsages::VERTEX,
+                        });
+                rpass.set_pipeline(&self.rect_pipeline);
+                rpass.set_bind_group(0, &self.rect_bind_group, &[]);
+                rpass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
+                rpass.set_vertex_buffer(1, instance_buf.slice(..));
+                rpass.draw(0..6, 0..rect_instances.len() as u32);
+            }
+
+            if !glyph_instances.is_empty() {
+                let instance_buf =
+                    self.device
+                        .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                            label: Some("glyph instances"),
+                            contents: bytemuck::cast_slice(&glyph_instances),
+                            usage: wgpu::BufferUsages::VERTEX,
+                        });
+                rpass.set_pipeline(&self.glyph_pipeline);
+                rpass.set_bind_group(0, &self.glyph_bind_group, &[]);
+                rpass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
+                rpass.set_vertex_buffer(1, instance_buf.slice(..));
+                rpass.draw(0..6, 0..glyph_instances.len() as u32);
+            }
+        }
+
+        self.queue.submit(std::iter::once(encoder.finish()));
+        frame.present();
+    }
+
+    fn rasterize_text(
+        &mut self,
+        text: &str,
+        x: f32,
+        y: f32,
+        max_width: f32,
+        color: [f32; 4],
+        font_size: f32,
+        instances: &mut Vec<GlyphInstance>,
+    ) {
+        let metrics = Metrics::new(font_size, font_size * 1.2);
+        let attrs = Attrs::new().family(Family::SansSerif);
+        let mut buffer = CosmicBuffer::new(&mut self.font_system, metrics);
+        buffer.set_size(&mut self.font_system, Some(max_width), None);
+        buffer.set_text(&mut self.font_system, text, attrs, Shaping::Advanced);
+        buffer.shape_until_scroll(&mut self.font_system, false);
+
+        for run in buffer.layout_runs() {
+            for glyph in run.glyphs.iter() {
+                let physical = glyph.physical((x, y), 1.0);
+                if let Some(entry) = self.atlas.get_or_insert(
+                    &self.queue,
+                    &mut self.font_system,
+                    &mut self.swash_cache,
+                    physical.cache_key,
+                    font_size,
+                ) {
+                    if entry.width == 0 || entry.height == 0 {
+                        continue;
+                    }
+                    let gx = physical.x as f32 + entry.offset_x as f32;
+                    let gy = physical.y as f32 - entry.offset_y as f32 + run.line_y;
+                    instances.push(GlyphInstance {
+                        rect: [gx, gy, entry.width as f32, entry.height as f32],
+                        uv_rect: entry.uv,
+                        color,
+                    });
+                }
+            }
+        }
+    }
+
+    pub fn measure_text(&mut self, text: &str, font_size: f32, max_width: f32) -> (f32, f32) {
+        let metrics = Metrics::new(font_size, font_size * 1.2);
+        let attrs = Attrs::new().family(Family::SansSerif);
+        let mut buffer = CosmicBuffer::new(&mut self.font_system, metrics);
+        buffer.set_size(&mut self.font_system, Some(max_width), None);
+        buffer.set_text(&mut self.font_system, text, attrs, Shaping::Advanced);
+        buffer.shape_until_scroll(&mut self.font_system, false);
+
+        let mut width = 0.0_f32;
+        let mut height = 0.0_f32;
+        for run in buffer.layout_runs() {
+            width = width.max(run.line_w);
+            height = run.line_y + font_size;
+        }
+        (width, height)
+    }
+}
