@@ -325,6 +325,7 @@ pub struct GpuState {
     pub queue: wgpu::Queue,
     pub surface: wgpu::Surface<'static>,
     pub surface_format: wgpu::TextureFormat,
+    render_format: wgpu::TextureFormat,
     pub size: winit::dpi::PhysicalSize<u32>,
 
     screen_buffer: wgpu::Buffer,
@@ -362,6 +363,13 @@ impl GpuState {
             .first()
             .copied()
             .ok_or_else(|| anyhow!("no surface format"))?;
+        let render_format = surface_format.remove_srgb_suffix();
+
+        let view_formats = if render_format != surface_format {
+            vec![render_format]
+        } else {
+            vec![]
+        };
 
         surface.configure(
             &device,
@@ -372,7 +380,7 @@ impl GpuState {
                 height: size.height.max(1),
                 present_mode: wgpu::PresentMode::AutoVsync,
                 alpha_mode: wgpu::CompositeAlphaMode::Auto,
-                view_formats: vec![],
+                view_formats: view_formats.clone(),
                 desired_maximum_frame_latency: 2,
             },
         );
@@ -479,7 +487,7 @@ impl GpuState {
                 entry_point: Some("fs_rect"),
                 compilation_options: Default::default(),
                 targets: &[Some(wgpu::ColorTargetState {
-                    format: surface_format,
+                    format: render_format,
                     blend: Some(wgpu::BlendState::ALPHA_BLENDING),
                     write_mask: wgpu::ColorWrites::ALL,
                 })],
@@ -588,7 +596,7 @@ impl GpuState {
                 entry_point: Some("fs_glyph"),
                 compilation_options: Default::default(),
                 targets: &[Some(wgpu::ColorTargetState {
-                    format: surface_format,
+                    format: render_format,
                     blend: Some(wgpu::BlendState::ALPHA_BLENDING),
                     write_mask: wgpu::ColorWrites::ALL,
                 })],
@@ -612,6 +620,7 @@ impl GpuState {
             queue,
             surface,
             surface_format,
+            render_format,
             size,
             screen_buffer,
             vertex_buffer,
@@ -630,6 +639,11 @@ impl GpuState {
             return;
         }
         self.size = new_size;
+        let view_formats = if self.render_format != self.surface_format {
+            vec![self.render_format]
+        } else {
+            vec![]
+        };
         self.surface.configure(
             &self.device,
             &wgpu::SurfaceConfiguration {
@@ -639,7 +653,7 @@ impl GpuState {
                 height: new_size.height,
                 present_mode: wgpu::PresentMode::AutoVsync,
                 alpha_mode: wgpu::CompositeAlphaMode::Auto,
-                view_formats: vec![],
+                view_formats,
                 desired_maximum_frame_latency: 2,
             },
         );
@@ -651,7 +665,10 @@ impl GpuState {
             | wgpu::CurrentSurfaceTexture::Suboptimal(t) => t,
             _ => return,
         };
-        let view = frame.texture.create_view(&Default::default());
+        let view = frame.texture.create_view(&wgpu::TextureViewDescriptor {
+            format: Some(self.render_format),
+            ..Default::default()
+        });
 
         self.queue.write_buffer(
             &self.screen_buffer,
