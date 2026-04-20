@@ -1,7 +1,14 @@
 use crate::types;
 
+pub struct TextMeasure {
+    pub text_len: f32,
+    pub font_size: f32,
+}
+
+pub type TaffyTree = taffy::TaffyTree<Option<TextMeasure>>;
+
 pub struct LayoutTree {
-    pub taffy: taffy::TaffyTree,
+    pub taffy: TaffyTree,
     pub root: LayoutNode,
 }
 
@@ -16,9 +23,9 @@ pub struct LayoutNode {
 }
 
 pub fn build_layout(styled: &types::StyledNode, viewport_w: f32, viewport_h: f32) -> LayoutTree {
-    let mut taffy = taffy::TaffyTree::new();
+    let mut taffy = TaffyTree::new();
     let mut index_counter = 0;
-    let root = build_node(&mut taffy, styled, &mut index_counter, false, false);
+    let root = build_node(&mut taffy, styled, &mut index_counter);
 
     let mut root_style = taffy.style(root.taffy_id).unwrap().clone();
     root_style.size = taffy::Size {
@@ -26,30 +33,58 @@ pub fn build_layout(styled: &types::StyledNode, viewport_w: f32, viewport_h: f32
         height: taffy::prelude::length(viewport_h),
     };
     let _ = taffy.set_style(root.taffy_id, root_style);
-    let _ = taffy.compute_layout(
+    let _ = taffy.compute_layout_with_measure(
         root.taffy_id,
         taffy::Size {
             width: taffy::prelude::AvailableSpace::Definite(viewport_w),
             height: taffy::prelude::AvailableSpace::Definite(viewport_h),
+        },
+        |known_dimensions, available_space, _node_id, node_context, _style| {
+            if let Some(Some(measure)) = node_context {
+                measure_text(known_dimensions, available_space, measure)
+            } else {
+                taffy::Size {
+                    width: known_dimensions.width.unwrap_or(0.0),
+                    height: known_dimensions.height.unwrap_or(0.0),
+                }
+            }
         },
     );
 
     LayoutTree { taffy, root }
 }
 
-fn is_row_container(s: &types::ComputedStyle) -> bool {
-    match s.display {
-        types::Display::Flex => matches!(s.flex_direction, types::FlexDirection::Row),
-        _ => false, // block/inline are column containers
-    }
+fn measure_text(
+    known_dimensions: taffy::Size<Option<f32>>,
+    available_space: taffy::Size<taffy::prelude::AvailableSpace>,
+    measure: &TextMeasure,
+) -> taffy::Size<f32> {
+    let char_w = measure.font_size * 0.6;
+    let full_text_w = measure.text_len * char_w;
+    let line_h = measure.font_size * 1.3;
+
+    let width = known_dimensions.width.unwrap_or_else(|| match available_space.width {
+        taffy::prelude::AvailableSpace::Definite(w) => full_text_w.min(w),
+        taffy::prelude::AvailableSpace::MinContent => char_w * 3.0,
+        taffy::prelude::AvailableSpace::MaxContent => full_text_w,
+    });
+
+    let height = known_dimensions.height.unwrap_or_else(|| {
+        if width > 0.0 && full_text_w > 0.0 {
+            let lines = (full_text_w / width).ceil().max(1.0);
+            lines * line_h
+        } else {
+            line_h
+        }
+    });
+
+    taffy::Size { width, height }
 }
 
 fn build_node(
-    taffy: &mut taffy::TaffyTree,
+    taffy: &mut TaffyTree,
     styled: &types::StyledNode,
     index_counter: &mut usize,
-    parent_is_row: bool,
-    need_intrinsic_width: bool,
 ) -> LayoutNode {
     let idx = *index_counter;
     *index_counter += 1;
@@ -69,22 +104,10 @@ fn build_node(
         };
     }
 
-    let this_is_row = is_row_container(s);
-    // Column containers in row parents need children to provide intrinsic width,
-    // UNLESS this element's width is externally constrained (explicit width or
-    // flex-basis in a row parent). Row containers always reset the flag.
-    let has_constrained_width = !matches!(s.width, types::Dimension::Auto)
-        || (parent_is_row && !matches!(s.flex_basis, types::Dimension::Auto));
-    let children_need_intrinsic = if this_is_row || has_constrained_width {
-        false
-    } else {
-        parent_is_row || need_intrinsic_width
-    };
-
     let child_nodes: Vec<LayoutNode> = styled
         .children
         .iter()
-        .map(|c| build_node(taffy, c, index_counter, this_is_row, children_need_intrinsic))
+        .map(|c| build_node(taffy, c, index_counter))
         .collect();
 
     let child_ids: Vec<taffy::NodeId> = child_nodes.iter().map(|c| c.taffy_id).collect();
@@ -93,18 +116,13 @@ fn build_node(
 
     let taffy_id = if child_ids.is_empty() {
         if !styled.dom_node.text.is_empty() {
-            let text_h = s.font_size * 1.3;
-
-            let mut style = taffy_style;
-            if parent_is_row || need_intrinsic_width {
-                let text_len = styled.dom_node.text.len() as f32;
-                let char_w = s.font_size * 0.6;
-                let text_w = text_len * char_w;
-                style.size.width = taffy::prelude::length(text_w);
-            }
-            style.min_size.height = taffy::prelude::length(text_h);
-            style.flex_shrink = 1.0;
-            taffy.new_leaf(style).unwrap()
+            let context = TextMeasure {
+                text_len: styled.dom_node.text.len() as f32,
+                font_size: s.font_size,
+            };
+            taffy
+                .new_leaf_with_context(taffy_style, Some(context))
+                .unwrap()
         } else {
             taffy.new_leaf(taffy_style).unwrap()
         }

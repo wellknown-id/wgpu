@@ -21,7 +21,7 @@ pub struct HitResult {
 }
 
 fn emit_node(
-    taffy: &taffy::TaffyTree,
+    taffy: &crate::layout::TaffyTree,
     node: &LayoutNode,
     parent_x: f32,
     parent_y: f32,
@@ -75,7 +75,7 @@ fn emit_node(
 }
 
 fn hit_test_node(
-    taffy: &taffy::TaffyTree,
+    taffy: &crate::layout::TaffyTree,
     node: &LayoutNode,
     parent_x: f32,
     parent_y: f32,
