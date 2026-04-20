@@ -77,11 +77,13 @@ fn measure_text(
     let full_text_w = measure.text_len * char_w;
     let line_h = measure.font_size * 1.3;
 
-    let width = known_dimensions.width.unwrap_or_else(|| match available_space.width {
-        taffy::prelude::AvailableSpace::Definite(w) => full_text_w.min(w),
-        taffy::prelude::AvailableSpace::MinContent => char_w * 3.0,
-        taffy::prelude::AvailableSpace::MaxContent => full_text_w,
-    });
+    let width = known_dimensions
+        .width
+        .unwrap_or_else(|| match available_space.width {
+            taffy::prelude::AvailableSpace::Definite(w) => full_text_w.min(w),
+            taffy::prelude::AvailableSpace::MinContent => char_w * 3.0,
+            taffy::prelude::AvailableSpace::MaxContent => full_text_w,
+        });
 
     let height = known_dimensions.height.unwrap_or_else(|| {
         if width > 0.0 && full_text_w > 0.0 {

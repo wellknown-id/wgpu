@@ -59,9 +59,14 @@ impl App {
             apply_text_overrides(&mut styled, &overrides);
         }
 
+        #[cfg(feature = "js")]
+        let canvas_ops = state.js.canvas_ops();
+        #[cfg(not(feature = "js"))]
+        let canvas_ops = std::collections::HashMap::new();
+
         let size = state.gpu.size;
         state.layout = build_layout(&styled, size.width as f32, size.height as f32);
-        state.commands = generate_draw_commands(&state.layout);
+        state.commands = generate_draw_commands(&state.layout, &canvas_ops);
         state.clear_color = styled.style.background_color;
         #[cfg(feature = "js")]
         state.js.clear_dirty();
@@ -173,9 +178,14 @@ impl ApplicationHandler for App {
             apply_text_overrides(&mut styled, &overrides);
         }
 
+        #[cfg(feature = "js")]
+        let canvas_ops = js.canvas_ops();
+        #[cfg(not(feature = "js"))]
+        let canvas_ops = std::collections::HashMap::new();
+
         let size = gpu.size;
         let layout_tree = build_layout(&styled, size.width as f32, size.height as f32);
-        let commands = generate_draw_commands(&layout_tree);
+        let commands = generate_draw_commands(&layout_tree, &canvas_ops);
 
         let clear_color = styled.style.background_color;
 
@@ -249,10 +259,12 @@ impl ApplicationHandler for App {
             WindowEvent::RedrawRequested => {
                 #[cfg(feature = "js")]
                 {
-                    let s = self.state.as_mut().unwrap();
-                    let now_ms = s.start_time.elapsed().as_secs_f64() * 1000.0;
-                    s.js.tick(now_ms);
-                    if s.js.is_dirty() {
+                    {
+                        let s = self.state.as_mut().unwrap();
+                        let now_ms = s.start_time.elapsed().as_secs_f64() * 1000.0;
+                        s.js.tick(now_ms);
+                    }
+                    if self.state.as_ref().unwrap().js.is_dirty() {
                         self.rebuild_layout();
                     }
                 }

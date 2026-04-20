@@ -1,15 +1,30 @@
+use std::collections::HashMap;
+
 use crate::layout::{LayoutNode, LayoutTree};
 use crate::types::*;
 
-pub fn generate_draw_commands(tree: &LayoutTree) -> Vec<DrawCommand> {
+pub fn generate_draw_commands(
+    tree: &LayoutTree,
+    canvas_ops: &HashMap<String, Vec<CanvasDrawOp>>,
+) -> Vec<DrawCommand> {
     let mut commands = Vec::new();
-    emit_node(&tree.taffy, &tree.root, 0.0, 0.0, &mut commands);
+    emit_node(&tree.taffy, &tree.root, 0.0, 0.0, canvas_ops, &mut commands);
     commands
 }
 
 pub fn hit_test(tree: &LayoutTree, x: f32, y: f32) -> Option<HitResult> {
     let mut result = None;
-    hit_test_node(&tree.taffy, &tree.root, 0.0, 0.0, x, y, &[], None, &mut result);
+    hit_test_node(
+        &tree.taffy,
+        &tree.root,
+        0.0,
+        0.0,
+        x,
+        y,
+        &[],
+        None,
+        &mut result,
+    );
     result
 }
 
@@ -27,6 +42,7 @@ fn emit_node(
     node: &LayoutNode,
     parent_x: f32,
     parent_y: f32,
+    canvas_ops: &HashMap<String, Vec<CanvasDrawOp>>,
     commands: &mut Vec<DrawCommand>,
 ) {
     if node.style.display == Display::None {
@@ -71,8 +87,110 @@ fn emit_node(
         });
     }
 
+    if node.tag == "canvas" {
+        if let Some(ref id) = node.id {
+            if let Some(ops) = canvas_ops.get(id) {
+                emit_canvas_ops(ops, x, y, commands);
+            }
+        }
+    }
+
     for child in &node.children {
-        emit_node(taffy, child, x, y, commands);
+        emit_node(taffy, child, x, y, canvas_ops, commands);
+    }
+}
+
+fn emit_canvas_ops(ops: &[CanvasDrawOp], cx: f32, cy: f32, commands: &mut Vec<DrawCommand>) {
+    for op in ops {
+        match op {
+            CanvasDrawOp::FillRect { x, y, w, h, color } => {
+                commands.push(DrawCommand::Rect {
+                    rect: LayoutRect {
+                        x: cx + x,
+                        y: cy + y,
+                        w: *w,
+                        h: *h,
+                    },
+                    color: *color,
+                    border_radius: 0.0,
+                });
+            }
+            CanvasDrawOp::StrokeRect {
+                x,
+                y,
+                w,
+                h,
+                color,
+                line_width,
+            } => {
+                commands.push(DrawCommand::Border {
+                    rect: LayoutRect {
+                        x: cx + x,
+                        y: cy + y,
+                        w: *w,
+                        h: *h,
+                    },
+                    color: *color,
+                    width: *line_width,
+                    radius: 0.0,
+                });
+            }
+            CanvasDrawOp::FillCircle {
+                cx: ocx,
+                cy: ocy,
+                radius,
+                color,
+            } => {
+                let r = *radius;
+                commands.push(DrawCommand::Rect {
+                    rect: LayoutRect {
+                        x: cx + ocx - r,
+                        y: cy + ocy - r,
+                        w: r * 2.0,
+                        h: r * 2.0,
+                    },
+                    color: *color,
+                    border_radius: r,
+                });
+            }
+            CanvasDrawOp::StrokeCircle {
+                cx: ocx,
+                cy: ocy,
+                radius,
+                color,
+                line_width,
+            } => {
+                let r = *radius;
+                commands.push(DrawCommand::Border {
+                    rect: LayoutRect {
+                        x: cx + ocx - r,
+                        y: cy + ocy - r,
+                        w: r * 2.0,
+                        h: r * 2.0,
+                    },
+                    color: *color,
+                    width: *line_width,
+                    radius: r,
+                });
+            }
+            CanvasDrawOp::Line {
+                x0,
+                y0,
+                x1,
+                y1,
+                color,
+                line_width,
+            } => {
+                commands.push(DrawCommand::Line {
+                    x0: cx + x0,
+                    y0: cy + y0,
+                    x1: cx + x1,
+                    y1: cy + y1,
+                    color: *color,
+                    width: *line_width,
+                });
+            }
+        }
     }
 }
 

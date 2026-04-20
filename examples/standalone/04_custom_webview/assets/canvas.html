@@ -1,0 +1,187 @@
+<!DOCTYPE html>
+<html>
+<head>
+<style>
+  body {
+    background: #1a1a2e;
+    color: #e0e0e0;
+    font-size: 16px;
+    padding: 0;
+    margin: 0;
+  }
+  .header {
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    background: #16213e;
+    padding: 20px;
+    height: 64px;
+  }
+  .header h1 {
+    color: #53d8fb;
+    font-size: 28px;
+  }
+  .nav {
+    display: flex;
+    padding: 12px;
+    background: #0f3460;
+    gap: 16px;
+  }
+  .link {
+    color: #e94560;
+    font-size: 14px;
+    padding: 8px;
+  }
+  .canvas-container {
+    display: flex;
+    justify-content: center;
+    padding: 24px;
+  }
+  .info {
+    display: flex;
+    flex-direction: column;
+    padding: 24px;
+    gap: 12px;
+  }
+  .info-card {
+    background: #16213e;
+    padding: 16px;
+    border-radius: 8px;
+  }
+  .info-card h3 {
+    color: #e94560;
+    font-size: 16px;
+  }
+  .info-card p {
+    color: #a7c5eb;
+    font-size: 13px;
+  }
+</style>
+</head>
+<body>
+  <div class="header">
+    <h1>Canvas Demo</h1>
+  </div>
+  <div class="nav">
+    <a href="index.html"><div class="link">Back to Home</div></a>
+  </div>
+  <div class="canvas-container">
+    <canvas id="demo" style="width: 600px; height: 400px; background: #0a0a1a; border-radius: 8px;"></canvas>
+  </div>
+  <div class="info">
+    <div class="info-card">
+      <h3>Software Canvas</h3>
+      <p>This canvas is rendered entirely in software by the JS bridge. The pixel buffer is uploaded to a GPU texture and displayed as a textured quad via wgpu.</p>
+    </div>
+  </div>
+  <script>
+    var canvas = document.getElementById('demo');
+    canvas.width = 600;
+    canvas.height = 400;
+    var ctx = canvas.getContext('2d');
+
+    // Background gradient (manual bands)
+    var bands = 40;
+    for (var i = 0; i < bands; i++) {
+      var t = i / bands;
+      var r = Math.round(10 + t * 15);
+      var g = Math.round(10 + t * 20);
+      var b = Math.round(30 + t * 40);
+      ctx.fillStyle = 'rgb(' + r + ',' + g + ',' + b + ')';
+      ctx.fillRect(0, i * (400 / bands), 600, 400 / bands + 1);
+    }
+
+    // Grid lines
+    ctx.strokeStyle = 'rgba(100, 140, 200, 40)';
+    ctx.lineWidth = 1;
+    for (var gx = 0; gx < 600; gx += 30) {
+      ctx.beginPath();
+      ctx.moveTo(gx, 0);
+      ctx.lineTo(gx, 400);
+      ctx.stroke();
+    }
+    for (var gy = 0; gy < 400; gy += 30) {
+      ctx.beginPath();
+      ctx.moveTo(0, gy);
+      ctx.lineTo(600, gy);
+      ctx.stroke();
+    }
+
+    // Rotating star burst
+    var cx = 300, cy = 200;
+    var rays = 12;
+    for (var i = 0; i < rays; i++) {
+      var angle = (i / rays) * Math.PI * 2;
+      var innerR = 30;
+      var outerR = 120 + Math.sin(i * 0.7) * 30;
+      var x0 = cx + Math.cos(angle) * innerR;
+      var y0 = cy + Math.sin(angle) * innerR;
+      var x1 = cx + Math.cos(angle) * outerR;
+      var y1 = cy + Math.sin(angle) * outerR;
+      var hue = Math.round((i / rays) * 360);
+      var r2 = Math.round(Math.sin(hue * 0.0174) * 127 + 128);
+      var g2 = Math.round(Math.sin((hue + 120) * 0.0174) * 127 + 128);
+      var b2 = Math.round(Math.sin((hue + 240) * 0.0174) * 127 + 128);
+      ctx.strokeStyle = 'rgba(' + r2 + ',' + g2 + ',' + b2 + ', 200)';
+      ctx.lineWidth = 3;
+      ctx.beginPath();
+      ctx.moveTo(x0, y0);
+      ctx.lineTo(x1, y1);
+      ctx.stroke();
+    }
+
+    // Concentric circles
+    var rings = 5;
+    for (var i = rings; i >= 1; i--) {
+      var t = i / rings;
+      var radius = i * 22;
+      var r3 = Math.round(233 * t);
+      var g3 = Math.round(69 + 100 * (1 - t));
+      var b3 = Math.round(96 + 150 * (1 - t));
+      ctx.fillStyle = 'rgba(' + r3 + ',' + g3 + ',' + b3 + ', 180)';
+      ctx.beginPath();
+      ctx.arc(cx, cy, radius, 0, Math.PI * 2);
+      ctx.fill();
+    }
+
+    // Center highlight
+    ctx.fillStyle = 'rgba(255, 255, 255, 230)';
+    ctx.beginPath();
+    ctx.arc(cx, cy, 8, 0, Math.PI * 2);
+    ctx.fill();
+
+    // Corner decorations
+    var corners = [[40, 40], [560, 40], [40, 360], [560, 360]];
+    var cornerColors = ['#e94560', '#53d8fb', '#ffd460', '#6bcb77'];
+    for (var i = 0; i < 4; i++) {
+      ctx.fillStyle = cornerColors[i];
+      ctx.beginPath();
+      ctx.arc(corners[i][0], corners[i][1], 16, 0, Math.PI * 2);
+      ctx.fill();
+
+      ctx.strokeStyle = cornerColors[i];
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.arc(corners[i][0], corners[i][1], 24, 0, Math.PI * 2);
+      ctx.stroke();
+    }
+
+    // Scatter smaller circles
+    for (var i = 0; i < 30; i++) {
+      var sx = 50 + (i * 137) % 500;
+      var sy = 50 + (i * 97) % 300;
+      var sr = 3 + (i % 5);
+      var hue2 = (i * 37) % 360;
+      var cr = Math.round(Math.sin(hue2 * 0.0174) * 100 + 155);
+      var cg = Math.round(Math.sin((hue2 + 120) * 0.0174) * 100 + 155);
+      var cb = Math.round(Math.sin((hue2 + 240) * 0.0174) * 100 + 155);
+      ctx.fillStyle = 'rgba(' + cr + ',' + cg + ',' + cb + ', 150)';
+      ctx.beginPath();
+      ctx.arc(sx, sy, sr, 0, Math.PI * 2);
+      ctx.fill();
+    }
+
+    console.log('Canvas drawing complete');
+  </script>
+</body>
+</html>

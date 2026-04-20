@@ -158,6 +158,54 @@ pub enum DrawCommand {
         color: [f32; 4],
         font_size: f32,
     },
+    Line {
+        x0: f32,
+        y0: f32,
+        x1: f32,
+        y1: f32,
+        color: [f32; 4],
+        width: f32,
+    },
+}
+
+#[derive(Debug, Clone)]
+pub enum CanvasDrawOp {
+    FillRect {
+        x: f32,
+        y: f32,
+        w: f32,
+        h: f32,
+        color: [f32; 4],
+    },
+    StrokeRect {
+        x: f32,
+        y: f32,
+        w: f32,
+        h: f32,
+        color: [f32; 4],
+        line_width: f32,
+    },
+    FillCircle {
+        cx: f32,
+        cy: f32,
+        radius: f32,
+        color: [f32; 4],
+    },
+    StrokeCircle {
+        cx: f32,
+        cy: f32,
+        radius: f32,
+        color: [f32; 4],
+        line_width: f32,
+    },
+    Line {
+        x0: f32,
+        y0: f32,
+        x1: f32,
+        y1: f32,
+        color: [f32; 4],
+        line_width: f32,
+    },
 }
 
 pub struct StyledNode {

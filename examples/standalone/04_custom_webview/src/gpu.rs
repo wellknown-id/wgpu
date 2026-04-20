@@ -14,6 +14,16 @@ use crate::types::DrawCommand;
 
 #[repr(C)]
 #[derive(Clone, Copy, Pod, Zeroable)]
+struct LineInstance {
+    p0: [f32; 2],
+    p1: [f32; 2],
+    color: [f32; 4],
+    width: f32,
+    _pad: [f32; 3],
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Pod, Zeroable)]
 struct Vertex {
     position: [f32; 2],
     uv: [f32; 2],
@@ -321,6 +331,56 @@ fn fs_glyph(in: GlyphOutput) -> @location(0) vec4<f32> {
 }
 "#;
 
+const LINE_SHADER: &str = r#"
+struct ScreenUniform {
+    size: vec2<f32>,
+    scroll: vec2<f32>,
+};
+@group(0) @binding(0) var<uniform> screen: ScreenUniform;
+
+struct LineInput {
+    @location(0) pos: vec2<f32>,
+    @location(1) uv: vec2<f32>,
+    @location(2) p0: vec2<f32>,
+    @location(3) p1: vec2<f32>,
+    @location(4) color: vec4<f32>,
+    @location(5) width: f32,
+};
+
+struct LineOutput {
+    @builtin(position) pos: vec4<f32>,
+    @location(0) color: vec4<f32>,
+};
+
+@vertex
+fn vs_line(in: LineInput) -> LineOutput {
+    var out: LineOutput;
+    let dir = in.p1 - in.p0;
+    let len = length(dir);
+    var normal: vec2<f32>;
+    if len > 0.001 {
+        normal = vec2<f32>(-dir.y, dir.x) / len;
+    } else {
+        normal = vec2<f32>(0.0, 1.0);
+    }
+    let base = mix(in.p0, in.p1, in.pos.x);
+    let offset = normal * (in.pos.y * 2.0 - 1.0) * in.width * 0.5;
+    let screen_pos = base + offset;
+    let x = screen_pos.x - screen.scroll.x;
+    let y = screen_pos.y - screen.scroll.y;
+    let nx = (x / screen.size.x) * 2.0 - 1.0;
+    let ny = (1.0 - (y / screen.size.y)) * 2.0 - 1.0;
+    out.pos = vec4<f32>(nx, ny, 0.0, 1.0);
+    out.color = in.color;
+    return out;
+}
+
+@fragment
+fn fs_line(in: LineOutput) -> @location(0) vec4<f32> {
+    return in.color;
+}
+"#;
+
 pub struct GpuState {
     pub window: Arc<Window>,
     pub device: wgpu::Device,
@@ -338,6 +398,8 @@ pub struct GpuState {
 
     glyph_pipeline: wgpu::RenderPipeline,
     glyph_bind_group: wgpu::BindGroup,
+
+    line_pipeline: wgpu::RenderPipeline,
 
     atlas: GlyphAtlas,
     pub font_system: FontSystem,
@@ -613,6 +675,61 @@ impl GpuState {
             cache: None,
         });
 
+        // -- line pipeline --
+        let line_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("line shader"),
+            source: wgpu::ShaderSource::Wgsl(Cow::Borrowed(LINE_SHADER)),
+        });
+        let line_pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("line pl"),
+            bind_group_layouts: &[Some(&rect_bgl)],
+            immediate_size: 0,
+        });
+        let line_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("line pipeline"),
+            layout: Some(&line_pipeline_layout),
+            vertex: wgpu::VertexState {
+                module: &line_shader,
+                entry_point: Some("vs_line"),
+                compilation_options: Default::default(),
+                buffers: &[
+                    wgpu::VertexBufferLayout {
+                        array_stride: std::mem::size_of::<Vertex>() as u64,
+                        step_mode: wgpu::VertexStepMode::Vertex,
+                        attributes: &wgpu::vertex_attr_array![0 => Float32x2, 1 => Float32x2],
+                    },
+                    wgpu::VertexBufferLayout {
+                        array_stride: std::mem::size_of::<LineInstance>() as u64,
+                        step_mode: wgpu::VertexStepMode::Instance,
+                        attributes: &wgpu::vertex_attr_array![
+                            2 => Float32x2,
+                            3 => Float32x2,
+                            4 => Float32x4,
+                            5 => Float32,
+                        ],
+                    },
+                ],
+            },
+            fragment: Some(wgpu::FragmentState {
+                module: &line_shader,
+                entry_point: Some("fs_line"),
+                compilation_options: Default::default(),
+                targets: &[Some(wgpu::ColorTargetState {
+                    format: render_format,
+                    blend: Some(wgpu::BlendState::ALPHA_BLENDING),
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
+            }),
+            primitive: wgpu::PrimitiveState {
+                topology: wgpu::PrimitiveTopology::TriangleList,
+                ..Default::default()
+            },
+            depth_stencil: None,
+            multisample: Default::default(),
+            multiview_mask: None,
+            cache: None,
+        });
+
         let font_system = FontSystem::new();
         let swash_cache = SwashCache::new();
 
@@ -630,6 +747,7 @@ impl GpuState {
             rect_bind_group,
             glyph_pipeline,
             glyph_bind_group,
+            line_pipeline,
             atlas,
             font_system,
             swash_cache,
@@ -685,6 +803,7 @@ impl GpuState {
 
         let mut rect_instances = Vec::new();
         let mut glyph_instances = Vec::new();
+        let mut line_instances = Vec::new();
 
         for cmd in commands {
             match cmd {
@@ -734,6 +853,22 @@ impl GpuState {
                         *font_size,
                         &mut glyph_instances,
                     );
+                }
+                DrawCommand::Line {
+                    x0,
+                    y0,
+                    x1,
+                    y1,
+                    color,
+                    width,
+                } => {
+                    line_instances.push(LineInstance {
+                        p0: [*x0, *y0],
+                        p1: [*x1, *y1],
+                        color: *color,
+                        width: *width,
+                        _pad: [0.0; 3],
+                    });
                 }
             }
         }
@@ -795,6 +930,21 @@ impl GpuState {
                 rpass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
                 rpass.set_vertex_buffer(1, instance_buf.slice(..));
                 rpass.draw(0..6, 0..glyph_instances.len() as u32);
+            }
+
+            if !line_instances.is_empty() {
+                let instance_buf =
+                    self.device
+                        .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                            label: Some("line instances"),
+                            contents: bytemuck::cast_slice(&line_instances),
+                            usage: wgpu::BufferUsages::VERTEX,
+                        });
+                rpass.set_pipeline(&self.line_pipeline);
+                rpass.set_bind_group(0, &self.rect_bind_group, &[]);
+                rpass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
+                rpass.set_vertex_buffer(1, instance_buf.slice(..));
+                rpass.draw(0..6, 0..line_instances.len() as u32);
             }
         }
 
