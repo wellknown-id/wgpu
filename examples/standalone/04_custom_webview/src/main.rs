@@ -3,6 +3,7 @@
 mod css_engine;
 mod gpu;
 mod html_parser;
+#[cfg(feature = "js")]
 mod js_bridge;
 mod layout;
 mod renderer;
@@ -21,21 +22,22 @@ use winit::{
 
 use css_engine::apply_styles;
 use gpu::GpuState;
-use html_parser::{extract_script, extract_styles, parse_html};
-use js_bridge::JsBridge;
+use html_parser::{extract_styles, parse_html};
 use layout::{build_layout, LayoutTree};
 use renderer::generate_draw_commands;
 use types::DrawCommand;
 
 struct WebviewState {
     gpu: GpuState,
-    js: JsBridge,
+    #[cfg(feature = "js")]
+    js: js_bridge::JsBridge,
     layout: LayoutTree,
     commands: Vec<DrawCommand>,
     clear_color: [f32; 4],
     html_source: String,
     css_sources: Vec<String>,
     asset_dir: PathBuf,
+    #[allow(dead_code)]
     start_time: Instant,
     scroll_y: f32,
 }
@@ -51,13 +53,17 @@ impl App {
         let dom = parse_html(&state.html_source);
         let mut styled = apply_styles(&dom, &state.css_sources);
 
-        let overrides = state.js.text_overrides().clone();
-        apply_text_overrides(&mut styled, &overrides);
+        #[cfg(feature = "js")]
+        {
+            let overrides = state.js.text_overrides().clone();
+            apply_text_overrides(&mut styled, &overrides);
+        }
 
         let size = state.gpu.size;
         state.layout = build_layout(&styled, size.width as f32, size.height as f32);
         state.commands = generate_draw_commands(&state.layout);
         state.clear_color = styled.style.background_color;
+        #[cfg(feature = "js")]
         state.js.clear_dirty();
     }
 
@@ -73,12 +79,15 @@ impl App {
         };
 
         let css_sources = extract_styles(&html_source);
-        let script = extract_script(&html_source);
-        let js = JsBridge::new(script.as_deref()).expect("failed to init JS bridge");
+        #[cfg(feature = "js")]
+        {
+            let script = html_parser::extract_script(&html_source);
+            state.js =
+                js_bridge::JsBridge::new(script.as_deref()).expect("failed to init JS bridge");
+        }
 
         state.html_source = html_source;
         state.css_sources = css_sources;
-        state.js = js;
         state.scroll_y = 0.0;
 
         self.rebuild_layout();
@@ -86,6 +95,7 @@ impl App {
     }
 }
 
+#[cfg(feature = "js")]
 fn apply_text_overrides(
     styled: &mut types::StyledNode,
     overrides: &std::collections::HashMap<String, String>,
@@ -147,14 +157,21 @@ impl ApplicationHandler for App {
             std::fs::read_to_string(asset_dir.join(&html_file)).expect("failed to read HTML file");
 
         let css_sources = extract_styles(&html_source);
-        let script = extract_script(&html_source);
 
-        let js = JsBridge::new(script.as_deref()).expect("failed to init JS bridge");
+        #[cfg(feature = "js")]
+        let js = {
+            let script = html_parser::extract_script(&html_source);
+            js_bridge::JsBridge::new(script.as_deref()).expect("failed to init JS bridge")
+        };
 
         let dom = parse_html(&html_source);
         let mut styled = apply_styles(&dom, &css_sources);
-        let overrides = js.text_overrides().clone();
-        apply_text_overrides(&mut styled, &overrides);
+
+        #[cfg(feature = "js")]
+        {
+            let overrides = js.text_overrides().clone();
+            apply_text_overrides(&mut styled, &overrides);
+        }
 
         let size = gpu.size;
         let layout_tree = build_layout(&styled, size.width as f32, size.height as f32);
@@ -164,6 +181,7 @@ impl ApplicationHandler for App {
 
         self.state = Some(WebviewState {
             gpu,
+            #[cfg(feature = "js")]
             js,
             layout: layout_tree,
             commands,
@@ -205,11 +223,14 @@ impl ApplicationHandler for App {
                         return;
                     }
                 }
-                let s = self.state.as_mut().unwrap();
-                s.js.dispatch_click(&s.layout, mx, my + s.scroll_y);
-                if s.js.is_dirty() {
-                    self.rebuild_layout();
-                    self.state.as_ref().unwrap().gpu.window.request_redraw();
+                #[cfg(feature = "js")]
+                {
+                    let s = self.state.as_mut().unwrap();
+                    s.js.dispatch_click(&s.layout, mx, my + s.scroll_y);
+                    if s.js.is_dirty() {
+                        self.rebuild_layout();
+                        self.state.as_ref().unwrap().gpu.window.request_redraw();
+                    }
                 }
             }
             WindowEvent::MouseWheel { delta, .. } => {
@@ -226,12 +247,14 @@ impl ApplicationHandler for App {
                 CURSOR_POS = (position.x as f32, position.y as f32);
             },
             WindowEvent::RedrawRequested => {
-                let s = self.state.as_mut().unwrap();
-                let now_ms = s.start_time.elapsed().as_secs_f64() * 1000.0;
-                s.js.tick(now_ms);
-                let needs_rebuild = s.js.is_dirty();
-                if needs_rebuild {
-                    self.rebuild_layout();
+                #[cfg(feature = "js")]
+                {
+                    let s = self.state.as_mut().unwrap();
+                    let now_ms = s.start_time.elapsed().as_secs_f64() * 1000.0;
+                    s.js.tick(now_ms);
+                    if s.js.is_dirty() {
+                        self.rebuild_layout();
+                    }
                 }
                 let s = self.state.as_mut().unwrap();
                 s.gpu.render(&s.commands, s.clear_color, s.scroll_y);
@@ -245,6 +268,7 @@ impl ApplicationHandler for App {
 static mut CURSOR_POS: (f32, f32) = (0.0, 0.0);
 
 fn main() {
+    #[cfg(not(target_arch = "wasm32"))]
     env_logger::init();
 
     let event_loop = EventLoop::new().unwrap();

@@ -5248,6 +5248,7 @@ version = "0.0.0"
 dependencies = [
  "anyhow",
  "bytemuck",
+ "console_error_panic_hook",
  "cosmic-text",
  "env_logger",
  "html5ever",
@@ -5255,6 +5256,8 @@ dependencies = [
  "pollster",
  "rquickjs",
  "taffy",
+ "wasm-bindgen",
+ "web-sys",
  "wgpu",
  "winit",
 ]
