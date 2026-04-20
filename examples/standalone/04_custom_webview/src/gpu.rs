@@ -801,9 +801,13 @@ impl GpuState {
             ]),
         );
 
-        let mut rect_instances = Vec::new();
-        let mut glyph_instances = Vec::new();
-        let mut line_instances = Vec::new();
+        enum DrawGroup {
+            Rects(Vec<RectInstance>),
+            Glyphs(Vec<GlyphInstance>),
+            Lines(Vec<LineInstance>),
+        }
+
+        let mut groups: Vec<DrawGroup> = Vec::new();
 
         for cmd in commands {
             match cmd {
@@ -812,14 +816,19 @@ impl GpuState {
                     color,
                     border_radius,
                 } => {
-                    rect_instances.push(RectInstance {
+                    let inst = RectInstance {
                         rect: [rect.x, rect.y, rect.w, rect.h],
                         color: *color,
                         radius: *border_radius,
                         border: 0.0,
                         border_color: [0.0; 4],
                         _pad: [0.0; 2],
-                    });
+                    };
+                    if let Some(DrawGroup::Rects(ref mut v)) = groups.last_mut() {
+                        v.push(inst);
+                    } else {
+                        groups.push(DrawGroup::Rects(vec![inst]));
+                    }
                 }
                 DrawCommand::Border {
                     rect,
@@ -827,14 +836,19 @@ impl GpuState {
                     width,
                     radius,
                 } => {
-                    rect_instances.push(RectInstance {
+                    let inst = RectInstance {
                         rect: [rect.x, rect.y, rect.w, rect.h],
                         color: [0.0, 0.0, 0.0, 0.0],
                         radius: *radius,
                         border: *width,
                         border_color: *color,
                         _pad: [0.0; 2],
-                    });
+                    };
+                    if let Some(DrawGroup::Rects(ref mut v)) = groups.last_mut() {
+                        v.push(inst);
+                    } else {
+                        groups.push(DrawGroup::Rects(vec![inst]));
+                    }
                 }
                 DrawCommand::Text {
                     text,
@@ -844,6 +858,7 @@ impl GpuState {
                     color,
                     font_size,
                 } => {
+                    let mut glyphs = Vec::new();
                     self.rasterize_text(
                         text,
                         *x,
@@ -851,8 +866,15 @@ impl GpuState {
                         *max_width,
                         *color,
                         *font_size,
-                        &mut glyph_instances,
+                        &mut glyphs,
                     );
+                    if !glyphs.is_empty() {
+                        if let Some(DrawGroup::Glyphs(ref mut v)) = groups.last_mut() {
+                            v.extend(glyphs);
+                        } else {
+                            groups.push(DrawGroup::Glyphs(glyphs));
+                        }
+                    }
                 }
                 DrawCommand::Line {
                     x0,
@@ -862,13 +884,18 @@ impl GpuState {
                     color,
                     width,
                 } => {
-                    line_instances.push(LineInstance {
+                    let inst = LineInstance {
                         p0: [*x0, *y0],
                         p1: [*x1, *y1],
                         color: *color,
                         width: *width,
                         _pad: [0.0; 3],
-                    });
+                    };
+                    if let Some(DrawGroup::Lines(ref mut v)) = groups.last_mut() {
+                        v.push(inst);
+                    } else {
+                        groups.push(DrawGroup::Lines(vec![inst]));
+                    }
                 }
             }
         }
@@ -902,49 +929,51 @@ impl GpuState {
                 multiview_mask: None,
             });
 
-            if !rect_instances.is_empty() {
-                let instance_buf =
-                    self.device
-                        .create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                            label: Some("rect instances"),
-                            contents: bytemuck::cast_slice(&rect_instances),
-                            usage: wgpu::BufferUsages::VERTEX,
-                        });
-                rpass.set_pipeline(&self.rect_pipeline);
-                rpass.set_bind_group(0, &self.rect_bind_group, &[]);
-                rpass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
-                rpass.set_vertex_buffer(1, instance_buf.slice(..));
-                rpass.draw(0..6, 0..rect_instances.len() as u32);
-            }
-
-            if !glyph_instances.is_empty() {
-                let instance_buf =
-                    self.device
-                        .create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                            label: Some("glyph instances"),
-                            contents: bytemuck::cast_slice(&glyph_instances),
-                            usage: wgpu::BufferUsages::VERTEX,
-                        });
-                rpass.set_pipeline(&self.glyph_pipeline);
-                rpass.set_bind_group(0, &self.glyph_bind_group, &[]);
-                rpass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
-                rpass.set_vertex_buffer(1, instance_buf.slice(..));
-                rpass.draw(0..6, 0..glyph_instances.len() as u32);
-            }
-
-            if !line_instances.is_empty() {
-                let instance_buf =
-                    self.device
-                        .create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                            label: Some("line instances"),
-                            contents: bytemuck::cast_slice(&line_instances),
-                            usage: wgpu::BufferUsages::VERTEX,
-                        });
-                rpass.set_pipeline(&self.line_pipeline);
-                rpass.set_bind_group(0, &self.rect_bind_group, &[]);
-                rpass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
-                rpass.set_vertex_buffer(1, instance_buf.slice(..));
-                rpass.draw(0..6, 0..line_instances.len() as u32);
+            for group in &groups {
+                match group {
+                    DrawGroup::Rects(instances) => {
+                        let buf =
+                            self.device
+                                .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                                    label: Some("rect instances"),
+                                    contents: bytemuck::cast_slice(instances),
+                                    usage: wgpu::BufferUsages::VERTEX,
+                                });
+                        rpass.set_pipeline(&self.rect_pipeline);
+                        rpass.set_bind_group(0, &self.rect_bind_group, &[]);
+                        rpass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
+                        rpass.set_vertex_buffer(1, buf.slice(..));
+                        rpass.draw(0..6, 0..instances.len() as u32);
+                    }
+                    DrawGroup::Glyphs(instances) => {
+                        let buf =
+                            self.device
+                                .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                                    label: Some("glyph instances"),
+                                    contents: bytemuck::cast_slice(instances),
+                                    usage: wgpu::BufferUsages::VERTEX,
+                                });
+                        rpass.set_pipeline(&self.glyph_pipeline);
+                        rpass.set_bind_group(0, &self.glyph_bind_group, &[]);
+                        rpass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
+                        rpass.set_vertex_buffer(1, buf.slice(..));
+                        rpass.draw(0..6, 0..instances.len() as u32);
+                    }
+                    DrawGroup::Lines(instances) => {
+                        let buf =
+                            self.device
+                                .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                                    label: Some("line instances"),
+                                    contents: bytemuck::cast_slice(instances),
+                                    usage: wgpu::BufferUsages::VERTEX,
+                                });
+                        rpass.set_pipeline(&self.line_pipeline);
+                        rpass.set_bind_group(0, &self.rect_bind_group, &[]);
+                        rpass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
+                        rpass.set_vertex_buffer(1, buf.slice(..));
+                        rpass.draw(0..6, 0..instances.len() as u32);
+                    }
+                }
             }
         }
 
