@@ -92,7 +92,7 @@
     }
 
     // Grid lines
-    ctx.strokeStyle = 'rgba(100, 140, 200, 40)';
+    ctx.strokeStyle = 'rgba(100, 140, 200, 0.16)';
     ctx.lineWidth = 1;
     for (var gx = 0; gx < 600; gx += 30) {
       ctx.beginPath();
@@ -122,7 +122,7 @@
       var r2 = Math.round(Math.sin(hue * 0.0174) * 127 + 128);
       var g2 = Math.round(Math.sin((hue + 120) * 0.0174) * 127 + 128);
       var b2 = Math.round(Math.sin((hue + 240) * 0.0174) * 127 + 128);
-      ctx.strokeStyle = 'rgba(' + r2 + ',' + g2 + ',' + b2 + ', 200)';
+      ctx.strokeStyle = 'rgba(' + r2 + ',' + g2 + ',' + b2 + ', 0.78)';
       ctx.lineWidth = 3;
       ctx.beginPath();
       ctx.moveTo(x0, y0);
@@ -138,14 +138,14 @@
       var r3 = Math.round(233 * t);
       var g3 = Math.round(69 + 100 * (1 - t));
       var b3 = Math.round(96 + 150 * (1 - t));
-      ctx.fillStyle = 'rgba(' + r3 + ',' + g3 + ',' + b3 + ', 180)';
+      ctx.fillStyle = 'rgba(' + r3 + ',' + g3 + ',' + b3 + ', 0.71)';
       ctx.beginPath();
       ctx.arc(cx, cy, radius, 0, Math.PI * 2);
       ctx.fill();
     }
 
     // Center highlight
-    ctx.fillStyle = 'rgba(255, 255, 255, 230)';
+    ctx.fillStyle = 'rgba(255, 255, 255, 0.9)';
     ctx.beginPath();
     ctx.arc(cx, cy, 8, 0, Math.PI * 2);
     ctx.fill();
@@ -175,7 +175,7 @@
       var cr = Math.round(Math.sin(hue2 * 0.0174) * 100 + 155);
       var cg = Math.round(Math.sin((hue2 + 120) * 0.0174) * 100 + 155);
       var cb = Math.round(Math.sin((hue2 + 240) * 0.0174) * 100 + 155);
-      ctx.fillStyle = 'rgba(' + cr + ',' + cg + ',' + cb + ', 150)';
+      ctx.fillStyle = 'rgba(' + cr + ',' + cg + ',' + cb + ', 0.59)';
       ctx.beginPath();
       ctx.arc(sx, sy, sr, 0, Math.PI * 2);
       ctx.fill();

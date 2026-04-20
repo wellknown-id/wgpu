@@ -264,7 +264,7 @@ impl JsBridge {
                 function __parseColor(str) {
                     str = str.trim();
                     var m = str.match(/^rgba?\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)\s*(?:,\s*([\d.]+))?\s*\)$/);
-                    if (m) return [parseInt(m[1]), parseInt(m[2]), parseInt(m[3]), m[4] !== undefined ? Math.round(parseFloat(m[4]) * 255) : 255];
+                    if (m) return [parseInt(m[1]), parseInt(m[2]), parseInt(m[3]), m[4] !== undefined ? Math.round(Math.min(1, Math.max(0, parseFloat(m[4]))) * 255) : 255];
                     if (str[0] === '#' && str.length === 7) {
                         return [parseInt(str.substr(1,2),16), parseInt(str.substr(3,2),16), parseInt(str.substr(5,2),16), 255];
                     }
