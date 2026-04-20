@@ -207,7 +207,14 @@ fn apply_properties(props: &[(String, String)], style: &mut ComputedStyle) {
                     style.gap = v;
                 }
             }
-            "flex" | "flex-grow" => {
+            "flex" => {
+                if let Ok(v) = val.parse::<f32>() {
+                    style.flex_grow = v;
+                    style.flex_shrink = 1.0;
+                    style.flex_basis = Dimension::Px(0.0);
+                }
+            }
+            "flex-grow" => {
                 if let Ok(v) = val.parse::<f32>() {
                     style.flex_grow = v;
                 }
