@@ -36,6 +36,7 @@ struct WebviewState {
     html_source: String,
     css_sources: Vec<String>,
     start_time: Instant,
+    scroll_y: f32,
 }
 
 #[derive(Default)]
@@ -143,6 +144,7 @@ impl ApplicationHandler for App {
             html_source,
             css_sources,
             start_time: Instant::now(),
+            scroll_y: 0.0,
         });
 
         window.request_redraw();
@@ -167,11 +169,21 @@ impl ApplicationHandler for App {
             } => {
                 let (mx, my) = unsafe { CURSOR_POS };
                 let s = self.state.as_mut().unwrap();
-                s.js.dispatch_click(&s.layout, mx, my);
+                s.js.dispatch_click(&s.layout, mx, my + s.scroll_y);
                 if s.js.is_dirty() {
                     self.rebuild_layout();
                     self.state.as_ref().unwrap().gpu.window.request_redraw();
                 }
+            }
+            WindowEvent::MouseWheel { delta, .. } => {
+                let s = self.state.as_mut().unwrap();
+                let dy = match delta {
+                    winit::event::MouseScrollDelta::LineDelta(_, y) => -y * 40.0,
+                    winit::event::MouseScrollDelta::PixelDelta(pos) => -pos.y as f32,
+                };
+                let max_scroll = (s.layout.content_height() - s.gpu.size.height as f32).max(0.0);
+                s.scroll_y = (s.scroll_y + dy).clamp(0.0, max_scroll);
+                s.gpu.window.request_redraw();
             }
             WindowEvent::CursorMoved { position, .. } => unsafe {
                 CURSOR_POS = (position.x as f32, position.y as f32);
@@ -185,7 +197,7 @@ impl ApplicationHandler for App {
                     self.rebuild_layout();
                 }
                 let s = self.state.as_mut().unwrap();
-                s.gpu.render(&s.commands, s.clear_color);
+                s.gpu.render(&s.commands, s.clear_color, s.scroll_y);
                 s.gpu.window.request_redraw();
             }
             _ => {}

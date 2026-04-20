@@ -30,6 +30,10 @@ pub fn build_layout(styled: &types::StyledNode, viewport_w: f32, viewport_h: f32
     let mut root_style = taffy.style(root.taffy_id).unwrap().clone();
     root_style.size = taffy::Size {
         width: taffy::prelude::length(viewport_w),
+        height: taffy::Dimension::auto(),
+    };
+    root_style.min_size = taffy::Size {
+        width: taffy::prelude::length(viewport_w),
         height: taffy::prelude::length(viewport_h),
     };
     let _ = taffy.set_style(root.taffy_id, root_style);
@@ -52,6 +56,15 @@ pub fn build_layout(styled: &types::StyledNode, viewport_w: f32, viewport_h: f32
     );
 
     LayoutTree { taffy, root }
+}
+
+impl LayoutTree {
+    pub fn content_height(&self) -> f32 {
+        self.taffy
+            .layout(self.root.taffy_id)
+            .map(|l| l.size.height)
+            .unwrap_or(0.0)
+    }
 }
 
 fn measure_text(

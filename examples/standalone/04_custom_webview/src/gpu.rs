@@ -205,6 +205,7 @@ impl GlyphAtlas {
 const RECT_SHADER: &str = r#"
 struct ScreenUniform {
     size: vec2<f32>,
+    scroll: vec2<f32>,
 };
 @group(0) @binding(0) var<uniform> screen: ScreenUniform;
 
@@ -231,8 +232,8 @@ struct RectOutput {
 @vertex
 fn vs_rect(in: RectInput) -> RectOutput {
     var out: RectOutput;
-    let x = in.rect.x + in.pos.x * in.rect.z;
-    let y = in.rect.y + in.pos.y * in.rect.w;
+    let x = in.rect.x + in.pos.x * in.rect.z - screen.scroll.x;
+    let y = in.rect.y + in.pos.y * in.rect.w - screen.scroll.y;
     let nx = (x / screen.size.x) * 2.0 - 1.0;
     let ny = (1.0 - (y / screen.size.y)) * 2.0 - 1.0;
     out.pos = vec4<f32>(nx, ny, 0.0, 1.0);
@@ -278,6 +279,7 @@ fn fs_rect(in: RectOutput) -> @location(0) vec4<f32> {
 const GLYPH_SHADER: &str = r#"
 struct ScreenUniform {
     size: vec2<f32>,
+    scroll: vec2<f32>,
 };
 @group(0) @binding(0) var<uniform> screen: ScreenUniform;
 @group(0) @binding(1) var glyph_tex: texture_2d<f32>;
@@ -300,8 +302,8 @@ struct GlyphOutput {
 @vertex
 fn vs_glyph(in: GlyphInput) -> GlyphOutput {
     var out: GlyphOutput;
-    let x = in.rect.x + in.pos.x * in.rect.z;
-    let y = in.rect.y + in.pos.y * in.rect.w;
+    let x = in.rect.x + in.pos.x * in.rect.z - screen.scroll.x;
+    let y = in.rect.y + in.pos.y * in.rect.w - screen.scroll.y;
     let nx = (x / screen.size.x) * 2.0 - 1.0;
     let ny = (1.0 - (y / screen.size.y)) * 2.0 - 1.0;
     out.pos = vec4<f32>(nx, ny, 0.0, 1.0);
@@ -659,7 +661,7 @@ impl GpuState {
         );
     }
 
-    pub fn render(&mut self, commands: &[DrawCommand], clear_color: [f32; 4]) {
+    pub fn render(&mut self, commands: &[DrawCommand], clear_color: [f32; 4], scroll_y: f32) {
         let frame = match self.surface.get_current_texture() {
             wgpu::CurrentSurfaceTexture::Success(t)
             | wgpu::CurrentSurfaceTexture::Suboptimal(t) => t,
@@ -677,7 +679,7 @@ impl GpuState {
                 self.size.width as f32,
                 self.size.height as f32,
                 0.0_f32,
-                0.0_f32,
+                scroll_y,
             ]),
         );
 
