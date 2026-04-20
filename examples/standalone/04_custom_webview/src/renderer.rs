@@ -9,7 +9,7 @@ pub fn generate_draw_commands(tree: &LayoutTree) -> Vec<DrawCommand> {
 
 pub fn hit_test(tree: &LayoutTree, x: f32, y: f32) -> Option<HitResult> {
     let mut result = None;
-    hit_test_node(&tree.taffy, &tree.root, 0.0, 0.0, x, y, &[], &mut result);
+    hit_test_node(&tree.taffy, &tree.root, 0.0, 0.0, x, y, &[], None, &mut result);
     result
 }
 
@@ -19,6 +19,7 @@ pub struct HitResult {
     pub tag: String,
     pub dom_index: usize,
     pub id_chain: Vec<String>,
+    pub href: Option<String>,
 }
 
 fn emit_node(
@@ -83,6 +84,7 @@ fn hit_test_node(
     mx: f32,
     my: f32,
     ancestor_ids: &[String],
+    ancestor_href: Option<&str>,
     result: &mut Option<HitResult>,
 ) {
     if node.style.display == Display::None {
@@ -106,11 +108,14 @@ fn hit_test_node(
         }
         chain.extend(ancestor_ids.iter().cloned());
 
+        let effective_href = node.href.as_deref().or(ancestor_href);
+
         *result = Some(HitResult {
             id: node.id.clone(),
             tag: node.tag.clone(),
             dom_index: node.dom_index,
-            id_chain: chain.clone(),
+            id_chain: chain,
+            href: effective_href.map(String::from),
         });
 
         let new_ancestors = if let Some(id) = &node.id {
@@ -121,9 +126,10 @@ fn hit_test_node(
             ancestor_ids.to_vec()
         };
 
+        let new_href = node.href.as_deref().or(ancestor_href);
+
         for child in &node.children {
-            hit_test_node(taffy, child, x, y, mx, my, &new_ancestors, result);
+            hit_test_node(taffy, child, x, y, mx, my, &new_ancestors, new_href, result);
         }
     }
 }
-

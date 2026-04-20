@@ -1,0 +1,110 @@
+<!DOCTYPE html>
+<html>
+<head>
+<style>
+  body {
+    background: #1a1a2e;
+    color: #e0e0e0;
+    font-size: 16px;
+    padding: 0;
+    margin: 0;
+  }
+  .header {
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    background: #16213e;
+    padding: 20px;
+    height: 64px;
+  }
+  .header h1 {
+    color: #53d8fb;
+    font-size: 28px;
+  }
+  .nav {
+    display: flex;
+    padding: 12px;
+    background: #0f3460;
+    gap: 16px;
+  }
+  .link {
+    color: #e94560;
+    font-size: 14px;
+    padding: 8px;
+  }
+  .content {
+    display: flex;
+    flex-direction: column;
+    padding: 24px;
+    gap: 20px;
+  }
+  .section {
+    background: #16213e;
+    padding: 20px;
+    border-radius: 8px;
+  }
+  .section h2 {
+    color: #e94560;
+    font-size: 20px;
+  }
+  .section p {
+    color: #a7c5eb;
+    font-size: 14px;
+  }
+  .tech-grid {
+    display: flex;
+    flex-direction: row;
+    gap: 16px;
+  }
+  .tech-item {
+    background: #0f3460;
+    padding: 16px;
+    flex: 1;
+    border-radius: 6px;
+  }
+  .tech-item h3 {
+    color: #53d8fb;
+    font-size: 16px;
+  }
+  .tech-item p {
+    color: #8899aa;
+    font-size: 13px;
+  }
+</style>
+</head>
+<body>
+  <div class="header">
+    <h1>About This Engine</h1>
+  </div>
+  <div class="nav">
+    <a href="index.html"><div class="link">Back to Home</div></a>
+  </div>
+  <div class="content">
+    <div class="section">
+      <h2>Architecture</h2>
+      <p>This custom webview engine is built entirely in Rust, using wgpu for GPU-accelerated rendering. It parses HTML and CSS, computes flexbox layout, rasterizes text with cosmic-text, and executes JavaScript with QuickJS — all without a traditional browser engine.</p>
+    </div>
+    <div class="section">
+      <h2>Technology Stack</h2>
+      <div class="tech-grid">
+        <div class="tech-item">
+          <h3>wgpu</h3>
+          <p>Cross-platform GPU abstraction providing Vulkan, DX12, and Metal backends for hardware-accelerated rendering</p>
+        </div>
+        <div class="tech-item">
+          <h3>Taffy</h3>
+          <p>Pure Rust flexbox layout engine that computes element positions and sizes from CSS properties</p>
+        </div>
+        <div class="tech-item">
+          <h3>QuickJS</h3>
+          <p>Lightweight embeddable JavaScript engine providing DOM interactivity and event handling</p>
+        </div>
+      </div>
+    </div>
+    <div class="section">
+      <h2>Rendering Pipeline</h2>
+      <p>Each frame: HTML is parsed into a DOM tree, CSS styles are resolved and cascaded, Taffy computes flexbox layout, then wgpu draws rounded rectangles and text glyphs via instanced rendering. The entire pipeline runs at 60fps with minimal CPU usage.</p>
+    </div>
+  </div>
+</body>
+</html>

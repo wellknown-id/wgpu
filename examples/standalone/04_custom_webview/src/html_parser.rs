@@ -80,6 +80,10 @@ fn convert_node(handle: &Handle) -> DomNode {
                 .find(|a| a.name.local.as_ref() == "style")
                 .map(|a| a.value.to_string())
                 .unwrap_or_default();
+            let href = attrs
+                .iter()
+                .find(|a| a.name.local.as_ref() == "href")
+                .map(|a| a.value.to_string());
 
             let children: Vec<DomNode> = handle
                 .children
@@ -103,6 +107,7 @@ fn convert_node(handle: &Handle) -> DomNode {
                 id,
                 classes,
                 inline_style,
+                href,
                 text: String::new(),
                 children,
             }
@@ -115,6 +120,7 @@ fn convert_node(handle: &Handle) -> DomNode {
                 id: None,
                 classes: Vec::new(),
                 inline_style: String::new(),
+                href: None,
                 text,
                 children: Vec::new(),
             }
@@ -130,6 +136,7 @@ fn convert_node(handle: &Handle) -> DomNode {
                 id: None,
                 classes: Vec::new(),
                 inline_style: String::new(),
+                href: None,
                 text: String::new(),
                 children,
             }

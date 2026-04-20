@@ -19,6 +19,7 @@ pub struct LayoutNode {
     pub text: String,
     pub tag: String,
     pub id: Option<String>,
+    pub href: Option<String>,
     pub children: Vec<LayoutNode>,
 }
 
@@ -113,6 +114,7 @@ fn build_node(
             text: styled.dom_node.text.clone(),
             tag: styled.dom_node.tag.clone(),
             id: styled.dom_node.id.clone(),
+            href: styled.dom_node.href.clone(),
             children: Vec::new(),
         };
     }
@@ -150,6 +152,7 @@ fn build_node(
         text: styled.dom_node.text.clone(),
         tag: styled.dom_node.tag.clone(),
         id: styled.dom_node.id.clone(),
+        href: styled.dom_node.href.clone(),
         children: child_nodes,
     }
 }

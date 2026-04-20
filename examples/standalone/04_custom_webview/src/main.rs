@@ -35,6 +35,7 @@ struct WebviewState {
     clear_color: [f32; 4],
     html_source: String,
     css_sources: Vec<String>,
+    asset_dir: PathBuf,
     start_time: Instant,
     scroll_y: f32,
 }
@@ -56,7 +57,32 @@ impl App {
         let size = state.gpu.size;
         state.layout = build_layout(&styled, size.width as f32, size.height as f32);
         state.commands = generate_draw_commands(&state.layout);
+        state.clear_color = styled.style.background_color;
         state.js.clear_dirty();
+    }
+
+    fn navigate(&mut self, href: &str) {
+        let state = self.state.as_mut().unwrap();
+        let path = state.asset_dir.join(href);
+        let html_source = match std::fs::read_to_string(&path) {
+            Ok(s) => s,
+            Err(e) => {
+                eprintln!("Navigation failed: {e}");
+                return;
+            }
+        };
+
+        let css_sources = extract_styles(&html_source);
+        let script = extract_script(&html_source);
+        let js = JsBridge::new(script.as_deref()).expect("failed to init JS bridge");
+
+        state.html_source = html_source;
+        state.css_sources = css_sources;
+        state.js = js;
+        state.scroll_y = 0.0;
+
+        self.rebuild_layout();
+        self.state.as_ref().unwrap().gpu.window.request_redraw();
     }
 }
 
@@ -80,6 +106,7 @@ fn apply_text_overrides(
                     id: None,
                     classes: Vec::new(),
                     inline_style: String::new(),
+                    href: None,
                     text: text.clone(),
                     children: Vec::new(),
                 },
@@ -143,6 +170,7 @@ impl ApplicationHandler for App {
             clear_color,
             html_source,
             css_sources,
+            asset_dir,
             start_time: Instant::now(),
             scroll_y: 0.0,
         });
@@ -168,6 +196,15 @@ impl ApplicationHandler for App {
                 ..
             } => {
                 let (mx, my) = unsafe { CURSOR_POS };
+                let s = self.state.as_mut().unwrap();
+                let hit = renderer::hit_test(&s.layout, mx, my + s.scroll_y);
+                if let Some(ref hit) = hit {
+                    if let Some(ref href) = hit.href {
+                        let href = href.clone();
+                        self.navigate(&href);
+                        return;
+                    }
+                }
                 let s = self.state.as_mut().unwrap();
                 s.js.dispatch_click(&s.layout, mx, my + s.scroll_y);
                 if s.js.is_dirty() {

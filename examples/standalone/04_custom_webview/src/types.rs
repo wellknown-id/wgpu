@@ -4,6 +4,7 @@ pub struct DomNode {
     pub id: Option<String>,
     pub classes: Vec<String>,
     pub inline_style: String,
+    pub href: Option<String>,
     pub text: String,
     pub children: Vec<DomNode>,
 }
