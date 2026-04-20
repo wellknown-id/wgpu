@@ -118,15 +118,15 @@ impl JsBridge {
 
     pub fn dispatch_click(&mut self, layout: &crate::layout::LayoutTree, x: f32, y: f32) {
         if let Some(hit) = crate::renderer::hit_test(layout, x, y) {
-            if let Some(id) = &hit.id {
+            for id in &hit.id_chain {
                 let key = format!("click:{id}");
                 let _ = self.context.with(|ctx| -> Result<()> {
                     let fire: Function<'_> = ctx.globals().get("__hostFireEvent")?;
                     fire.call::<_, ()>((key,))?;
                     Ok(())
                 });
-                self.drain_jobs();
             }
+            self.drain_jobs();
         }
     }
 
