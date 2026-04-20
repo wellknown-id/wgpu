@@ -81,8 +81,22 @@ fn convert_node(handle: &Handle) -> DomNode {
                 .map(|a| a.value.to_string())
                 .unwrap_or_default();
 
-            let children: Vec<DomNode> =
-                handle.children.borrow().iter().map(convert_node).collect();
+            let children: Vec<DomNode> = handle
+                .children
+                .borrow()
+                .iter()
+                .filter(|c| {
+                    if let NodeData::Element { ref name, .. } = c.data {
+                        !matches!(
+                            name.local.as_ref(),
+                            "script" | "style" | "head" | "link" | "meta" | "title"
+                        )
+                    } else {
+                        true
+                    }
+                })
+                .map(convert_node)
+                .collect();
 
             DomNode {
                 tag,

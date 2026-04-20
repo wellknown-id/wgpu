@@ -66,8 +66,26 @@ fn apply_text_overrides(
     if let Some(id) = &styled.dom_node.id {
         if let Some(text) = overrides.get(id) {
             styled.children.clear();
-            styled.dom_node.text = text.clone();
             styled.dom_node.children.clear();
+            let child_style = types::ComputedStyle {
+                display: types::Display::Inline,
+                color: styled.style.color,
+                font_size: styled.style.font_size,
+                ..types::ComputedStyle::default()
+            };
+            styled.children.push(types::StyledNode {
+                dom_node: types::DomNode {
+                    tag: "#text".to_string(),
+                    id: None,
+                    classes: Vec::new(),
+                    inline_style: String::new(),
+                    text: text.clone(),
+                    children: Vec::new(),
+                },
+                style: child_style,
+                children: Vec::new(),
+            });
+            return;
         }
     }
     for child in &mut styled.children {
