@@ -288,10 +288,8 @@ fn vs_rect(in: RectInput) -> RectOutput {
     let nx = (x / (screen.size.x * w)) * 2.0 - 1.0;
     let ny = (1.0 - (y / (screen.size.y * w))) * 2.0 - 1.0;
     
-    // depth from draw order: later elements are closer to camera
-    let base_depth = 1.0 - in.draw_order * 0.0001;
-    let depth = (base_depth - (z / (2000.0 * w))) * w;
-    out.pos = vec4<f32>(nx * w, ny * w, depth, w); 
+    let depth_ndc = (1.0 - in.draw_order * 0.001) - z / 50000.0;
+    out.pos = vec4<f32>(nx * w, ny * w, depth_ndc * w, w); 
     
     out.color = in.color;
     out.local_pos = vec2<f32>(in.pos.x * in.rect.z, in.pos.y * in.rect.w);
@@ -391,9 +389,8 @@ fn vs_glyph(in: GlyphInput) -> GlyphOutput {
     let nx = (x / (screen.size.x * w)) * 2.0 - 1.0;
     let ny = (1.0 - (y / (screen.size.y * w))) * 2.0 - 1.0;
     
-    let base_depth = 1.0 - in.draw_order * 0.0001;
-    let depth = (base_depth - (z / (2000.0 * w))) * w;
-    out.pos = vec4<f32>(nx * w, ny * w, depth, w); 
+    let depth_ndc = (1.0 - in.draw_order * 0.001) - z / 50000.0;
+    out.pos = vec4<f32>(nx * w, ny * w, depth_ndc * w, w); 
     let u = in.uv_rect.x + in.uv.x * (in.uv_rect.z - in.uv_rect.x);
     let v = in.uv_rect.y + in.uv.y * (in.uv_rect.w - in.uv_rect.y);
     out.uv = vec2<f32>(u, v);
@@ -448,8 +445,8 @@ fn vs_line(in: LineInput) -> LineOutput {
     let y = screen_pos.y - screen.scroll.y;
     let nx = (x / screen.size.x) * 2.0 - 1.0;
     let ny = (1.0 - (y / screen.size.y)) * 2.0 - 1.0;
-    let base_depth = 1.0 - in.draw_order * 0.0001;
-    out.pos = vec4<f32>(nx, ny, base_depth, 1.0);
+    let depth_ndc = 1.0 - in.draw_order * 0.001;
+    out.pos = vec4<f32>(nx, ny, depth_ndc, 1.0);
     out.color = in.color;
     return out;
 }
@@ -1032,7 +1029,7 @@ impl GpuState {
                         border: 0.0,
                         border_color: [0.0; 4],
                         transform: *transform,
-                        flags: if *is_fixed { 1 } else { 0 },
+                        flags: if *is_fixed { 1u32 } else { 0 },
                         draw_order,
                     };
                     draw_order += 1.0;
@@ -1058,7 +1055,7 @@ impl GpuState {
                         border: *width,
                         border_color: *color,
                         transform: *transform,
-                        flags: if *is_fixed { 1 } else { 0 },
+                        flags: if *is_fixed { 1u32 } else { 0 },
                         draw_order,
                     };
                     draw_order += 1.0;
@@ -1220,7 +1217,7 @@ impl GpuState {
                         color,
                         transform,
                         center,
-                        flags: if is_fixed { 1 } else { 0 },
+                        flags: if is_fixed { 1u32 } else { 0 },
                         draw_order: 0.0,
                     });
                 }
