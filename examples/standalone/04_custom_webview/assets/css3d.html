@@ -1,0 +1,127 @@
+<!DOCTYPE html>
+<html>
+<head>
+<style>
+  body {
+    background: #050505;
+    color: #ffffff;
+    font-size: 16px;
+    margin: 0;
+    overflow: hidden;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    height: 100vh;
+  }
+  .header {
+    position: fixed;
+    top: 20px;
+    text-align: center;
+  }
+  .header h1 {
+    color: #00d2ff;
+    font-size: 32px;
+    margin: 0;
+  }
+  .container {
+    perspective: 800px;
+    width: 300px;
+    height: 300px;
+    display: flex;
+    justify-content: center;
+    align-items: center;
+  }
+  .cube {
+    position: relative;
+    width: 200px;
+    height: 200px;
+    transform-style: preserve-3d;
+  }
+  .face {
+    position: fixed;
+    width: 200px;
+    height: 200px;
+    border-style: solid;
+    border-width: 2px;
+    border-color: #ffffff;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 40px;
+    font-weight: bold;
+    background: #1a1a1a;
+  }
+  .front  { background: rgba(255, 0, 0, 0.4); border-color: #ff0000; }
+  .back   { background: rgba(0, 255, 0, 0.4); border-color: #00ff00; }
+  .right  { background: rgba(0, 0, 255, 0.4); border-color: #0000ff; }
+  .left   { background: rgba(255, 255, 0, 0.4); border-color: #ffff00; }
+  .top    { background: rgba(255, 0, 255, 0.4); border-color: #ff00ff; }
+  .bottom { background: rgba(0, 255, 255, 0.4); border-color: #00ffff; }
+
+  .back-btn {
+    position: fixed;
+    bottom: 40px;
+    background: #e94560;
+    color: white;
+    padding: 12px 24px;
+    border-radius: 8px;
+    text-decoration: none;
+  }
+</style>
+</head>
+<body>
+  <div class="header">
+    <h1>CSS 3D Transforms</h1>
+    <p>Real-time GPU-accelerated 3D projection</p>
+  </div>
+
+  <div class="container">
+    <div class="cube" id="cube">
+      <div class="face front" id="f1">Front</div>
+      <div class="face back" id="f2">Back</div>
+      <div class="face right" id="f3">Right</div>
+      <div class="face left" id="f4">Left</div>
+      <div class="face top" id="f5">Top</div>
+      <div class="face bottom" id="f6">Bottom</div>
+    </div>
+  </div>
+
+  <a href="index.html" class="back-btn">Back to Home</a>
+
+  <script>
+    var cube = document.getElementById('cube');
+    var angle = 0;
+    
+    function animate() {
+      angle = angle + 1;
+      
+      // We'll update the faces individually because our engine doesn't have 
+      // full transform-style: preserve-3d inheritance yet.
+      // But we can simulate the cube by calculating face transforms.
+      
+      var rad = angle * Math.PI / 180;
+      var cos = Math.cos(rad);
+      var sin = Math.sin(rad);
+      
+      // Simple rotation around Y and X axis
+      var rx = angle * 0.5;
+      var ry = angle;
+      
+      // We will implement `transform: perspective(800px) rotateX(...) rotateY(...) translateZ(...)`
+      // in our engine.
+      
+      document.getElementById('f1').style.transform = 'perspective(800px) rotateX(' + rx + 'deg) rotateY(' + ry + 'deg) translateZ(100px)';
+      document.getElementById('f2').style.transform = 'perspective(800px) rotateX(' + rx + 'deg) rotateY(' + (ry + 180) + 'deg) translateZ(100px)';
+      document.getElementById('f3').style.transform = 'perspective(800px) rotateX(' + rx + 'deg) rotateY(' + (ry + 90) + 'deg) translateZ(100px)';
+      document.getElementById('f4').style.transform = 'perspective(800px) rotateX(' + rx + 'deg) rotateY(' + (ry - 90) + 'deg) translateZ(100px)';
+      document.getElementById('f5').style.transform = 'perspective(800px) rotateX(' + (rx + 90) + 'deg) rotateY(' + ry + 'deg) translateZ(100px)';
+      document.getElementById('f6').style.transform = 'perspective(800px) rotateX(' + (rx - 90) + 'deg) rotateY(' + ry + 'deg) translateZ(100px)';
+      
+      requestAnimationFrame(animate);
+    }
+    
+    requestAnimationFrame(animate);
+  </script>
+</body>
+</html>
