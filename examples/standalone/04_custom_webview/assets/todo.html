@@ -3,9 +3,9 @@
 <head>
 <style>
   body {
-    background: #0f0f1a;
+    background: #0b0e17;
     color: #e0e0e0;
-    font-size: 15px;
+    font-size: 14px;
     padding: 0;
     margin: 0;
   }
@@ -13,287 +13,342 @@
     display: flex;
     justify-content: center;
     align-items: center;
-    background: #1a1a2e;
-    padding: 20px;
-    height: 56px;
+    background: #131829;
+    padding: 16px;
+    height: 48px;
   }
   .header h1 {
     color: #53d8fb;
-    font-size: 26px;
+    font-size: 22px;
   }
   .nav {
     display: flex;
-    padding: 10px;
+    padding: 8px;
     background: #0f3460;
     gap: 16px;
   }
   .link {
     color: #e94560;
-    font-size: 14px;
+    font-size: 13px;
     padding: 6px;
   }
-  .app {
+
+  .toolbar {
     display: flex;
-    flex-direction: column;
-    padding: 20px;
-    gap: 12px;
-  }
-  .controls {
-    display: flex;
+    padding: 10px;
     gap: 10px;
+    background: #0e1225;
     align-items: center;
   }
-  .btn {
+  .btn-add {
     background: #e94560;
     color: white;
-    padding: 10px;
+    padding: 8px;
     border-radius: 6px;
-    font-size: 14px;
+    font-size: 13px;
   }
-  .btn-sm {
-    background: #16213e;
+  .btn-clear {
+    background: #1a1f36;
     color: #7a8ea8;
-    padding: 6px;
-    border-radius: 4px;
+    padding: 8px;
+    border-radius: 6px;
+    font-size: 13px;
+  }
+  .hint {
+    color: #4a5568;
     font-size: 12px;
-  }
-  .btn-up {
-    background: #16213e;
-    color: #53d8fb;
-    padding: 6px;
-    border-radius: 4px;
-    font-size: 14px;
-  }
-  .btn-down {
-    background: #16213e;
-    color: #53d8fb;
-    padding: 6px;
-    border-radius: 4px;
-    font-size: 14px;
-  }
-  .btn-del {
-    background: #16213e;
-    color: #e94560;
-    padding: 6px;
-    border-radius: 4px;
-    font-size: 14px;
-  }
-  .todo-item {
-    display: flex;
-    align-items: center;
-    background: #16213e;
-    padding: 12px;
-    border-radius: 8px;
-    gap: 10px;
-  }
-  .todo-check {
-    background: #0f3460;
-    color: #53d8fb;
-    padding: 6px;
-    border-radius: 4px;
-    font-size: 14px;
-  }
-  .todo-text {
     flex: 1;
-    font-size: 15px;
+  }
+
+  .board {
+    display: flex;
+    padding: 12px;
+    gap: 12px;
+  }
+  .column {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    background: #111627;
+    border-radius: 10px;
+    padding: 10px;
+  }
+  .col-header {
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    padding: 10px;
+    border-radius: 8px;
+    height: 32px;
+  }
+  .col-title {
+    font-size: 14px;
     color: #e0e0e0;
   }
-  .status {
-    display: flex;
-    justify-content: space-between;
-    padding: 8px;
-    background: #1a1a2e;
-    border-radius: 6px;
+  .col-count {
+    font-size: 12px;
+    color: #4a5568;
   }
-  .status-text {
-    color: #7a8ea8;
+
+  .card {
+    display: flex;
+    flex-direction: column;
+    padding: 10px;
+    border-radius: 8px;
+    background: #1a2035;
+    border-width: 2px;
+    border-color: #1a2035;
+    gap: 4px;
+  }
+  .card-text {
     font-size: 13px;
+    color: #c8d4e0;
+  }
+  .card-tag {
+    font-size: 11px;
+    border-radius: 4px;
+    padding: 3px;
+    background: #0f3460;
+    color: #53d8fb;
   }
 </style>
 </head>
 <body>
   <div class="header">
-    <h1>Todo List</h1>
+    <h1>Kanban Board</h1>
   </div>
   <div class="nav">
     <a href="index.html"><div class="link">Back to Home</div></a>
   </div>
-  <div class="app">
-    <div class="controls">
-      <div class="btn" id="btn-add">+ Add Task</div>
-      <div class="btn-sm" id="btn-clear">Clear Done</div>
+
+  <div class="toolbar">
+    <div class="btn-add" id="btn-add">+ New Card</div>
+    <div class="btn-clear" id="btn-reset">Reset Board</div>
+    <div class="hint" id="hint">Click a card to pick it up, then click a column to move it</div>
+  </div>
+
+  <div class="board">
+    <div class="column" id="col-0">
+      <div class="col-header" id="colhdr-0" style="background: #1c1042;">
+        <div class="col-title" id="coltitle-0">Backlog</div>
+      </div>
+      <div class="card" id="card-0-0"><div class="card-text" id="ct-0-0">-</div><div class="card-tag" id="tg-0-0">-</div></div>
+      <div class="card" id="card-0-1"><div class="card-text" id="ct-0-1">-</div><div class="card-tag" id="tg-0-1">-</div></div>
+      <div class="card" id="card-0-2"><div class="card-text" id="ct-0-2">-</div><div class="card-tag" id="tg-0-2">-</div></div>
+      <div class="card" id="card-0-3"><div class="card-text" id="ct-0-3">-</div><div class="card-tag" id="tg-0-3">-</div></div>
+      <div class="card" id="card-0-4"><div class="card-text" id="ct-0-4">-</div><div class="card-tag" id="tg-0-4">-</div></div>
+      <div class="card" id="card-0-5"><div class="card-text" id="ct-0-5">-</div><div class="card-tag" id="tg-0-5">-</div></div>
     </div>
 
-    <div class="todo-item" id="todo-0">
-      <div class="todo-check" id="check-0">[ ]</div>
-      <div class="todo-text" id="text-0">-</div>
-      <div class="btn-up" id="up-0">^</div>
-      <div class="btn-down" id="down-0">v</div>
-      <div class="btn-del" id="del-0">x</div>
-    </div>
-    <div class="todo-item" id="todo-1">
-      <div class="todo-check" id="check-1">[ ]</div>
-      <div class="todo-text" id="text-1">-</div>
-      <div class="btn-up" id="up-1">^</div>
-      <div class="btn-down" id="down-1">v</div>
-      <div class="btn-del" id="del-1">x</div>
-    </div>
-    <div class="todo-item" id="todo-2">
-      <div class="todo-check" id="check-2">[ ]</div>
-      <div class="todo-text" id="text-2">-</div>
-      <div class="btn-up" id="up-2">^</div>
-      <div class="btn-down" id="down-2">v</div>
-      <div class="btn-del" id="del-2">x</div>
-    </div>
-    <div class="todo-item" id="todo-3">
-      <div class="todo-check" id="check-3">[ ]</div>
-      <div class="todo-text" id="text-3">-</div>
-      <div class="btn-up" id="up-3">^</div>
-      <div class="btn-down" id="down-3">v</div>
-      <div class="btn-del" id="del-3">x</div>
-    </div>
-    <div class="todo-item" id="todo-4">
-      <div class="todo-check" id="check-4">[ ]</div>
-      <div class="todo-text" id="text-4">-</div>
-      <div class="btn-up" id="up-4">^</div>
-      <div class="btn-down" id="down-4">v</div>
-      <div class="btn-del" id="del-4">x</div>
-    </div>
-    <div class="todo-item" id="todo-5">
-      <div class="todo-check" id="check-5">[ ]</div>
-      <div class="todo-text" id="text-5">-</div>
-      <div class="btn-up" id="up-5">^</div>
-      <div class="btn-down" id="down-5">v</div>
-      <div class="btn-del" id="del-5">x</div>
-    </div>
-    <div class="todo-item" id="todo-6">
-      <div class="todo-check" id="check-6">[ ]</div>
-      <div class="todo-text" id="text-6">-</div>
-      <div class="btn-up" id="up-6">^</div>
-      <div class="btn-down" id="down-6">v</div>
-      <div class="btn-del" id="del-6">x</div>
-    </div>
-    <div class="todo-item" id="todo-7">
-      <div class="todo-check" id="check-7">[ ]</div>
-      <div class="todo-text" id="text-7">-</div>
-      <div class="btn-up" id="up-7">^</div>
-      <div class="btn-down" id="down-7">v</div>
-      <div class="btn-del" id="del-7">x</div>
+    <div class="column" id="col-1">
+      <div class="col-header" id="colhdr-1" style="background: #0f3460;">
+        <div class="col-title" id="coltitle-1">In Progress</div>
+      </div>
+      <div class="card" id="card-1-0"><div class="card-text" id="ct-1-0">-</div><div class="card-tag" id="tg-1-0">-</div></div>
+      <div class="card" id="card-1-1"><div class="card-text" id="ct-1-1">-</div><div class="card-tag" id="tg-1-1">-</div></div>
+      <div class="card" id="card-1-2"><div class="card-text" id="ct-1-2">-</div><div class="card-tag" id="tg-1-2">-</div></div>
+      <div class="card" id="card-1-3"><div class="card-text" id="ct-1-3">-</div><div class="card-tag" id="tg-1-3">-</div></div>
+      <div class="card" id="card-1-4"><div class="card-text" id="ct-1-4">-</div><div class="card-tag" id="tg-1-4">-</div></div>
+      <div class="card" id="card-1-5"><div class="card-text" id="ct-1-5">-</div><div class="card-tag" id="tg-1-5">-</div></div>
     </div>
 
-    <div class="status">
-      <div class="status-text" id="counter">0 items left</div>
-      <div class="status-text" id="total">0 total</div>
+    <div class="column" id="col-2">
+      <div class="col-header" id="colhdr-2" style="background: #0a3a2a;">
+        <div class="col-title" id="coltitle-2">Done</div>
+      </div>
+      <div class="card" id="card-2-0"><div class="card-text" id="ct-2-0">-</div><div class="card-tag" id="tg-2-0">-</div></div>
+      <div class="card" id="card-2-1"><div class="card-text" id="ct-2-1">-</div><div class="card-tag" id="tg-2-1">-</div></div>
+      <div class="card" id="card-2-2"><div class="card-text" id="ct-2-2">-</div><div class="card-tag" id="tg-2-2">-</div></div>
+      <div class="card" id="card-2-3"><div class="card-text" id="ct-2-3">-</div><div class="card-tag" id="tg-2-3">-</div></div>
+      <div class="card" id="card-2-4"><div class="card-text" id="ct-2-4">-</div><div class="card-tag" id="tg-2-4">-</div></div>
+      <div class="card" id="card-2-5"><div class="card-text" id="ct-2-5">-</div><div class="card-tag" id="tg-2-5">-</div></div>
     </div>
   </div>
 
 <script>
-  var MAX_SLOTS = 8;
+  var COLS = 3;
+  var SLOTS = 6;
+  var COL_NAMES = ['Backlog', 'In Progress', 'Done'];
+  var COL_COLORS = ['#7c3aed', '#0ea5e9', '#10b981'];
+  var COL_BG = ['#1c1042', '#0f3460', '#0a3a2a'];
+  var TAG_COLORS = ['#e94560', '#53d8fb', '#ffd460', '#6bcb77', '#ff7eb3', '#a78bfa'];
 
-  var todos = [
-    {text: 'Build a GPU-accelerated renderer', done: true},
-    {text: 'Implement canvas support', done: true},
-    {text: 'Create todo list demo', done: false},
-    {text: 'Add drag-and-drop reordering', done: false},
-    {text: 'Ship it!', done: false},
+  var columns = [
+    [
+      {text: 'Design system tokens', tag: 'Design'},
+      {text: 'Write API documentation', tag: 'Docs'},
+      {text: 'Profile GPU memory usage', tag: 'Perf'},
+    ],
+    [
+      {text: 'Implement text input fields', tag: 'Feature'},
+      {text: 'Add scroll momentum', tag: 'UX'},
+    ],
+    [
+      {text: 'GPU-accelerated canvas', tag: 'Feature'},
+      {text: 'Build flex layout engine', tag: 'Core'},
+    ],
   ];
 
-  var presetTasks = [
-    'Write documentation',
-    'Optimize render pipeline',
-    'Add text input support',
-    'Implement animations',
-    'Add dark mode toggle',
-    'Create settings page',
-    'Profile GPU usage',
-    'Add keyboard shortcuts',
+  var selected = null;
+  var newCardIdx = 0;
+  var newCards = [
+    {text: 'Add keyboard shortcuts', tag: 'UX'},
+    {text: 'Implement CSS Grid', tag: 'Core'},
+    {text: 'Create animation system', tag: 'Feature'},
+    {text: 'Add image loading', tag: 'Feature'},
+    {text: 'Write unit tests', tag: 'Testing'},
+    {text: 'Optimize text shaping', tag: 'Perf'},
+    {text: 'Add touch event support', tag: 'Feature'},
+    {text: 'Theme customization', tag: 'Design'},
   ];
-  var presetIndex = 0;
+
+  function tagColor(tag) {
+    var tags = {'Feature': 0, 'Core': 1, 'Design': 2, 'UX': 3, 'Perf': 4, 'Docs': 5, 'Testing': 4};
+    var idx = tags[tag];
+    if (idx === undefined) idx = 0;
+    return TAG_COLORS[idx];
+  }
 
   function render() {
-    for (var i = 0; i < MAX_SLOTS; i++) {
-      var row = document.getElementById('todo-' + i);
-      var check = document.getElementById('check-' + i);
-      var text = document.getElementById('text-' + i);
+    for (var c = 0; c < COLS; c++) {
+      var cards = columns[c];
+      var count = cards.length;
 
-      if (i < todos.length) {
-        row.style.display = 'flex';
+      document.getElementById('coltitle-' + c).textContent = COL_NAMES[c] + ' (' + count + ')';
 
-        if (todos[i].done) {
-          check.textContent = '[x]';
-          row.style.background = '#111827';
-          text.style.color = '#4a5568';
-          check.style.color = '#6bcb77';
-          check.style.background = '#1a2332';
+      for (var i = 0; i < SLOTS; i++) {
+        var card = document.getElementById('card-' + c + '-' + i);
+        var ct = document.getElementById('ct-' + c + '-' + i);
+        var tg = document.getElementById('tg-' + c + '-' + i);
+
+        if (i < cards.length) {
+          card.style.display = 'flex';
+          ct.textContent = cards[i].text;
+          tg.textContent = cards[i].tag;
+          tg.style.background = tagColor(cards[i].tag);
+          tg.style.color = '#ffffff';
+
+          if (selected && selected.col === c && selected.idx === i) {
+            card.style.background = '#2a3055';
+            card.style.borderColor = COL_COLORS[c];
+          } else {
+            card.style.background = '#1a2035';
+            card.style.borderColor = '#1a2035';
+          }
+
+          if (c === 2) {
+            ct.style.color = '#6b7a8a';
+          } else {
+            ct.style.color = '#c8d4e0';
+          }
         } else {
-          check.textContent = '[ ]';
-          row.style.background = '#16213e';
-          text.style.color = '#e0e0e0';
-          check.style.color = '#53d8fb';
-          check.style.background = '#0f3460';
+          card.style.display = 'none';
         }
-        text.textContent = todos[i].text;
+      }
+
+      var hdr = document.getElementById('colhdr-' + c);
+      if (selected) {
+        hdr.style.borderWidth = '2px';
+        hdr.style.borderColor = COL_COLORS[c];
+        hdr.style.borderRadius = '8px';
       } else {
-        row.style.display = 'none';
+        hdr.style.borderWidth = '0px';
+        hdr.style.borderColor = COL_BG[c];
       }
     }
 
-    var remaining = todos.filter(function(t) { return !t.done; }).length;
-    document.getElementById('counter').textContent = remaining + ' remaining';
-    document.getElementById('total').textContent = todos.length + ' total';
+    var hint = document.getElementById('hint');
+    if (selected) {
+      hint.textContent = 'Card selected! Click a column header to move it there, or click another card to swap';
+      hint.style.color = '#53d8fb';
+    } else {
+      hint.textContent = 'Click a card to pick it up, then click a column to move it';
+      hint.style.color = '#4a5568';
+    }
+  }
+
+  function pickOrDrop(col, idx) {
+    if (selected === null) {
+      selected = {col: col, idx: idx};
+    } else if (selected.col === col && selected.idx === idx) {
+      selected = null;
+    } else {
+      var card = columns[selected.col].splice(selected.idx, 1)[0];
+      var insertIdx = idx;
+      if (selected.col === col && selected.idx < idx) {
+        insertIdx = idx - 1;
+      }
+      columns[col].splice(insertIdx, 0, card);
+      selected = null;
+    }
+    render();
+  }
+
+  function moveToColumn(col) {
+    if (selected === null) return;
+    if (selected.col === col) {
+      selected = null;
+      render();
+      return;
+    }
+    var card = columns[selected.col].splice(selected.idx, 1)[0];
+    columns[col].push(card);
+    selected = null;
+    render();
   }
 
   function bindEvents() {
-    for (var i = 0; i < MAX_SLOTS; i++) {
-      (function(idx) {
-        document.getElementById('check-' + idx).addEventListener('click', function() {
-          if (idx < todos.length) {
-            todos[idx].done = !todos[idx].done;
-            render();
-          }
+    for (var c = 0; c < COLS; c++) {
+      for (var i = 0; i < SLOTS; i++) {
+        (function(col, idx) {
+          document.getElementById('card-' + col + '-' + idx).addEventListener('click', function() {
+            if (idx < columns[col].length) {
+              pickOrDrop(col, idx);
+            }
+          });
+        })(c, i);
+      }
+      (function(col) {
+        document.getElementById('colhdr-' + col).addEventListener('click', function() {
+          moveToColumn(col);
         });
-        document.getElementById('del-' + idx).addEventListener('click', function() {
-          if (idx < todos.length) {
-            todos.splice(idx, 1);
-            render();
-          }
-        });
-        document.getElementById('up-' + idx).addEventListener('click', function() {
-          if (idx > 0 && idx < todos.length) {
-            var tmp = todos[idx];
-            todos[idx] = todos[idx - 1];
-            todos[idx - 1] = tmp;
-            render();
-          }
-        });
-        document.getElementById('down-' + idx).addEventListener('click', function() {
-          if (idx < todos.length - 1) {
-            var tmp = todos[idx];
-            todos[idx] = todos[idx + 1];
-            todos[idx + 1] = tmp;
-            render();
-          }
-        });
-      })(i);
+      })(c);
     }
 
     document.getElementById('btn-add').addEventListener('click', function() {
-      if (todos.length < MAX_SLOTS) {
-        todos.push({text: presetTasks[presetIndex % presetTasks.length], done: false});
-        presetIndex++;
+      if (columns[0].length < SLOTS) {
+        var card = newCards[newCardIdx % newCards.length];
+        columns[0].push({text: card.text, tag: card.tag});
+        newCardIdx++;
         render();
       }
     });
 
-    document.getElementById('btn-clear').addEventListener('click', function() {
-      todos = todos.filter(function(t) { return !t.done; });
+    document.getElementById('btn-reset').addEventListener('click', function() {
+      columns = [
+        [
+          {text: 'Design system tokens', tag: 'Design'},
+          {text: 'Write API documentation', tag: 'Docs'},
+          {text: 'Profile GPU memory usage', tag: 'Perf'},
+        ],
+        [
+          {text: 'Implement text input fields', tag: 'Feature'},
+          {text: 'Add scroll momentum', tag: 'UX'},
+        ],
+        [
+          {text: 'GPU-accelerated canvas', tag: 'Feature'},
+          {text: 'Build flex layout engine', tag: 'Core'},
+        ],
+      ];
+      selected = null;
       render();
     });
   }
 
   bindEvents();
   render();
-  console.log('Todo app initialized');
+  console.log('Kanban board initialized');
 </script>
 </body>
 </html>
