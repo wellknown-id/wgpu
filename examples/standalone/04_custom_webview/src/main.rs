@@ -63,6 +63,7 @@ struct WebviewState {
     mouse_down: bool,
     text_cache: TextMeasureCache,
     ghost_pos: Option<(f32, f32)>,
+    last_touch_y: Option<f32>,
 }
 
 #[derive(Default)]
@@ -191,11 +192,19 @@ impl App {
 
     fn navigate(&mut self, href: &str) {
         let state = self.state.as_mut().unwrap();
-        let path = state.asset_dir.join(href);
-        let html_source = match std::fs::read_to_string(&path) {
+        #[cfg(not(target_os = "android"))]
+        let html_source = match std::fs::read_to_string(&state.asset_dir.join(href)) {
             Ok(s) => s,
             Err(e) => {
                 eprintln!("Navigation failed: {e}");
+                return;
+            }
+        };
+        #[cfg(target_os = "android")]
+        let html_source = match embedded_assets::get(href) {
+            Some(s) => s.to_string(),
+            None => {
+                eprintln!("Navigation failed: missing embedded asset {href}");
                 return;
             }
         };
@@ -276,7 +285,7 @@ impl ApplicationHandler for App {
             std::fs::read_to_string(asset_dir.join(&html_file)).expect("failed to read HTML file")
         };
         #[cfg(target_os = "android")]
-        let html_source = embedded_assets::get("todo.html")
+        let html_source = embedded_assets::get("index.html")
             .unwrap_or(embedded_assets::INDEX_HTML)
             .to_string();
 
@@ -340,6 +349,7 @@ impl ApplicationHandler for App {
             mouse_down: false,
             text_cache,
             ghost_pos: None,
+            last_touch_y: None,
         });
 
         window.request_redraw();
@@ -423,7 +433,19 @@ impl ApplicationHandler for App {
                 }
                 match touch.phase {
                     winit::event::TouchPhase::Started => {
-                        self.state.as_mut().unwrap().mouse_down = true;
+                        let s = self.state.as_mut().unwrap();
+                        s.mouse_down = true;
+                        s.last_touch_y = Some(my);
+
+                        let hit = renderer::hit_test(&s.layout, mx, my + s.scroll_y);
+                        if let Some(ref hit) = hit {
+                            if let Some(ref href) = hit.href {
+                                let href = href.clone();
+                                self.navigate(&href);
+                                return;
+                            }
+                        }
+
                         #[cfg(feature = "js")]
                         {
                             let s = self.state.as_mut().unwrap();
@@ -436,6 +458,18 @@ impl ApplicationHandler for App {
                         self.state.as_ref().unwrap().gpu.window.request_redraw();
                     }
                     winit::event::TouchPhase::Moved => {
+                        let s = self.state.as_mut().unwrap();
+                        if s.ghost_commands.is_empty() {
+                            if let Some(last_y) = s.last_touch_y {
+                                let dy = last_y - my;
+                                let max_scroll = (s.layout.content_height()
+                                    - s.gpu.size.height as f32 / s.gpu.scale_factor as f32)
+                                    .max(0.0);
+                                s.scroll_y = (s.scroll_y + dy).clamp(0.0, max_scroll);
+                            }
+                        }
+                        s.last_touch_y = Some(my);
+
                         #[cfg(feature = "js")]
                         {
                             let s = self.state.as_mut().unwrap();
@@ -448,7 +482,9 @@ impl ApplicationHandler for App {
                         self.state.as_ref().unwrap().gpu.window.request_redraw();
                     }
                     winit::event::TouchPhase::Ended | winit::event::TouchPhase::Cancelled => {
-                        self.state.as_mut().unwrap().mouse_down = false;
+                        let s = self.state.as_mut().unwrap();
+                        s.mouse_down = false;
+                        s.last_touch_y = None;
                         #[cfg(feature = "js")]
                         {
                             let s = self.state.as_mut().unwrap();
