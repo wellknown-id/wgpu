@@ -91,25 +91,15 @@
 
   <script>
     var cube = document.getElementById('cube');
-    var angle = 0;
+    var startTime = null;
     
-    function animate() {
-      angle = angle + 1;
+    function animate(timestamp) {
+      if (!startTime) startTime = timestamp;
+      var elapsed = timestamp - startTime;
+      var angle = elapsed * 0.06;
       
-      // We'll update the faces individually because our engine doesn't have 
-      // full transform-style: preserve-3d inheritance yet.
-      // But we can simulate the cube by calculating face transforms.
-      
-      var rad = angle * Math.PI / 180;
-      var cos = Math.cos(rad);
-      var sin = Math.sin(rad);
-      
-      // Simple rotation around Y and X axis
       var rx = angle * 0.5;
       var ry = angle;
-      
-      // We will implement `transform: perspective(800px) rotateX(...) rotateY(...) translateZ(...)`
-      // in our engine.
       
       document.getElementById('f1').style.transform = 'perspective(800px) rotateX(' + rx + 'deg) rotateY(' + ry + 'deg) translateZ(100px)';
       document.getElementById('f2').style.transform = 'perspective(800px) rotateX(' + rx + 'deg) rotateY(' + (ry + 180) + 'deg) translateZ(100px)';

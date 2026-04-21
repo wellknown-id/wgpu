@@ -565,13 +565,13 @@ impl JsBridge {
         Ok(())
     }
 
-    pub fn tick(&mut self, _now_ms: f64) {
+    pub fn tick(&mut self, now_ms: f64) {
         let callbacks: Vec<_> = self.shared.borrow_mut().animation_callbacks.drain(..).collect();
         if !callbacks.is_empty() {
             let _ = self.context.with(|ctx| -> Result<()> {
                 for cb in callbacks {
                     let f: rquickjs::Function<'_> = cb.restore(&ctx)?;
-                    let _ = f.call::<_, ()>(());
+                    let _ = f.call::<_, ()>((now_ms,));
                 }
                 Ok(())
             });
