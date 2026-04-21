@@ -103,7 +103,7 @@
     </div>
     <div class="section">
       <h2>Rendering Pipeline</h2>
-      <p>Each frame: HTML is parsed into a DOM tree, CSS styles are resolved and cascaded, Taffy computes flexbox layout, then wgpu draws rounded rectangles and text glyphs via instanced rendering. The entire pipeline runs at 60fps with minimal CPU usage.</p>
+      <p>On load or navigation, HTML is parsed into a DOM tree, CSS styles are resolved and cascaded, and Taffy computes flexbox layout. The resulting draw commands are cached and reused each frame. Re-layout only occurs on resize, navigation, or JS-driven DOM changes. Canvas drawing operations produce GPU-native draw commands (rects, circles, lines) rendered directly by wgpu's instanced pipeline.</p>
     </div>
   </div>
 </body>

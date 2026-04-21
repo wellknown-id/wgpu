@@ -70,8 +70,8 @@
   </div>
   <div class="info">
     <div class="info-card">
-      <h3>Software Canvas</h3>
-      <p>This canvas is rendered entirely in software by the JS bridge. The pixel buffer is uploaded to a GPU texture and displayed as a textured quad via wgpu.</p>
+      <h3>GPU Canvas</h3>
+      <p>Canvas drawing operations are translated to GPU-native draw commands (filled rects, rounded rects for circles, and line quads) and rendered directly by the wgpu instanced pipeline — no software rasterization or texture uploads.</p>
     </div>
   </div>
   <script>
