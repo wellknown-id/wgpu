@@ -20,7 +20,7 @@ use winit::{
     window::{Window, WindowId},
 };
 
-use css_engine::apply_styles;
+use css_engine::{apply_style_overrides, apply_styles};
 use gpu::GpuState;
 use html_parser::{extract_styles, parse_html};
 use layout::{build_layout, LayoutTree};
@@ -57,6 +57,8 @@ impl App {
         {
             let overrides = state.js.text_overrides().clone();
             apply_text_overrides(&mut styled, &overrides);
+            let style_ov = state.js.style_overrides();
+            apply_style_overrides(&mut styled, &style_ov);
         }
 
         #[cfg(feature = "js")]
@@ -176,6 +178,8 @@ impl ApplicationHandler for App {
         {
             let overrides = js.text_overrides().clone();
             apply_text_overrides(&mut styled, &overrides);
+            let style_ov = js.style_overrides();
+            apply_style_overrides(&mut styled, &style_ov);
         }
 
         #[cfg(feature = "js")]

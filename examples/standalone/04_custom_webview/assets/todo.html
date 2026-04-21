@@ -1,0 +1,299 @@
+<!DOCTYPE html>
+<html>
+<head>
+<style>
+  body {
+    background: #0f0f1a;
+    color: #e0e0e0;
+    font-size: 15px;
+    padding: 0;
+    margin: 0;
+  }
+  .header {
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    background: #1a1a2e;
+    padding: 20px;
+    height: 56px;
+  }
+  .header h1 {
+    color: #53d8fb;
+    font-size: 26px;
+  }
+  .nav {
+    display: flex;
+    padding: 10px;
+    background: #0f3460;
+    gap: 16px;
+  }
+  .link {
+    color: #e94560;
+    font-size: 14px;
+    padding: 6px;
+  }
+  .app {
+    display: flex;
+    flex-direction: column;
+    padding: 20px;
+    gap: 12px;
+  }
+  .controls {
+    display: flex;
+    gap: 10px;
+    align-items: center;
+  }
+  .btn {
+    background: #e94560;
+    color: white;
+    padding: 10px;
+    border-radius: 6px;
+    font-size: 14px;
+  }
+  .btn-sm {
+    background: #16213e;
+    color: #7a8ea8;
+    padding: 6px;
+    border-radius: 4px;
+    font-size: 12px;
+  }
+  .btn-up {
+    background: #16213e;
+    color: #53d8fb;
+    padding: 6px;
+    border-radius: 4px;
+    font-size: 14px;
+  }
+  .btn-down {
+    background: #16213e;
+    color: #53d8fb;
+    padding: 6px;
+    border-radius: 4px;
+    font-size: 14px;
+  }
+  .btn-del {
+    background: #16213e;
+    color: #e94560;
+    padding: 6px;
+    border-radius: 4px;
+    font-size: 14px;
+  }
+  .todo-item {
+    display: flex;
+    align-items: center;
+    background: #16213e;
+    padding: 12px;
+    border-radius: 8px;
+    gap: 10px;
+  }
+  .todo-check {
+    background: #0f3460;
+    color: #53d8fb;
+    padding: 6px;
+    border-radius: 4px;
+    font-size: 14px;
+  }
+  .todo-text {
+    flex: 1;
+    font-size: 15px;
+    color: #e0e0e0;
+  }
+  .status {
+    display: flex;
+    justify-content: space-between;
+    padding: 8px;
+    background: #1a1a2e;
+    border-radius: 6px;
+  }
+  .status-text {
+    color: #7a8ea8;
+    font-size: 13px;
+  }
+</style>
+</head>
+<body>
+  <div class="header">
+    <h1>Todo List</h1>
+  </div>
+  <div class="nav">
+    <a href="index.html"><div class="link">Back to Home</div></a>
+  </div>
+  <div class="app">
+    <div class="controls">
+      <div class="btn" id="btn-add">+ Add Task</div>
+      <div class="btn-sm" id="btn-clear">Clear Done</div>
+    </div>
+
+    <div class="todo-item" id="todo-0">
+      <div class="todo-check" id="check-0">[ ]</div>
+      <div class="todo-text" id="text-0">-</div>
+      <div class="btn-up" id="up-0">^</div>
+      <div class="btn-down" id="down-0">v</div>
+      <div class="btn-del" id="del-0">x</div>
+    </div>
+    <div class="todo-item" id="todo-1">
+      <div class="todo-check" id="check-1">[ ]</div>
+      <div class="todo-text" id="text-1">-</div>
+      <div class="btn-up" id="up-1">^</div>
+      <div class="btn-down" id="down-1">v</div>
+      <div class="btn-del" id="del-1">x</div>
+    </div>
+    <div class="todo-item" id="todo-2">
+      <div class="todo-check" id="check-2">[ ]</div>
+      <div class="todo-text" id="text-2">-</div>
+      <div class="btn-up" id="up-2">^</div>
+      <div class="btn-down" id="down-2">v</div>
+      <div class="btn-del" id="del-2">x</div>
+    </div>
+    <div class="todo-item" id="todo-3">
+      <div class="todo-check" id="check-3">[ ]</div>
+      <div class="todo-text" id="text-3">-</div>
+      <div class="btn-up" id="up-3">^</div>
+      <div class="btn-down" id="down-3">v</div>
+      <div class="btn-del" id="del-3">x</div>
+    </div>
+    <div class="todo-item" id="todo-4">
+      <div class="todo-check" id="check-4">[ ]</div>
+      <div class="todo-text" id="text-4">-</div>
+      <div class="btn-up" id="up-4">^</div>
+      <div class="btn-down" id="down-4">v</div>
+      <div class="btn-del" id="del-4">x</div>
+    </div>
+    <div class="todo-item" id="todo-5">
+      <div class="todo-check" id="check-5">[ ]</div>
+      <div class="todo-text" id="text-5">-</div>
+      <div class="btn-up" id="up-5">^</div>
+      <div class="btn-down" id="down-5">v</div>
+      <div class="btn-del" id="del-5">x</div>
+    </div>
+    <div class="todo-item" id="todo-6">
+      <div class="todo-check" id="check-6">[ ]</div>
+      <div class="todo-text" id="text-6">-</div>
+      <div class="btn-up" id="up-6">^</div>
+      <div class="btn-down" id="down-6">v</div>
+      <div class="btn-del" id="del-6">x</div>
+    </div>
+    <div class="todo-item" id="todo-7">
+      <div class="todo-check" id="check-7">[ ]</div>
+      <div class="todo-text" id="text-7">-</div>
+      <div class="btn-up" id="up-7">^</div>
+      <div class="btn-down" id="down-7">v</div>
+      <div class="btn-del" id="del-7">x</div>
+    </div>
+
+    <div class="status">
+      <div class="status-text" id="counter">0 items left</div>
+      <div class="status-text" id="total">0 total</div>
+    </div>
+  </div>
+
+<script>
+  var MAX_SLOTS = 8;
+
+  var todos = [
+    {text: 'Build a GPU-accelerated renderer', done: true},
+    {text: 'Implement canvas support', done: true},
+    {text: 'Create todo list demo', done: false},
+    {text: 'Add drag-and-drop reordering', done: false},
+    {text: 'Ship it!', done: false},
+  ];
+
+  var presetTasks = [
+    'Write documentation',
+    'Optimize render pipeline',
+    'Add text input support',
+    'Implement animations',
+    'Add dark mode toggle',
+    'Create settings page',
+    'Profile GPU usage',
+    'Add keyboard shortcuts',
+  ];
+  var presetIndex = 0;
+
+  function render() {
+    for (var i = 0; i < MAX_SLOTS; i++) {
+      var row = document.getElementById('todo-' + i);
+      var check = document.getElementById('check-' + i);
+      var text = document.getElementById('text-' + i);
+
+      if (i < todos.length) {
+        row.style.display = 'flex';
+
+        if (todos[i].done) {
+          check.textContent = '[x]';
+          row.style.background = '#111827';
+          text.style.color = '#4a5568';
+          check.style.color = '#6bcb77';
+          check.style.background = '#1a2332';
+        } else {
+          check.textContent = '[ ]';
+          row.style.background = '#16213e';
+          text.style.color = '#e0e0e0';
+          check.style.color = '#53d8fb';
+          check.style.background = '#0f3460';
+        }
+        text.textContent = todos[i].text;
+      } else {
+        row.style.display = 'none';
+      }
+    }
+
+    var remaining = todos.filter(function(t) { return !t.done; }).length;
+    document.getElementById('counter').textContent = remaining + ' remaining';
+    document.getElementById('total').textContent = todos.length + ' total';
+  }
+
+  function bindEvents() {
+    for (var i = 0; i < MAX_SLOTS; i++) {
+      (function(idx) {
+        document.getElementById('check-' + idx).addEventListener('click', function() {
+          if (idx < todos.length) {
+            todos[idx].done = !todos[idx].done;
+            render();
+          }
+        });
+        document.getElementById('del-' + idx).addEventListener('click', function() {
+          if (idx < todos.length) {
+            todos.splice(idx, 1);
+            render();
+          }
+        });
+        document.getElementById('up-' + idx).addEventListener('click', function() {
+          if (idx > 0 && idx < todos.length) {
+            var tmp = todos[idx];
+            todos[idx] = todos[idx - 1];
+            todos[idx - 1] = tmp;
+            render();
+          }
+        });
+        document.getElementById('down-' + idx).addEventListener('click', function() {
+          if (idx < todos.length - 1) {
+            var tmp = todos[idx];
+            todos[idx] = todos[idx + 1];
+            todos[idx + 1] = tmp;
+            render();
+          }
+        });
+      })(i);
+    }
+
+    document.getElementById('btn-add').addEventListener('click', function() {
+      if (todos.length < MAX_SLOTS) {
+        todos.push({text: presetTasks[presetIndex % presetTasks.length], done: false});
+        presetIndex++;
+        render();
+      }
+    });
+
+    document.getElementById('btn-clear').addEventListener('click', function() {
+      todos = todos.filter(function(t) { return !t.done; });
+      render();
+    });
+  }
+
+  bindEvents();
+  render();
+  console.log('Todo app initialized');
+</script>
+</body>
+</html>

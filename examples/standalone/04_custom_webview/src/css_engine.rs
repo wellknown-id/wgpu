@@ -429,3 +429,17 @@ fn parse_declarations(body: &str) -> Vec<(String, String)> {
     }
     props
 }
+
+pub fn apply_style_overrides(
+    node: &mut crate::types::StyledNode,
+    overrides: &std::collections::HashMap<String, Vec<(String, String)>>,
+) {
+    if let Some(id) = &node.dom_node.id {
+        if let Some(props) = overrides.get(id) {
+            apply_properties(props, &mut node.style);
+        }
+    }
+    for child in &mut node.children {
+        apply_style_overrides(child, overrides);
+    }
+}

@@ -859,15 +859,7 @@ impl GpuState {
                     font_size,
                 } => {
                     let mut glyphs = Vec::new();
-                    self.rasterize_text(
-                        text,
-                        *x,
-                        *y,
-                        *max_width,
-                        *color,
-                        *font_size,
-                        &mut glyphs,
-                    );
+                    self.rasterize_text(text, *x, *y, *max_width, *color, *font_size, &mut glyphs);
                     if !glyphs.is_empty() {
                         if let Some(DrawGroup::Glyphs(ref mut v)) = groups.last_mut() {
                             v.extend(glyphs);

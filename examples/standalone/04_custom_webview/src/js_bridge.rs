@@ -25,6 +25,7 @@ pub struct JsBridge {
 pub struct SharedState {
     pub dom_dirty: bool,
     pub text_overrides: HashMap<String, String>,
+    pub style_overrides: HashMap<String, Vec<(String, String)>>,
     pub canvas_ops: HashMap<String, Vec<CanvasDrawOp>>,
 }
 
@@ -36,6 +37,7 @@ impl JsBridge {
         let shared = Rc::new(RefCell::new(SharedState {
             dom_dirty: false,
             text_overrides: HashMap::new(),
+            style_overrides: HashMap::new(),
             canvas_ops: HashMap::new(),
         }));
 
@@ -76,6 +78,19 @@ impl JsBridge {
                     move |_ctx: rquickjs::Ctx<'_>, id: String, text: String| {
                         let mut s = shared_clone.borrow_mut();
                         s.text_overrides.insert(id, text);
+                        s.dom_dirty = true;
+                    },
+                )?,
+            )?;
+
+            let shared_clone = shared.clone();
+            globals.set(
+                "__hostSetStyle",
+                Function::new(
+                    ctx.clone(),
+                    move |_ctx: rquickjs::Ctx<'_>, id: String, prop: String, value: String| {
+                        let mut s = shared_clone.borrow_mut();
+                        s.style_overrides.entry(id).or_default().push((prop, value));
                         s.dom_dirty = true;
                     },
                 )?,
@@ -304,6 +319,14 @@ impl JsBridge {
                             set: function(v) { __hostSetText(id, '' + v); },
                             get: function() { return ''; }
                         });
+                        elem.style = new Proxy({}, {
+                            set: function(target, prop, value) {
+                                var cssProp = prop.replace(/([A-Z])/g, '-$1').toLowerCase();
+                                __hostSetStyle(id, cssProp, '' + value);
+                                target[prop] = value;
+                                return true;
+                            }
+                        });
                         elem.getContext = function(type) {
                             if (type !== '2d') return null;
                             elem.tagName = 'CANVAS';
@@ -445,7 +468,9 @@ impl JsBridge {
     }
 
     pub fn clear_dirty(&mut self) {
-        self.shared.borrow_mut().dom_dirty = false;
+        let mut s = self.shared.borrow_mut();
+        s.dom_dirty = false;
+        s.style_overrides.clear();
     }
 
     pub fn canvas_ops(&self) -> HashMap<String, Vec<CanvasDrawOp>> {
@@ -454,6 +479,10 @@ impl JsBridge {
 
     pub fn text_overrides(&self) -> std::cell::Ref<'_, HashMap<String, String>> {
         std::cell::Ref::map(self.shared.borrow(), |s| &s.text_overrides)
+    }
+
+    pub fn style_overrides(&self) -> HashMap<String, Vec<(String, String)>> {
+        self.shared.borrow().style_overrides.clone()
     }
 
     fn drain_jobs(&mut self) {
