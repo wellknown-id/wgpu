@@ -507,7 +507,17 @@ impl GpuState {
             .first()
             .copied()
             .ok_or_else(|| anyhow!("no surface format"))?;
-        let render_format = surface_format.remove_srgb_suffix();
+
+        let supports_view_formats = adapter
+            .get_downlevel_capabilities()
+            .flags
+            .contains(wgpu::DownlevelFlags::SURFACE_VIEW_FORMATS);
+
+        let render_format = if supports_view_formats {
+            surface_format.remove_srgb_suffix()
+        } else {
+            surface_format
+        };
 
         let view_formats = if render_format != surface_format {
             vec![render_format]
@@ -847,7 +857,16 @@ impl GpuState {
         #[cfg(target_os = "android")]
         let font_system = {
             let mut db = cosmic_text::fontdb::Database::new();
-            db.load_fonts_dir("/system/fonts");
+            for name in &[
+                "DroidSans.ttf",
+                "DroidSans-Bold.ttf",
+                "DroidSansMono.ttf",
+            ] {
+                let path = format!("/system/fonts/{name}");
+                if std::path::Path::new(&path).exists() {
+                    db.load_font_file(path).ok();
+                }
+            }
             FontSystem::new_with_locale_and_db("en-US".to_string(), db)
         };
         #[cfg(target_os = "ios")]

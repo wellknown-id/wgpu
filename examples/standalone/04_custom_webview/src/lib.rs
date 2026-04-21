@@ -584,9 +584,18 @@ pub fn android_main(app: winit::platform::android::activity::AndroidApp) {
 
     log::info!("android_main: starting");
 
-    let event_loop = EventLoop::builder().with_android_app(app).build().unwrap();
-    event_loop.set_control_flow(ControlFlow::Poll);
-
-    let mut application = App::default();
-    event_loop.run_app(&mut application).unwrap();
+    loop {
+        match EventLoop::builder().with_android_app(app.clone()).build() {
+            Ok(event_loop) => {
+                event_loop.set_control_flow(ControlFlow::Poll);
+                let mut application = App::default();
+                let _ = event_loop.run_app(&mut application);
+                break;
+            }
+            Err(e) => {
+                log::warn!("event loop build failed ({e}), retrying...");
+                std::thread::sleep(std::time::Duration::from_millis(200));
+            }
+        }
+    }
 }
