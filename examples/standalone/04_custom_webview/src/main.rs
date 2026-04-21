@@ -40,6 +40,7 @@ struct WebviewState {
     #[allow(dead_code)]
     start_time: Instant,
     scroll_y: f32,
+    mouse_down: bool,
 }
 
 #[derive(Default)]
@@ -205,6 +206,7 @@ impl ApplicationHandler for App {
             asset_dir,
             start_time: Instant::now(),
             scroll_y: 0.0,
+            mouse_down: false,
         });
 
         window.request_redraw();
@@ -229,6 +231,7 @@ impl ApplicationHandler for App {
             } => {
                 let (mx, my) = unsafe { CURSOR_POS };
                 let s = self.state.as_mut().unwrap();
+                s.mouse_down = true;
                 let hit = renderer::hit_test(&s.layout, mx, my + s.scroll_y);
                 if let Some(ref hit) = hit {
                     if let Some(ref href) = hit.href {
@@ -240,7 +243,27 @@ impl ApplicationHandler for App {
                 #[cfg(feature = "js")]
                 {
                     let s = self.state.as_mut().unwrap();
-                    s.js.dispatch_click(&s.layout, mx, my + s.scroll_y);
+                    let y = my + s.scroll_y;
+                    s.js.dispatch_mousedown(&s.layout, mx, y);
+                    s.js.dispatch_click(&s.layout, mx, y);
+                    if s.js.is_dirty() {
+                        self.rebuild_layout();
+                        self.state.as_ref().unwrap().gpu.window.request_redraw();
+                    }
+                }
+            }
+            WindowEvent::MouseInput {
+                state: winit::event::ElementState::Released,
+                button: winit::event::MouseButton::Left,
+                ..
+            } => {
+                self.state.as_mut().unwrap().mouse_down = false;
+                #[cfg(feature = "js")]
+                {
+                    let s = self.state.as_mut().unwrap();
+                    let (mx, my) = unsafe { CURSOR_POS };
+                    let y = my + s.scroll_y;
+                    s.js.dispatch_mouseup(mx, y);
                     if s.js.is_dirty() {
                         self.rebuild_layout();
                         self.state.as_ref().unwrap().gpu.window.request_redraw();
@@ -259,6 +282,9 @@ impl ApplicationHandler for App {
             }
             WindowEvent::CursorMoved { position, .. } => unsafe {
                 CURSOR_POS = (position.x as f32, position.y as f32);
+                if self.state.as_ref().map(|s| s.mouse_down).unwrap_or(false) {
+                    self.state.as_ref().unwrap().gpu.window.request_redraw();
+                }
             },
             WindowEvent::RedrawRequested => {
                 #[cfg(feature = "js")]
@@ -267,6 +293,13 @@ impl ApplicationHandler for App {
                         let s = self.state.as_mut().unwrap();
                         let now_ms = s.start_time.elapsed().as_secs_f64() * 1000.0;
                         s.js.tick(now_ms);
+                    }
+                    {
+                        let s = self.state.as_mut().unwrap();
+                        if s.mouse_down {
+                            let (mx, my) = unsafe { CURSOR_POS };
+                            s.js.dispatch_mousemove(mx, my + s.scroll_y);
+                        }
                     }
                     if self.state.as_ref().unwrap().js.is_dirty() {
                         self.rebuild_layout();

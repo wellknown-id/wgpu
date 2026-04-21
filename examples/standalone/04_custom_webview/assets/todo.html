@@ -73,6 +73,8 @@
     background: #111627;
     border-radius: 10px;
     padding: 10px;
+    border-width: 2px;
+    border-color: #111627;
   }
   .col-header {
     display: flex;
@@ -85,10 +87,6 @@
   .col-title {
     font-size: 14px;
     color: #e0e0e0;
-  }
-  .col-count {
-    font-size: 12px;
-    color: #4a5568;
   }
 
   .card {
@@ -110,7 +108,7 @@
     border-radius: 4px;
     padding: 3px;
     background: #0f3460;
-    color: #53d8fb;
+    color: #ffffff;
   }
 </style>
 </head>
@@ -125,10 +123,10 @@
   <div class="toolbar">
     <div class="btn-add" id="btn-add">+ New Card</div>
     <div class="btn-clear" id="btn-reset">Reset Board</div>
-    <div class="hint" id="hint">Click a card to pick it up, then click a column to move it</div>
+    <div class="hint" id="hint">Drag a card to another column to move it</div>
   </div>
 
-  <div class="board">
+  <div class="board" id="board">
     <div class="column" id="col-0">
       <div class="col-header" id="colhdr-0" style="background: #1c1042;">
         <div class="col-title" id="coltitle-0">Backlog</div>
@@ -172,7 +170,10 @@
   var COL_NAMES = ['Backlog', 'In Progress', 'Done'];
   var COL_COLORS = ['#7c3aed', '#0ea5e9', '#10b981'];
   var COL_BG = ['#1c1042', '#0f3460', '#0a3a2a'];
-  var TAG_COLORS = ['#e94560', '#53d8fb', '#ffd460', '#6bcb77', '#ff7eb3', '#a78bfa'];
+  var TAG_COLORS = {
+    'Feature': '#e94560', 'Core': '#53d8fb', 'Design': '#ffd460',
+    'UX': '#6bcb77', 'Perf': '#ff7eb3', 'Docs': '#a78bfa', 'Testing': '#ff7eb3'
+  };
 
   var columns = [
     [
@@ -190,7 +191,26 @@
     ],
   ];
 
-  var selected = null;
+  var drag = null;
+  var hoverCol = -1;
+
+  var BOARD_LEFT = 12;
+  var BOARD_RIGHT = 12;
+  var BOARD_GAP = 12;
+
+  function getColumnFromX(x) {
+    var boardWidth = 800 - BOARD_LEFT - BOARD_RIGHT;
+    var colWidth = (boardWidth - BOARD_GAP * (COLS - 1)) / COLS;
+    var rel = x - BOARD_LEFT;
+    for (var c = 0; c < COLS; c++) {
+      var colLeft = c * (colWidth + BOARD_GAP);
+      var colRight = colLeft + colWidth;
+      if (rel >= colLeft && rel <= colRight) return c;
+    }
+    if (rel < 0) return 0;
+    return COLS - 1;
+  }
+
   var newCardIdx = 0;
   var newCards = [
     {text: 'Add keyboard shortcuts', tag: 'UX'},
@@ -203,19 +223,10 @@
     {text: 'Theme customization', tag: 'Design'},
   ];
 
-  function tagColor(tag) {
-    var tags = {'Feature': 0, 'Core': 1, 'Design': 2, 'UX': 3, 'Perf': 4, 'Docs': 5, 'Testing': 4};
-    var idx = tags[tag];
-    if (idx === undefined) idx = 0;
-    return TAG_COLORS[idx];
-  }
-
   function render() {
     for (var c = 0; c < COLS; c++) {
       var cards = columns[c];
-      var count = cards.length;
-
-      document.getElementById('coltitle-' + c).textContent = COL_NAMES[c] + ' (' + count + ')';
+      document.getElementById('coltitle-' + c).textContent = COL_NAMES[c] + ' (' + cards.length + ')';
 
       for (var i = 0; i < SLOTS; i++) {
         var card = document.getElementById('card-' + c + '-' + i);
@@ -226,75 +237,73 @@
           card.style.display = 'flex';
           ct.textContent = cards[i].text;
           tg.textContent = cards[i].tag;
-          tg.style.background = tagColor(cards[i].tag);
-          tg.style.color = '#ffffff';
+          tg.style.background = TAG_COLORS[cards[i].tag] || '#e94560';
 
-          if (selected && selected.col === c && selected.idx === i) {
-            card.style.background = '#2a3055';
-            card.style.borderColor = COL_COLORS[c];
+          var isDragSource = drag && drag.srcCol === c && drag.srcIdx === i;
+          if (isDragSource) {
+            card.style.background = '#0d1020';
+            card.style.borderColor = '#2a3055';
+            ct.style.color = '#3a4558';
           } else {
             card.style.background = '#1a2035';
             card.style.borderColor = '#1a2035';
-          }
-
-          if (c === 2) {
-            ct.style.color = '#6b7a8a';
-          } else {
-            ct.style.color = '#c8d4e0';
+            ct.style.color = c === 2 ? '#6b7a8a' : '#c8d4e0';
           }
         } else {
           card.style.display = 'none';
         }
       }
 
-      var hdr = document.getElementById('colhdr-' + c);
-      if (selected) {
-        hdr.style.borderWidth = '2px';
-        hdr.style.borderColor = COL_COLORS[c];
-        hdr.style.borderRadius = '8px';
+      var col = document.getElementById('col-' + c);
+      if (drag && hoverCol === c && c !== drag.srcCol) {
+        col.style.borderColor = COL_COLORS[c];
+        col.style.background = c === 0 ? '#161030' : c === 1 ? '#0c2a50' : '#082820';
       } else {
-        hdr.style.borderWidth = '0px';
-        hdr.style.borderColor = COL_BG[c];
+        col.style.borderColor = '#111627';
+        col.style.background = '#111627';
       }
     }
 
     var hint = document.getElementById('hint');
-    if (selected) {
-      hint.textContent = 'Card selected! Click a column header to move it there, or click another card to swap';
-      hint.style.color = '#53d8fb';
+    if (drag) {
+      if (hoverCol >= 0 && hoverCol !== drag.srcCol) {
+        hint.textContent = 'Release to drop in ' + COL_NAMES[hoverCol];
+        hint.style.color = COL_COLORS[hoverCol];
+      } else {
+        hint.textContent = 'Dragging "' + columns[drag.srcCol][drag.srcIdx].text + '"...';
+        hint.style.color = '#e94560';
+      }
     } else {
-      hint.textContent = 'Click a card to pick it up, then click a column to move it';
+      hint.textContent = 'Drag a card to another column to move it';
       hint.style.color = '#4a5568';
     }
   }
 
-  function pickOrDrop(col, idx) {
-    if (selected === null) {
-      selected = {col: col, idx: idx};
-    } else if (selected.col === col && selected.idx === idx) {
-      selected = null;
-    } else {
-      var card = columns[selected.col].splice(selected.idx, 1)[0];
-      var insertIdx = idx;
-      if (selected.col === col && selected.idx < idx) {
-        insertIdx = idx - 1;
-      }
-      columns[col].splice(insertIdx, 0, card);
-      selected = null;
-    }
+  function onDragStart(col, idx, x, y) {
+    if (idx >= columns[col].length) return;
+    drag = {srcCol: col, srcIdx: idx, startX: x, startY: y};
+    hoverCol = col;
     render();
   }
 
-  function moveToColumn(col) {
-    if (selected === null) return;
-    if (selected.col === col) {
-      selected = null;
+  function onDragMove(x, y) {
+    if (!drag) return;
+    var newHover = getColumnFromX(x);
+    if (newHover !== hoverCol) {
+      hoverCol = newHover;
       render();
-      return;
     }
-    var card = columns[selected.col].splice(selected.idx, 1)[0];
-    columns[col].push(card);
-    selected = null;
+  }
+
+  function onDragEnd(x, y) {
+    if (!drag) return;
+    var targetCol = getColumnFromX(x);
+    if (targetCol !== drag.srcCol && columns[targetCol].length < SLOTS) {
+      var card = columns[drag.srcCol].splice(drag.srcIdx, 1)[0];
+      columns[targetCol].push(card);
+    }
+    drag = null;
+    hoverCol = -1;
     render();
   }
 
@@ -302,19 +311,20 @@
     for (var c = 0; c < COLS; c++) {
       for (var i = 0; i < SLOTS; i++) {
         (function(col, idx) {
-          document.getElementById('card-' + col + '-' + idx).addEventListener('click', function() {
-            if (idx < columns[col].length) {
-              pickOrDrop(col, idx);
-            }
+          document.getElementById('card-' + col + '-' + idx).addEventListener('mousedown', function(e) {
+            onDragStart(col, idx, e.clientX, e.clientY);
           });
         })(c, i);
       }
-      (function(col) {
-        document.getElementById('colhdr-' + col).addEventListener('click', function() {
-          moveToColumn(col);
-        });
-      })(c);
     }
+
+    document.addEventListener('mousemove', function(e) {
+      onDragMove(e.clientX, e.clientY);
+    });
+
+    document.addEventListener('mouseup', function(e) {
+      onDragEnd(e.clientX, e.clientY);
+    });
 
     document.getElementById('btn-add').addEventListener('click', function() {
       if (columns[0].length < SLOTS) {
@@ -327,21 +337,12 @@
 
     document.getElementById('btn-reset').addEventListener('click', function() {
       columns = [
-        [
-          {text: 'Design system tokens', tag: 'Design'},
-          {text: 'Write API documentation', tag: 'Docs'},
-          {text: 'Profile GPU memory usage', tag: 'Perf'},
-        ],
-        [
-          {text: 'Implement text input fields', tag: 'Feature'},
-          {text: 'Add scroll momentum', tag: 'UX'},
-        ],
-        [
-          {text: 'GPU-accelerated canvas', tag: 'Feature'},
-          {text: 'Build flex layout engine', tag: 'Core'},
-        ],
+        [{text: 'Design system tokens', tag: 'Design'}, {text: 'Write API documentation', tag: 'Docs'}, {text: 'Profile GPU memory usage', tag: 'Perf'}],
+        [{text: 'Implement text input fields', tag: 'Feature'}, {text: 'Add scroll momentum', tag: 'UX'}],
+        [{text: 'GPU-accelerated canvas', tag: 'Feature'}, {text: 'Build flex layout engine', tag: 'Core'}],
       ];
-      selected = null;
+      drag = null;
+      hoverCol = -1;
       render();
     });
   }

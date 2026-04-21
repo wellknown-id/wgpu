@@ -25,7 +25,7 @@ pub struct JsBridge {
 pub struct SharedState {
     pub dom_dirty: bool,
     pub text_overrides: HashMap<String, String>,
-    pub style_overrides: HashMap<String, Vec<(String, String)>>,
+    pub style_overrides: HashMap<String, HashMap<String, String>>,
     pub canvas_ops: HashMap<String, Vec<CanvasDrawOp>>,
 }
 
@@ -90,8 +90,11 @@ impl JsBridge {
                     ctx.clone(),
                     move |_ctx: rquickjs::Ctx<'_>, id: String, prop: String, value: String| {
                         let mut s = shared_clone.borrow_mut();
-                        s.style_overrides.entry(id).or_default().push((prop, value));
-                        s.dom_dirty = true;
+                        let map = s.style_overrides.entry(id).or_default();
+                        if map.get(&prop).map(|v| v.as_str()) != Some(value.as_str()) {
+                            map.insert(prop, value);
+                            s.dom_dirty = true;
+                        }
                     },
                 )?,
             )?;
@@ -276,6 +279,29 @@ impl JsBridge {
                     }
                 }
 
+                function __hostFireMouseEvent(key, x, y) {
+                    var cbs = __listeners[key];
+                    if (cbs) {
+                        for (var i = 0; i < cbs.length; i++) {
+                            cbs[i]({clientX: x, clientY: y});
+                        }
+                    }
+                }
+
+                var __globalListeners = {};
+                function __onMouseUp(x, y) {
+                    var cbs = __globalListeners['mouseup'] || [];
+                    for (var i = 0; i < cbs.length; i++) {
+                        cbs[i]({clientX: x, clientY: y});
+                    }
+                }
+                function __onMouseMove(x, y) {
+                    var cbs = __globalListeners['mousemove'] || [];
+                    for (var i = 0; i < cbs.length; i++) {
+                        cbs[i]({clientX: x, clientY: y});
+                    }
+                }
+
                 function __parseColor(str) {
                     str = str.trim();
                     var m = str.match(/^rgba?\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)\s*(?:,\s*([\d.]+))?\s*\)$/);
@@ -307,6 +333,10 @@ impl JsBridge {
                 }
 
                 var document = {
+                    addEventListener: function(event, cb) {
+                        if (!__globalListeners[event]) __globalListeners[event] = [];
+                        __globalListeners[event].push(cb);
+                    },
                     getElementById: function(id) {
                         var elem = {
                             id: id,
@@ -463,14 +493,44 @@ impl JsBridge {
         }
     }
 
+    pub fn dispatch_mousedown(&mut self, layout: &crate::layout::LayoutTree, x: f32, y: f32) {
+        if let Some(hit) = crate::renderer::hit_test(layout, x, y) {
+            for id in &hit.id_chain {
+                let key = format!("mousedown:{id}");
+                let _ = self.context.with(|ctx| -> Result<()> {
+                    let fire: Function<'_> = ctx.globals().get("__hostFireMouseEvent")?;
+                    fire.call::<_, ()>((key, x as f64, y as f64))?;
+                    Ok(())
+                });
+            }
+            self.drain_jobs();
+        }
+    }
+
+    pub fn dispatch_mouseup(&mut self, x: f32, y: f32) {
+        let _ = self.context.with(|ctx| -> Result<()> {
+            let f: Function<'_> = ctx.globals().get("__onMouseUp")?;
+            f.call::<_, ()>((x as f64, y as f64))?;
+            Ok(())
+        });
+        self.drain_jobs();
+    }
+
+    pub fn dispatch_mousemove(&mut self, x: f32, y: f32) {
+        let _ = self.context.with(|ctx| -> Result<()> {
+            let f: Function<'_> = ctx.globals().get("__onMouseMove")?;
+            f.call::<_, ()>((x as f64, y as f64))?;
+            Ok(())
+        });
+        self.drain_jobs();
+    }
+
     pub fn is_dirty(&self) -> bool {
         self.shared.borrow().dom_dirty
     }
 
     pub fn clear_dirty(&mut self) {
-        let mut s = self.shared.borrow_mut();
-        s.dom_dirty = false;
-        s.style_overrides.clear();
+        self.shared.borrow_mut().dom_dirty = false;
     }
 
     pub fn canvas_ops(&self) -> HashMap<String, Vec<CanvasDrawOp>> {
@@ -482,7 +542,17 @@ impl JsBridge {
     }
 
     pub fn style_overrides(&self) -> HashMap<String, Vec<(String, String)>> {
-        self.shared.borrow().style_overrides.clone()
+        self.shared
+            .borrow()
+            .style_overrides
+            .iter()
+            .map(|(id, map)| {
+                (
+                    id.clone(),
+                    map.iter().map(|(k, v)| (k.clone(), v.clone())).collect(),
+                )
+            })
+            .collect()
     }
 
     fn drain_jobs(&mut self) {
