@@ -195,11 +195,10 @@
   var hoverCol = -1;
 
   var BOARD_LEFT = 12;
-  var BOARD_RIGHT = 12;
   var BOARD_GAP = 12;
 
   function getColumnFromX(x) {
-    var boardWidth = 800 - BOARD_LEFT - BOARD_RIGHT;
+    var boardWidth = 800 - BOARD_LEFT * 2;
     var colWidth = (boardWidth - BOARD_GAP * (COLS - 1)) / COLS;
     var rel = x - BOARD_LEFT;
     for (var c = 0; c < COLS; c++) {
@@ -279,51 +278,41 @@
     }
   }
 
-  function onDragStart(col, idx, x, y) {
-    if (idx >= columns[col].length) return;
-    drag = {srcCol: col, srcIdx: idx, startX: x, startY: y};
-    hoverCol = col;
-    render();
-  }
-
-  function onDragMove(x, y) {
-    if (!drag) return;
-    var newHover = getColumnFromX(x);
-    if (newHover !== hoverCol) {
-      hoverCol = newHover;
-      render();
-    }
-  }
-
-  function onDragEnd(x, y) {
-    if (!drag) return;
-    var targetCol = getColumnFromX(x);
-    if (targetCol !== drag.srcCol && columns[targetCol].length < SLOTS) {
-      var card = columns[drag.srcCol].splice(drag.srcIdx, 1)[0];
-      columns[targetCol].push(card);
-    }
-    drag = null;
-    hoverCol = -1;
-    render();
-  }
-
   function bindEvents() {
     for (var c = 0; c < COLS; c++) {
       for (var i = 0; i < SLOTS; i++) {
         (function(col, idx) {
-          document.getElementById('card-' + col + '-' + idx).addEventListener('mousedown', function(e) {
-            onDragStart(col, idx, e.clientX, e.clientY);
+          var el = document.getElementById('card-' + col + '-' + idx);
+          el.addEventListener('pointerdown', function(e) {
+            if (idx >= columns[col].length) return;
+            drag = {srcCol: col, srcIdx: idx};
+            hoverCol = col;
+            el.setPointerCapture(e.pointerId);
+            render();
           });
         })(c, i);
       }
     }
 
-    document.addEventListener('mousemove', function(e) {
-      onDragMove(e.clientX, e.clientY);
+    document.addEventListener('pointermove', function(e) {
+      if (!drag) return;
+      var newHover = getColumnFromX(e.clientX);
+      if (newHover !== hoverCol) {
+        hoverCol = newHover;
+        render();
+      }
     });
 
-    document.addEventListener('mouseup', function(e) {
-      onDragEnd(e.clientX, e.clientY);
+    document.addEventListener('pointerup', function(e) {
+      if (!drag) return;
+      var targetCol = getColumnFromX(e.clientX);
+      if (targetCol !== drag.srcCol && columns[targetCol].length < SLOTS) {
+        var card = columns[drag.srcCol].splice(drag.srcIdx, 1)[0];
+        columns[targetCol].push(card);
+      }
+      drag = null;
+      hoverCol = -1;
+      render();
     });
 
     document.getElementById('btn-add').addEventListener('click', function() {

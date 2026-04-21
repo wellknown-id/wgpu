@@ -27,6 +27,8 @@ pub struct SharedState {
     pub text_overrides: HashMap<String, String>,
     pub style_overrides: HashMap<String, HashMap<String, String>>,
     pub canvas_ops: HashMap<String, Vec<CanvasDrawOp>>,
+    pub pointer_capture: Option<String>,
+    pub pointer_down_target: Option<String>,
 }
 
 impl JsBridge {
@@ -39,6 +41,8 @@ impl JsBridge {
             text_overrides: HashMap::new(),
             style_overrides: HashMap::new(),
             canvas_ops: HashMap::new(),
+            pointer_capture: None,
+            pointer_down_target: None,
         }));
 
         let mut bridge = Self {
@@ -261,44 +265,65 @@ impl JsBridge {
                 )?,
             )?;
 
+            let shared_clone = shared.clone();
+            globals.set(
+                "__hostSetPointerCapture",
+                Function::new(
+                    ctx.clone(),
+                    move |_ctx: rquickjs::Ctx<'_>, id: String| {
+                        shared_clone.borrow_mut().pointer_capture = Some(id);
+                    },
+                )?,
+            )?;
+
+            let shared_clone = shared.clone();
+            globals.set(
+                "__hostReleasePointerCapture",
+                Function::new(
+                    ctx.clone(),
+                    move |_ctx: rquickjs::Ctx<'_>| {
+                        shared_clone.borrow_mut().pointer_capture = None;
+                    },
+                )?,
+            )?;
+
             ctx.eval::<(), _>(
                 r#"
                 var __listeners = {};
+                var __globalListeners = {};
 
                 function __hostAddEventListener(key, cb) {
                     if (!__listeners[key]) __listeners[key] = [];
                     __listeners[key].push(cb);
                 }
 
-                function __hostFireEvent(key) {
-                    var cbs = __listeners[key];
-                    if (cbs) {
-                        for (var i = 0; i < cbs.length; i++) {
-                            cbs[i]();
+                function __dispatchPointerEvent(eventType, idsStr, targetId, x, y) {
+                    var ids = idsStr ? idsStr.split(',') : [];
+                    var stopped = false;
+                    var evt = {
+                        type: eventType,
+                        clientX: x,
+                        clientY: y,
+                        pointerId: 1,
+                        pointerType: 'mouse',
+                        target: {id: targetId},
+                        stopPropagation: function() { stopped = true; },
+                        preventDefault: function() {}
+                    };
+                    for (var i = 0; i < ids.length && !stopped; i++) {
+                        var key = eventType + ':' + ids[i];
+                        var cbs = __listeners[key];
+                        if (cbs) {
+                            for (var j = 0; j < cbs.length; j++) {
+                                cbs[j](evt);
+                            }
                         }
                     }
-                }
-
-                function __hostFireMouseEvent(key, x, y) {
-                    var cbs = __listeners[key];
-                    if (cbs) {
-                        for (var i = 0; i < cbs.length; i++) {
-                            cbs[i]({clientX: x, clientY: y});
+                    if (!stopped) {
+                        var gcbs = __globalListeners[eventType] || [];
+                        for (var i = 0; i < gcbs.length; i++) {
+                            gcbs[i](evt);
                         }
-                    }
-                }
-
-                var __globalListeners = {};
-                function __onMouseUp(x, y) {
-                    var cbs = __globalListeners['mouseup'] || [];
-                    for (var i = 0; i < cbs.length; i++) {
-                        cbs[i]({clientX: x, clientY: y});
-                    }
-                }
-                function __onMouseMove(x, y) {
-                    var cbs = __globalListeners['mousemove'] || [];
-                    for (var i = 0; i < cbs.length; i++) {
-                        cbs[i]({clientX: x, clientY: y});
                     }
                 }
 
@@ -343,6 +368,12 @@ impl JsBridge {
                             tagName: 'DIV',
                             addEventListener: function(event, cb) {
                                 __hostAddEventListener(event + ':' + id, cb);
+                            },
+                            setPointerCapture: function(pointerId) {
+                                __hostSetPointerCapture(id);
+                            },
+                            releasePointerCapture: function(pointerId) {
+                                __hostReleasePointerCapture();
                             }
                         };
                         Object.defineProperty(elem, 'textContent', {
@@ -479,50 +510,63 @@ impl JsBridge {
         self.drain_jobs();
     }
 
-    pub fn dispatch_click(&mut self, layout: &crate::layout::LayoutTree, x: f32, y: f32) {
-        if let Some(hit) = crate::renderer::hit_test(layout, x, y) {
-            for id in &hit.id_chain {
-                let key = format!("click:{id}");
-                let _ = self.context.with(|ctx| -> Result<()> {
-                    let fire: Function<'_> = ctx.globals().get("__hostFireEvent")?;
-                    fire.call::<_, ()>((key,))?;
-                    Ok(())
-                });
+    fn fire_pointer_event(
+        &mut self,
+        event_type: &str,
+        layout: &crate::layout::LayoutTree,
+        x: f32,
+        y: f32,
+    ) {
+        let (ids, target_id) = {
+            let s = self.shared.borrow();
+            if let Some(ref cap) = s.pointer_capture {
+                (vec![cap.clone()], cap.clone())
+            } else if let Some(hit) = crate::renderer::hit_test(layout, x, y) {
+                let target = hit.id_chain.first().cloned().unwrap_or_default();
+                (hit.id_chain.clone(), target)
+            } else {
+                (vec![], String::new())
             }
-            self.drain_jobs();
-        }
-    }
-
-    pub fn dispatch_mousedown(&mut self, layout: &crate::layout::LayoutTree, x: f32, y: f32) {
-        if let Some(hit) = crate::renderer::hit_test(layout, x, y) {
-            for id in &hit.id_chain {
-                let key = format!("mousedown:{id}");
-                let _ = self.context.with(|ctx| -> Result<()> {
-                    let fire: Function<'_> = ctx.globals().get("__hostFireMouseEvent")?;
-                    fire.call::<_, ()>((key, x as f64, y as f64))?;
-                    Ok(())
-                });
-            }
-            self.drain_jobs();
-        }
-    }
-
-    pub fn dispatch_mouseup(&mut self, x: f32, y: f32) {
+        };
+        let ids_str = ids.join(",");
+        let etype = event_type.to_string();
         let _ = self.context.with(|ctx| -> Result<()> {
-            let f: Function<'_> = ctx.globals().get("__onMouseUp")?;
-            f.call::<_, ()>((x as f64, y as f64))?;
+            let f: Function<'_> = ctx.globals().get("__dispatchPointerEvent")?;
+            f.call::<_, ()>((etype, ids_str, target_id, x as f64, y as f64))?;
             Ok(())
         });
         self.drain_jobs();
     }
 
-    pub fn dispatch_mousemove(&mut self, x: f32, y: f32) {
-        let _ = self.context.with(|ctx| -> Result<()> {
-            let f: Function<'_> = ctx.globals().get("__onMouseMove")?;
-            f.call::<_, ()>((x as f64, y as f64))?;
-            Ok(())
-        });
-        self.drain_jobs();
+    pub fn dispatch_pointer_down(&mut self, layout: &crate::layout::LayoutTree, x: f32, y: f32) {
+        let target =
+            crate::renderer::hit_test(layout, x, y).and_then(|h| h.id_chain.first().cloned());
+        self.shared.borrow_mut().pointer_down_target = target;
+        self.fire_pointer_event("pointerdown", layout, x, y);
+    }
+
+    pub fn dispatch_pointer_move(&mut self, layout: &crate::layout::LayoutTree, x: f32, y: f32) {
+        self.fire_pointer_event("pointermove", layout, x, y);
+    }
+
+    pub fn dispatch_pointer_up(&mut self, layout: &crate::layout::LayoutTree, x: f32, y: f32) {
+        self.fire_pointer_event("pointerup", layout, x, y);
+
+        let had_capture = self.shared.borrow_mut().pointer_capture.take().is_some();
+
+        let down_target = self.shared.borrow().pointer_down_target.clone();
+        let up_target = if had_capture {
+            None
+        } else {
+            crate::renderer::hit_test(layout, x, y).and_then(|h| h.id_chain.first().cloned())
+        };
+
+        if let (Some(ref dt), Some(ref ut)) = (&down_target, &up_target) {
+            if dt == ut {
+                self.fire_pointer_event("click", layout, x, y);
+            }
+        }
+        self.shared.borrow_mut().pointer_down_target = None;
     }
 
     pub fn is_dirty(&self) -> bool {

@@ -244,8 +244,7 @@ impl ApplicationHandler for App {
                 {
                     let s = self.state.as_mut().unwrap();
                     let y = my + s.scroll_y;
-                    s.js.dispatch_mousedown(&s.layout, mx, y);
-                    s.js.dispatch_click(&s.layout, mx, y);
+                    s.js.dispatch_pointer_down(&s.layout, mx, y);
                     if s.js.is_dirty() {
                         self.rebuild_layout();
                         self.state.as_ref().unwrap().gpu.window.request_redraw();
@@ -263,7 +262,7 @@ impl ApplicationHandler for App {
                     let s = self.state.as_mut().unwrap();
                     let (mx, my) = unsafe { CURSOR_POS };
                     let y = my + s.scroll_y;
-                    s.js.dispatch_mouseup(mx, y);
+                    s.js.dispatch_pointer_up(&s.layout, mx, y);
                     if s.js.is_dirty() {
                         self.rebuild_layout();
                         self.state.as_ref().unwrap().gpu.window.request_redraw();
@@ -298,7 +297,7 @@ impl ApplicationHandler for App {
                         let s = self.state.as_mut().unwrap();
                         if s.mouse_down {
                             let (mx, my) = unsafe { CURSOR_POS };
-                            s.js.dispatch_mousemove(mx, my + s.scroll_y);
+                            s.js.dispatch_pointer_move(&s.layout, mx, my + s.scroll_y);
                         }
                     }
                     if self.state.as_ref().unwrap().js.is_dirty() {
