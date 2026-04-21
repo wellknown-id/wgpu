@@ -305,7 +305,67 @@ impl ApplicationHandler for App {
                     }
                 }
                 let s = self.state.as_mut().unwrap();
-                s.gpu.render(&s.commands, s.clear_color, s.scroll_y);
+                let mut render_cmds = s.commands.clone();
+
+                #[cfg(feature = "js")]
+                if let Some(overlay) = s.js.drag_overlay() {
+                    let (cx, cy) = unsafe { CURSOR_POS };
+                    let ox = cx + 12.0;
+                    let oy = cy - 10.0;
+                    let card_w = 180.0;
+                    let card_h = 52.0;
+                    let tag_h = 18.0;
+
+                    render_cmds.push(DrawCommand::Rect {
+                        rect: types::LayoutRect {
+                            x: ox,
+                            y: oy,
+                            w: card_w,
+                            h: card_h,
+                        },
+                        color: [0.1, 0.13, 0.22, 0.92],
+                        border_radius: 8.0,
+                    });
+                    render_cmds.push(DrawCommand::Border {
+                        rect: types::LayoutRect {
+                            x: ox,
+                            y: oy,
+                            w: card_w,
+                            h: card_h,
+                        },
+                        color: [0.33, 0.53, 0.98, 0.7],
+                        width: 2.0,
+                        radius: 8.0,
+                    });
+                    render_cmds.push(DrawCommand::Text {
+                        text: overlay.text.clone(),
+                        x: ox + 8.0,
+                        y: oy + 6.0,
+                        max_width: card_w - 16.0,
+                        color: [0.9, 0.93, 0.97, 1.0],
+                        font_size: 13.0,
+                    });
+                    render_cmds.push(DrawCommand::Rect {
+                        rect: types::LayoutRect {
+                            x: ox + 8.0,
+                            y: oy + card_h - tag_h - 6.0,
+                            w: 60.0,
+                            h: tag_h,
+                        },
+                        color: overlay.tag_color,
+                        border_radius: 4.0,
+                    });
+                    render_cmds.push(DrawCommand::Text {
+                        text: overlay.tag.clone(),
+                        x: ox + 12.0,
+                        y: oy + card_h - tag_h - 4.0,
+                        max_width: 52.0,
+                        color: [1.0, 1.0, 1.0, 1.0],
+                        font_size: 11.0,
+                    });
+                }
+
+                s.gpu.render(&render_cmds, s.clear_color, s.scroll_y);
                 s.gpu.window.request_redraw();
             }
             _ => {}

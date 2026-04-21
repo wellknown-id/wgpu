@@ -288,6 +288,9 @@
             drag = {srcCol: col, srcIdx: idx};
             hoverCol = col;
             el.setPointerCapture(e.pointerId);
+            var cardData = columns[col][idx];
+            var tagCol = __parseColor(TAG_COLORS[cardData.tag] || '#e94560');
+            __hostSetDragOverlay(cardData.text, cardData.tag, __packRgba(tagCol));
             render();
           });
         })(c, i);
@@ -312,6 +315,7 @@
       }
       drag = null;
       hoverCol = -1;
+      __hostClearDragOverlay();
       render();
     });
 

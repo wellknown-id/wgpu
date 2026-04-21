@@ -5,7 +5,7 @@ use std::rc::Rc;
 use anyhow::Result;
 use rquickjs::{Context, Function, Runtime};
 
-use crate::types::CanvasDrawOp;
+use crate::types::{CanvasDrawOp, DragOverlay};
 
 fn unpack_color(packed: u32) -> [f32; 4] {
     [
@@ -29,6 +29,7 @@ pub struct SharedState {
     pub canvas_ops: HashMap<String, Vec<CanvasDrawOp>>,
     pub pointer_capture: Option<String>,
     pub pointer_down_target: Option<String>,
+    pub drag_overlay: Option<DragOverlay>,
 }
 
 impl JsBridge {
@@ -43,6 +44,7 @@ impl JsBridge {
             canvas_ops: HashMap::new(),
             pointer_capture: None,
             pointer_down_target: None,
+            drag_overlay: None,
         }));
 
         let mut bridge = Self {
@@ -283,6 +285,35 @@ impl JsBridge {
                     ctx.clone(),
                     move |_ctx: rquickjs::Ctx<'_>| {
                         shared_clone.borrow_mut().pointer_capture = None;
+                    },
+                )?,
+            )?;
+
+            let shared_clone = shared.clone();
+            globals.set(
+                "__hostSetDragOverlay",
+                Function::new(
+                    ctx.clone(),
+                    move |_ctx: rquickjs::Ctx<'_>,
+                          text: String,
+                          tag: String,
+                          tag_color: u32| {
+                        shared_clone.borrow_mut().drag_overlay = Some(DragOverlay {
+                            text,
+                            tag,
+                            tag_color: crate::js_bridge::unpack_color(tag_color),
+                        });
+                    },
+                )?,
+            )?;
+
+            let shared_clone = shared.clone();
+            globals.set(
+                "__hostClearDragOverlay",
+                Function::new(
+                    ctx.clone(),
+                    move |_ctx: rquickjs::Ctx<'_>| {
+                        shared_clone.borrow_mut().drag_overlay = None;
                     },
                 )?,
             )?;
@@ -579,6 +610,10 @@ impl JsBridge {
 
     pub fn canvas_ops(&self) -> HashMap<String, Vec<CanvasDrawOp>> {
         self.shared.borrow().canvas_ops.clone()
+    }
+
+    pub fn drag_overlay(&self) -> Option<DragOverlay> {
+        self.shared.borrow().drag_overlay.clone()
     }
 
     pub fn text_overrides(&self) -> std::cell::Ref<'_, HashMap<String, String>> {

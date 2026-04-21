@@ -213,3 +213,10 @@ pub struct StyledNode {
     pub style: ComputedStyle,
     pub children: Vec<StyledNode>,
 }
+
+#[derive(Debug, Clone)]
+pub struct DragOverlay {
+    pub text: String,
+    pub tag: String,
+    pub tag_color: [f32; 4],
+}
