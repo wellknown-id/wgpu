@@ -50,3 +50,7 @@ target_sdk_version = 34
 name = "android.hardware.vulkan.level"
 required = true
 version = 1
+
+[package.metadata.android.signing.release]
+path = "/home/ben/.android/debug.keystore"
+keystore_password = "android"
