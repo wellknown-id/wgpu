@@ -50,7 +50,8 @@ struct WebviewState {
     #[cfg(feature = "js")]
     js: js_bridge::JsBridge,
     layout: LayoutTree,
-    commands: Vec<DrawCommand>,
+    static_commands: Vec<DrawCommand>,
+    ghost_commands: Vec<DrawCommand>,
     clear_color: [f32; 4],
     html_source: String,
     css_sources: Vec<String>,
@@ -61,6 +62,7 @@ struct WebviewState {
     scroll_y: f32,
     mouse_down: bool,
     text_cache: TextMeasureCache,
+    ghost_pos: Option<(f32, f32)>,
 }
 
 #[derive(Default)]
@@ -95,8 +97,13 @@ impl App {
             &mut state.text_cache,
             &mut |text, font_size, max_width| state.gpu.measure_text(text, font_size, max_width),
         );
-        state.commands = generate_draw_commands(&state.layout, &canvas_ops);
+        let all_commands = generate_draw_commands(&state.layout, &canvas_ops);
+        let (s, g) = Self::split_commands(all_commands);
+        state.static_commands = s;
+        state.ghost_commands = g;
         state.clear_color = styled.style.background_color;
+        state.ghost_pos = None;
+        state.gpu.static_dirty = true;
         #[cfg(feature = "js")]
         {
             state
@@ -111,6 +118,75 @@ impl App {
         let dom = parse_html(&state.html_source);
         state.styled_base = apply_styles(&dom, &state.css_sources);
         self.rebuild_layout();
+    }
+
+    #[cfg(feature = "js")]
+    fn try_patch_position(&mut self) -> bool {
+        let state = self.state.as_mut().unwrap();
+        let overrides = state.js.style_overrides();
+        let ghost_props = match overrides.get("ghost") {
+            Some(props) => props,
+            None => return false,
+        };
+        let mut new_left = None;
+        let mut new_top = None;
+        for (key, val) in ghost_props {
+            match key.as_str() {
+                "left" => new_left = val.strip_suffix("px").and_then(|v| v.parse::<f32>().ok()),
+                "top" => new_top = val.strip_suffix("px").and_then(|v| v.parse::<f32>().ok()),
+                _ => {}
+            }
+        }
+        let (new_x, new_y) = match (new_left, new_top) {
+            (Some(x), Some(y)) => (x, y),
+            _ => return false,
+        };
+        if let Some((old_x, old_y)) = state.ghost_pos {
+            let dx = new_x - old_x;
+            let dy = new_y - old_y;
+            if dx != 0.0 || dy != 0.0 {
+                for cmd in &mut state.ghost_commands {
+                    match cmd {
+                        DrawCommand::Rect { rect, .. } | DrawCommand::Border { rect, .. } => {
+                            rect.x += dx;
+                            rect.y += dy;
+                        }
+                        DrawCommand::Text { x, y, .. } => {
+                            *x += dx;
+                            *y += dy;
+                        }
+                        _ => {}
+                    }
+                }
+            }
+            state.ghost_pos = Some((new_x, new_y));
+            state.js.clear_dirty();
+            true
+        } else {
+            state.ghost_pos = Some((new_x, new_y));
+            false
+        }
+    }
+
+    fn split_commands(commands: Vec<DrawCommand>) -> (Vec<DrawCommand>, Vec<DrawCommand>) {
+        let mut static_cmds = Vec::new();
+        let mut ghost_cmds = Vec::new();
+        for cmd in commands {
+            let is_ghost = match &cmd {
+                DrawCommand::Rect { element_id, .. }
+                | DrawCommand::Border { element_id, .. }
+                | DrawCommand::Text { element_id, .. } => element_id
+                    .as_deref()
+                    .is_some_and(|id| id == "ghost" || id.starts_with("ghost-")),
+                _ => false,
+            };
+            if is_ghost {
+                ghost_cmds.push(cmd);
+            } else {
+                static_cmds.push(cmd);
+            }
+        }
+        (static_cmds, ghost_cmds)
     }
 
     fn navigate(&mut self, href: &str) {
@@ -239,7 +315,8 @@ impl ApplicationHandler for App {
             &mut text_cache,
             &mut |text, font_size, max_width| gpu.measure_text(text, font_size, max_width),
         );
-        let commands = generate_draw_commands(&layout_tree, &canvas_ops);
+        let all_commands = generate_draw_commands(&layout_tree, &canvas_ops);
+        let (static_commands, ghost_commands) = Self::split_commands(all_commands);
 
         let clear_color = styled.style.background_color;
 
@@ -248,7 +325,8 @@ impl ApplicationHandler for App {
             #[cfg(feature = "js")]
             js,
             layout: layout_tree,
-            commands,
+            static_commands,
+            ghost_commands,
             clear_color,
             html_source,
             css_sources,
@@ -261,6 +339,7 @@ impl ApplicationHandler for App {
             scroll_y: 0.0,
             mouse_down: false,
             text_cache,
+            ghost_pos: None,
         });
 
         window.request_redraw();
@@ -362,7 +441,7 @@ impl ApplicationHandler for App {
                             let s = self.state.as_mut().unwrap();
                             let y = my + s.scroll_y;
                             s.js.dispatch_pointer_move(&s.layout, mx, y);
-                            if s.js.is_dirty() {
+                            if s.js.is_dirty() && !self.try_patch_position() {
                                 self.rebuild_layout();
                             }
                         }
@@ -375,6 +454,7 @@ impl ApplicationHandler for App {
                             let s = self.state.as_mut().unwrap();
                             let y = my + s.scroll_y;
                             s.js.dispatch_pointer_up(&s.layout, mx, y);
+                            s.ghost_pos = None;
                             if s.js.is_dirty() {
                                 self.rebuild_layout();
                             }
@@ -404,12 +484,20 @@ impl ApplicationHandler for App {
                             s.js.dispatch_pointer_move(&s.layout, mx, my + s.scroll_y);
                         }
                     }
-                    if self.state.as_ref().unwrap().js.is_dirty() {
+                    let is_dragging = self.state.as_ref().map(|s| s.mouse_down).unwrap_or(false);
+                    if self.state.as_ref().unwrap().js.is_dirty()
+                        && !(is_dragging && self.try_patch_position())
+                    {
                         self.rebuild_layout();
                     }
                 }
                 let s = self.state.as_mut().unwrap();
-                s.gpu.render(&s.commands, s.clear_color, s.scroll_y);
+                s.gpu.render(
+                    &s.static_commands,
+                    &s.ghost_commands,
+                    s.clear_color,
+                    s.scroll_y,
+                );
                 s.gpu.window.request_redraw();
             }
             _ => {}

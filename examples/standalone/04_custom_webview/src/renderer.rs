@@ -8,7 +8,15 @@ pub fn generate_draw_commands(
     canvas_ops: &HashMap<String, Vec<CanvasDrawOp>>,
 ) -> Vec<DrawCommand> {
     let mut commands = Vec::new();
-    emit_node(&tree.taffy, &tree.root, 0.0, 0.0, canvas_ops, &mut commands);
+    emit_node(
+        &tree.taffy,
+        &tree.root,
+        0.0,
+        0.0,
+        None,
+        canvas_ops,
+        &mut commands,
+    );
     commands
 }
 
@@ -42,6 +50,7 @@ fn emit_node(
     node: &LayoutNode,
     parent_x: f32,
     parent_y: f32,
+    ancestor_id: Option<&str>,
     canvas_ops: &HashMap<String, Vec<CanvasDrawOp>>,
     commands: &mut Vec<DrawCommand>,
 ) {
@@ -59,11 +68,14 @@ fn emit_node(
     let w = layout.size.width;
     let h = layout.size.height;
 
+    let current_id = node.id.as_deref().or(ancestor_id);
+
     if node.style.background_color[3] > 0.0 {
         commands.push(DrawCommand::Rect {
             rect: LayoutRect { x, y, w, h },
             color: node.style.background_color,
             border_radius: node.style.border_radius,
+            element_id: current_id.map(|s| s.to_string()),
         });
     }
 
@@ -73,6 +85,7 @@ fn emit_node(
             color: node.style.border_color,
             width: node.style.border_width,
             radius: node.style.border_radius,
+            element_id: current_id.map(|s| s.to_string()),
         });
     }
 
@@ -84,6 +97,7 @@ fn emit_node(
             max_width: w + 1.0,
             color: node.style.color,
             font_size: node.style.font_size,
+            element_id: current_id.map(|s| s.to_string()),
         });
     }
 
@@ -96,7 +110,7 @@ fn emit_node(
     }
 
     for child in &node.children {
-        emit_node(taffy, child, x, y, canvas_ops, commands);
+        emit_node(taffy, child, x, y, current_id, canvas_ops, commands);
     }
 }
 
@@ -113,6 +127,7 @@ fn emit_canvas_ops(ops: &[CanvasDrawOp], cx: f32, cy: f32, commands: &mut Vec<Dr
                     },
                     color: *color,
                     border_radius: 0.0,
+                    element_id: None,
                 });
             }
             CanvasDrawOp::StrokeRect {
@@ -133,6 +148,7 @@ fn emit_canvas_ops(ops: &[CanvasDrawOp], cx: f32, cy: f32, commands: &mut Vec<Dr
                     color: *color,
                     width: *line_width,
                     radius: 0.0,
+                    element_id: None,
                 });
             }
             CanvasDrawOp::FillCircle {
@@ -151,6 +167,7 @@ fn emit_canvas_ops(ops: &[CanvasDrawOp], cx: f32, cy: f32, commands: &mut Vec<Dr
                     },
                     color: *color,
                     border_radius: r,
+                    element_id: None,
                 });
             }
             CanvasDrawOp::StrokeCircle {
@@ -171,6 +188,7 @@ fn emit_canvas_ops(ops: &[CanvasDrawOp], cx: f32, cy: f32, commands: &mut Vec<Dr
                     color: *color,
                     width: *line_width,
                     radius: r,
+                    element_id: None,
                 });
             }
             CanvasDrawOp::Line {

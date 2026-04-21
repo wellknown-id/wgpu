@@ -157,12 +157,14 @@ pub enum DrawCommand {
         rect: LayoutRect,
         color: [f32; 4],
         border_radius: f32,
+        element_id: Option<String>,
     },
     Border {
         rect: LayoutRect,
         color: [f32; 4],
         width: f32,
         radius: f32,
+        element_id: Option<String>,
     },
     Text {
         text: String,
@@ -171,6 +173,7 @@ pub enum DrawCommand {
         max_width: f32,
         color: [f32; 4],
         font_size: f32,
+        element_id: Option<String>,
     },
     Line {
         x0: f32,
