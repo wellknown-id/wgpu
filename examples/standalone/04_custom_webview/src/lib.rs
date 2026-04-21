@@ -546,6 +546,12 @@ impl ApplicationHandler for App {
             _ => {}
         }
     }
+
+    fn about_to_wait(&mut self, _event_loop: &ActiveEventLoop) {
+        if let Some(ref s) = self.state {
+            s.gpu.window.request_redraw();
+        }
+    }
 }
 
 pub static mut CURSOR_POS: (f32, f32) = (0.0, 0.0);
