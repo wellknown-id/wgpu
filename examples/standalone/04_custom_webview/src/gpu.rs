@@ -228,8 +228,13 @@ impl GlyphAtlas {
 const RECT_SHADER: &str = r#"
 struct ScreenUniform {
     size: vec2<f32>,
-    scroll: vec2<f32>,
+    srgb_target: f32,
+    scroll_y: f32,
 };
+
+fn linearize(c: vec3<f32>, srgb: f32) -> vec3<f32> {
+    return mix(c, pow(c, vec3<f32>(2.2)), srgb);
+}
 @group(0) @binding(0) var<uniform> screen: ScreenUniform;
 
 struct RectInput {
@@ -274,7 +279,7 @@ fn vs_rect(in: RectInput) -> RectOutput {
     // Add original center position and subtract scroll
     // Add original center position and subtract scroll if not fixed (flag bit 0)
     let is_fixed = (in.flags & 1u) != 0u;
-    let s = select(screen.scroll, vec2<f32>(0.0), is_fixed);
+    let s = select(vec2<f32>(0.0, screen.scroll_y), vec2<f32>(0.0), is_fixed);
     
     let w = world_pos_4.w;
     let z = world_pos_4.z;
@@ -325,18 +330,23 @@ fn fs_rect(in: RectOutput) -> @location(0) vec4<f32> {
         let inner_alpha = smoothstep(-0.5, 0.5, inner_dist);
         let fill = in.color * (1.0 - inner_alpha);
         let border_fill = in.border_color * inner_alpha;
-        return vec4<f32>((fill.rgb + border_fill.rgb), alpha * max(fill.a, border_fill.a));
+        return vec4<f32>(linearize(fill.rgb + border_fill.rgb, screen.srgb_target), alpha * max(fill.a, border_fill.a));
     }
 
-    return vec4<f32>(in.color.rgb, in.color.a * alpha);
+    return vec4<f32>(linearize(in.color.rgb, screen.srgb_target), in.color.a * alpha);
 }
 "#;
 
 const GLYPH_SHADER: &str = r#"
 struct ScreenUniform {
     size: vec2<f32>,
-    scroll: vec2<f32>,
+    srgb_target: f32,
+    scroll_y: f32,
 };
+
+fn linearize(c: vec3<f32>, srgb: f32) -> vec3<f32> {
+    return mix(c, pow(c, vec3<f32>(2.2)), srgb);
+}
 @group(0) @binding(0) var<uniform> screen: ScreenUniform;
 @group(0) @binding(1) var glyph_tex: texture_2d<f32>;
 @group(0) @binding(2) var glyph_sampler: sampler;
@@ -376,7 +386,7 @@ fn vs_glyph(in: GlyphInput) -> GlyphOutput {
     let world_pos_4 = matrix * local_pos;
 
     let is_fixed = (in.flags & 1u) != 0u;
-    let s = select(screen.scroll, vec2<f32>(0.0), is_fixed);
+    let s = select(vec2<f32>(0.0, screen.scroll_y), vec2<f32>(0.0), is_fixed);
     
     let w = world_pos_4.w;
     let z = world_pos_4.z;
@@ -401,15 +411,20 @@ fn vs_glyph(in: GlyphInput) -> GlyphOutput {
 @fragment
 fn fs_glyph(in: GlyphOutput) -> @location(0) vec4<f32> {
     let coverage = textureSample(glyph_tex, glyph_sampler, in.uv).r;
-    return vec4<f32>(in.color.rgb, in.color.a * coverage);
+    return vec4<f32>(linearize(in.color.rgb, screen.srgb_target), in.color.a * coverage);
 }
 "#;
 
 const LINE_SHADER: &str = r#"
 struct ScreenUniform {
     size: vec2<f32>,
-    scroll: vec2<f32>,
+    srgb_target: f32,
+    scroll_y: f32,
 };
+
+fn linearize(c: vec3<f32>, srgb: f32) -> vec3<f32> {
+    return mix(c, pow(c, vec3<f32>(2.2)), srgb);
+}
 @group(0) @binding(0) var<uniform> screen: ScreenUniform;
 
 struct LineInput {
@@ -441,8 +456,8 @@ fn vs_line(in: LineInput) -> LineOutput {
     let base = mix(in.p0, in.p1, in.pos.x);
     let offset = normal * (in.pos.y * 2.0 - 1.0) * in.width * 0.5;
     let screen_pos = base + offset;
-    let x = screen_pos.x - screen.scroll.x;
-    let y = screen_pos.y - screen.scroll.y;
+    let x = screen_pos.x;
+    let y = screen_pos.y - screen.scroll_y;
     let nx = (x / screen.size.x) * 2.0 - 1.0;
     let ny = (1.0 - (y / screen.size.y)) * 2.0 - 1.0;
     let depth_ndc = 1.0 - in.draw_order * 0.001;
@@ -453,7 +468,7 @@ fn vs_line(in: LineInput) -> LineOutput {
 
 @fragment
 fn fs_line(in: LineOutput) -> @location(0) vec4<f32> {
-    return in.color;
+    return vec4<f32>(linearize(in.color.rgb, screen.srgb_target), in.color.a);
 }
 "#;
 
@@ -586,7 +601,7 @@ impl GpuState {
             label: Some("rect bgl"),
             entries: &[wgpu::BindGroupLayoutEntry {
                 binding: 0,
-                visibility: wgpu::ShaderStages::VERTEX,
+                visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
                 ty: wgpu::BindingType::Buffer {
                     ty: wgpu::BufferBindingType::Uniform,
                     has_dynamic_offset: false,
@@ -681,7 +696,7 @@ impl GpuState {
             entries: &[
                 wgpu::BindGroupLayoutEntry {
                     binding: 0,
-                    visibility: wgpu::ShaderStages::VERTEX,
+                    visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
                     ty: wgpu::BindingType::Buffer {
                         ty: wgpu::BufferBindingType::Uniform,
                         has_dynamic_offset: false,
@@ -955,7 +970,11 @@ impl GpuState {
             bytemuck::cast_slice(&[
                 self.size.width as f32 / self.scale_factor as f32,
                 self.size.height as f32 / self.scale_factor as f32,
-                0.0_f32,
+                if self.surface_format.is_srgb() && self.render_format == self.surface_format {
+                    1.0_f32
+                } else {
+                    0.0_f32
+                },
                 scroll_y,
             ]),
         );
