@@ -21,7 +21,7 @@ cosmic-text = "0.12"
 html5ever = "0.38"
 markup5ever_rcdom = "0.38"
 pollster = "0.4"
-rquickjs = { version = "0.11.0", features = ["loader"], optional = true }
+rquickjs = { version = "0.11.0", features = ["loader", "bindgen"], optional = true }
 taffy = "0.10.0"
 wgpu = "29.0.0"
 winit = { version = "0.30.8", features = ["android-native-activity"] }

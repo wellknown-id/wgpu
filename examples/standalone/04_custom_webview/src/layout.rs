@@ -1,9 +1,34 @@
+use std::collections::HashMap;
+
 use crate::types;
 
 pub struct TextMeasure {
     pub text: String,
     pub text_width: f32,
     pub font_size: f32,
+}
+
+#[derive(Default)]
+pub struct TextMeasureCache {
+    cache: HashMap<(String, u32, u32), (f32, f32)>,
+}
+
+impl TextMeasureCache {
+    pub fn measure(
+        &mut self,
+        text: &str,
+        font_size: f32,
+        max_width: f32,
+        measure_fn: &mut dyn FnMut(&str, f32, f32) -> (f32, f32),
+    ) -> (f32, f32) {
+        let key = (text.to_string(), font_size.to_bits(), max_width.to_bits());
+        if let Some(&val) = self.cache.get(&key) {
+            return val;
+        }
+        let result = measure_fn(text, font_size, max_width);
+        self.cache.insert(key, result);
+        result
+    }
 }
 
 pub type TaffyTree = taffy::TaffyTree<Option<TextMeasure>>;
@@ -28,11 +53,12 @@ pub fn build_layout(
     styled: &types::StyledNode,
     viewport_w: f32,
     viewport_h: f32,
+    cache: &mut TextMeasureCache,
     measure_fn: &mut dyn FnMut(&str, f32, f32) -> (f32, f32),
 ) -> LayoutTree {
     let mut taffy = TaffyTree::new();
     let mut index_counter = 0;
-    let root = build_node(&mut taffy, styled, &mut index_counter, measure_fn);
+    let root = build_node(&mut taffy, styled, &mut index_counter, cache, measure_fn);
 
     let mut root_style = taffy.style(root.taffy_id).unwrap().clone();
     root_style.size = taffy::Size {
@@ -64,7 +90,8 @@ pub fn build_layout(
                     if max_w >= measure.text_width {
                         line_h
                     } else {
-                        let (_, h) = measure_fn(&measure.text, measure.font_size, max_w);
+                        let (_, h) =
+                            cache.measure(&measure.text, measure.font_size, max_w, measure_fn);
                         h.max(line_h)
                     }
                 });
@@ -127,6 +154,7 @@ fn build_node(
     taffy: &mut TaffyTree,
     styled: &types::StyledNode,
     index_counter: &mut usize,
+    cache: &mut TextMeasureCache,
     measure_fn: &mut dyn FnMut(&str, f32, f32) -> (f32, f32),
 ) -> LayoutNode {
     let idx = *index_counter;
@@ -151,7 +179,7 @@ fn build_node(
     let child_nodes: Vec<LayoutNode> = styled
         .children
         .iter()
-        .map(|c| build_node(taffy, c, index_counter, measure_fn))
+        .map(|c| build_node(taffy, c, index_counter, cache, measure_fn))
         .collect();
 
     let child_ids: Vec<taffy::NodeId> = child_nodes.iter().map(|c| c.taffy_id).collect();
@@ -161,7 +189,7 @@ fn build_node(
     let taffy_id = if child_ids.is_empty() {
         if !styled.dom_node.text.is_empty() {
             let trimmed = styled.dom_node.text.trim();
-            let (tw, _) = measure_fn(trimmed, s.font_size, f32::MAX);
+            let (tw, _) = cache.measure(trimmed, s.font_size, f32::MAX, measure_fn);
             let context = TextMeasure {
                 text: trimmed.to_string(),
                 text_width: tw,

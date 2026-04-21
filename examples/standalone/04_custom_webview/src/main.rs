@@ -23,7 +23,7 @@ use winit::{
 use css_engine::{apply_style_overrides, apply_styles};
 use gpu::GpuState;
 use html_parser::{extract_styles, parse_html};
-use layout::{build_layout, LayoutTree};
+use layout::{build_layout, LayoutTree, TextMeasureCache};
 use renderer::generate_draw_commands;
 use types::DrawCommand;
 
@@ -54,11 +54,13 @@ struct WebviewState {
     clear_color: [f32; 4],
     html_source: String,
     css_sources: Vec<String>,
+    styled_base: types::StyledNode,
     asset_dir: PathBuf,
     #[allow(dead_code)]
     start_time: Instant,
     scroll_y: f32,
     mouse_down: bool,
+    text_cache: TextMeasureCache,
 }
 
 #[derive(Default)]
@@ -69,8 +71,7 @@ struct App {
 impl App {
     fn rebuild_layout(&mut self) {
         let state = self.state.as_mut().unwrap();
-        let dom = parse_html(&state.html_source);
-        let mut styled = apply_styles(&dom, &state.css_sources);
+        let mut styled = state.styled_base.clone();
 
         #[cfg(feature = "js")]
         {
@@ -91,6 +92,7 @@ impl App {
             &styled,
             size.width as f32 / scale,
             size.height as f32 / scale,
+            &mut state.text_cache,
             &mut |text, font_size, max_width| state.gpu.measure_text(text, font_size, max_width),
         );
         state.commands = generate_draw_commands(&state.layout, &canvas_ops);
@@ -102,6 +104,13 @@ impl App {
                 .update_element_rects(state.layout.collect_element_rects());
             state.js.clear_dirty();
         }
+    }
+
+    fn full_rebuild(&mut self) {
+        let state = self.state.as_mut().unwrap();
+        let dom = parse_html(&state.html_source);
+        state.styled_base = apply_styles(&dom, &state.css_sources);
+        self.rebuild_layout();
     }
 
     fn navigate(&mut self, href: &str) {
@@ -127,7 +136,7 @@ impl App {
         state.css_sources = css_sources;
         state.scroll_y = 0.0;
 
-        self.rebuild_layout();
+        self.full_rebuild();
         self.state.as_ref().unwrap().gpu.window.request_redraw();
     }
 }
@@ -204,7 +213,8 @@ impl ApplicationHandler for App {
         };
 
         let dom = parse_html(&html_source);
-        let mut styled = apply_styles(&dom, &css_sources);
+        let styled_base = apply_styles(&dom, &css_sources);
+        let mut styled = styled_base.clone();
 
         #[cfg(feature = "js")]
         {
@@ -221,10 +231,12 @@ impl ApplicationHandler for App {
 
         let size = gpu.size;
         let scale = gpu.scale_factor as f32;
+        let mut text_cache = TextMeasureCache::default();
         let layout_tree = build_layout(
             &styled,
             size.width as f32 / scale,
             size.height as f32 / scale,
+            &mut text_cache,
             &mut |text, font_size, max_width| gpu.measure_text(text, font_size, max_width),
         );
         let commands = generate_draw_commands(&layout_tree, &canvas_ops);
@@ -240,6 +252,7 @@ impl ApplicationHandler for App {
             clear_color,
             html_source,
             css_sources,
+            styled_base,
             #[cfg(not(target_os = "android"))]
             asset_dir: PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("assets"),
             #[cfg(target_os = "android")]
@@ -247,6 +260,7 @@ impl ApplicationHandler for App {
             start_time: Instant::now(),
             scroll_y: 0.0,
             mouse_down: false,
+            text_cache,
         });
 
         window.request_redraw();

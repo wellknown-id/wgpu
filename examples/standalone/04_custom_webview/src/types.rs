@@ -222,6 +222,7 @@ pub enum CanvasDrawOp {
     },
 }
 
+#[derive(Clone)]
 pub struct StyledNode {
     pub dom_node: DomNode,
     pub style: ComputedStyle,
