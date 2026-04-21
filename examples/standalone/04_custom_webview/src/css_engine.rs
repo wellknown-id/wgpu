@@ -152,9 +152,55 @@ fn apply_properties(props: &[(String, String)], style: &mut ComputedStyle) {
                     style.height = Dimension::Px(px);
                 }
             }
+            "position" => {
+                style.position = match val {
+                    "fixed" => Position::Fixed,
+                    "absolute" => Position::Absolute,
+                    _ => Position::Static,
+                };
+            }
+            "left" => {
+                style.left = parse_length(val);
+            }
+            "top" => {
+                style.top = parse_length(val);
+            }
+            "right" => {
+                style.right = parse_length(val);
+            }
+            "bottom" => {
+                style.bottom = parse_length(val);
+            }
             "padding" => {
-                if let Some(px) = parse_length(val) {
-                    style.padding = Edges::uniform(px);
+                let parts: Vec<&str> = val.split_whitespace().collect();
+                match parts.len() {
+                    1 => {
+                        if let Some(px) = parse_length(parts[0]) {
+                            style.padding = Edges::uniform(px);
+                        }
+                    }
+                    2 => {
+                        if let (Some(tb), Some(lr)) = (parse_length(parts[0]), parse_length(parts[1])) {
+                            style.padding.top = tb;
+                            style.padding.bottom = tb;
+                            style.padding.left = lr;
+                            style.padding.right = lr;
+                        }
+                    }
+                    4 => {
+                        if let (Some(t), Some(r), Some(b), Some(l)) = (
+                            parse_length(parts[0]),
+                            parse_length(parts[1]),
+                            parse_length(parts[2]),
+                            parse_length(parts[3]),
+                        ) {
+                            style.padding.top = t;
+                            style.padding.right = r;
+                            style.padding.bottom = b;
+                            style.padding.left = l;
+                        }
+                    }
+                    _ => {}
                 }
             }
             "padding-top" => {
@@ -178,8 +224,35 @@ fn apply_properties(props: &[(String, String)], style: &mut ComputedStyle) {
                 }
             }
             "margin" => {
-                if let Some(px) = parse_length(val) {
-                    style.margin = Edges::uniform(px);
+                let parts: Vec<&str> = val.split_whitespace().collect();
+                match parts.len() {
+                    1 => {
+                        if let Some(px) = parse_length(parts[0]) {
+                            style.margin = Edges::uniform(px);
+                        }
+                    }
+                    2 => {
+                        if let (Some(tb), Some(lr)) = (parse_length(parts[0]), parse_length(parts[1])) {
+                            style.margin.top = tb;
+                            style.margin.bottom = tb;
+                            style.margin.left = lr;
+                            style.margin.right = lr;
+                        }
+                    }
+                    4 => {
+                        if let (Some(t), Some(r), Some(b), Some(l)) = (
+                            parse_length(parts[0]),
+                            parse_length(parts[1]),
+                            parse_length(parts[2]),
+                            parse_length(parts[3]),
+                        ) {
+                            style.margin.top = t;
+                            style.margin.right = r;
+                            style.margin.bottom = b;
+                            style.margin.left = l;
+                        }
+                    }
+                    _ => {}
                 }
             }
             "margin-top" => {
@@ -257,28 +330,68 @@ fn apply_properties(props: &[(String, String)], style: &mut ComputedStyle) {
             "overflow" => {
                 style.overflow_hidden = val == "hidden";
             }
-            "position" => {
-                style.position = match val {
-                    "fixed" => Position::Fixed,
-                    _ => Position::Static,
-                };
-            }
-            "left" => {
-                if let Some(v) = parse_length(val) {
-                    style.left = Some(v);
-                }
-            }
-            "top" => {
-                if let Some(v) = parse_length(val) {
-                    style.top = Some(v);
-                }
-            }
             "pointer-events" => {
                 style.pointer_events_none = val == "none";
+            }
+            "transform" => {
+                style.transform = parse_transform(val);
+            }
+            "perspective" => {
+                if let Some(v) = parse_length(val) {
+                    style.perspective = Some(v);
+                }
             }
             _ => {}
         }
     }
+}
+
+fn parse_transform(s: &str) -> [f32; 16] {
+    let mut m = mat4_identity();
+    // Use a simple regex-like split to find functions: e.g. "rotateX(45deg) translateZ(10px)"
+    // The current simple split_whitespace won't handle spaces inside parentheses if any,
+    // but our demo doesn't have them.
+    for part in s.split(')') {
+        let part = part.trim();
+        if part.is_empty() { continue; }
+        if let Some(brace_start) = part.find('(') {
+            let func = &part[..brace_start].trim();
+            let args_str = &part[brace_start + 1..];
+            
+            match *func {
+                "perspective" => {
+                    if let Some(d) = parse_length(args_str) {
+                        m = mat4_perspective(&m, d);
+                    }
+                }
+                "rotateX" => {
+                    if let Some(deg) = parse_angle(args_str) {
+                        m = mat4_rotate_x(&m, deg.to_radians());
+                    }
+                }
+                "rotateY" => {
+                    if let Some(deg) = parse_angle(args_str) {
+                        m = mat4_rotate_y(&m, deg.to_radians());
+                    }
+                }
+                "translateZ" => {
+                    if let Some(z) = parse_length(args_str) {
+                        m = mat4_translate(&m, 0.0, 0.0, z);
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+    m
+}
+
+fn parse_angle(s: &str) -> Option<f32> {
+    let s = s.trim();
+    if let Some(v) = s.strip_suffix("deg") {
+        return v.trim().parse().ok();
+    }
+    s.parse().ok()
 }
 
 fn parse_length(s: &str) -> Option<f32> {

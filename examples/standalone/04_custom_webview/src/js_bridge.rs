@@ -6,6 +6,7 @@ use anyhow::Result;
 use rquickjs::{Context, Function, Runtime};
 
 use crate::types::CanvasDrawOp;
+use log;
 
 fn unpack_color(packed: u32) -> [f32; 4] {
     [
@@ -17,9 +18,9 @@ fn unpack_color(packed: u32) -> [f32; 4] {
 }
 
 pub struct JsBridge {
-    runtime: Runtime,
-    context: Context,
     shared: Rc<RefCell<SharedState>>,
+    context: Context,
+    runtime: Runtime,
 }
 
 pub struct SharedState {
@@ -30,6 +31,7 @@ pub struct SharedState {
     pub pointer_capture: Option<String>,
     pub pointer_down_target: Option<String>,
     pub element_rects: HashMap<String, crate::types::LayoutRect>,
+    pub animation_callbacks: Vec<rquickjs::Persistent<rquickjs::Function<'static>>>,
 }
 
 impl JsBridge {
@@ -45,13 +47,16 @@ impl JsBridge {
             pointer_capture: None,
             pointer_down_target: None,
             element_rects: HashMap::new(),
+            animation_callbacks: Vec::new(),
         }));
 
-        let mut bridge = Self {
-            runtime,
-            context,
+        let bridge = Self {
             shared,
+            context,
+            runtime,
         };
+
+        let mut bridge = bridge;
 
         if let Some(script) = script {
             bridge.init_and_run(script)?;
@@ -64,7 +69,7 @@ impl JsBridge {
         let shared = self.shared.clone();
         let script = script.to_string();
 
-        self.context.with(|ctx| -> Result<()> {
+        let res = self.context.with(|ctx| -> Result<()> {
             let globals = ctx.globals();
 
             let console = rquickjs::Object::new(ctx.clone())?;
@@ -305,6 +310,19 @@ impl JsBridge {
                 )?,
             )?;
 
+            let shared_clone = shared.clone();
+            globals.set(
+                "__hostRequestAnimationFrame",
+                Function::new(
+                    ctx.clone(),
+                    move |cb: rquickjs::Function<'_>| {
+                        let ctx = cb.ctx().clone();
+                        let mut s = shared_clone.borrow_mut();
+                        s.animation_callbacks.push(rquickjs::Persistent::save(&ctx, cb));
+                    },
+                )?,
+            )?;
+
             ctx.eval::<(), _>(
                 r#"
                 var __listeners = {};
@@ -314,6 +332,11 @@ impl JsBridge {
                     if (!__listeners[key]) __listeners[key] = [];
                     __listeners[key].push(cb);
                 }
+
+                var window = globalThis;
+                var requestAnimationFrame = function(cb) {
+                    __hostRequestAnimationFrame(cb);
+                };
 
                 function __dispatchPointerEvent(eventType, idsStr, targetId, x, y) {
                     var ids = idsStr ? idsStr.split(',') : [];
@@ -525,13 +548,34 @@ impl JsBridge {
 
             ctx.eval::<(), _>(script.as_str())?;
             Ok(())
-        })?;
+        });
+
+        if let Err(e) = res {
+            self.context.with(|ctx| {
+                if let Some(ex) = ctx.catch().into_exception() {
+                    log::error!("JS init error (exception): {:?}", ex.message());
+                } else {
+                    log::error!("JS init error: {:?}", e);
+                }
+            });
+            return Err(e);
+        }
 
         self.drain_jobs();
         Ok(())
     }
 
     pub fn tick(&mut self, _now_ms: f64) {
+        let callbacks: Vec<_> = self.shared.borrow_mut().animation_callbacks.drain(..).collect();
+        if !callbacks.is_empty() {
+            let _ = self.context.with(|ctx| -> Result<()> {
+                for cb in callbacks {
+                    let f: rquickjs::Function<'_> = cb.restore(&ctx)?;
+                    let _ = f.call::<_, ()>(());
+                }
+                Ok(())
+            });
+        }
         self.drain_jobs();
     }
 
@@ -634,13 +678,21 @@ impl JsBridge {
 
     fn drain_jobs(&mut self) {
         while self.runtime.is_job_pending() {
-            if let Err(_e) = self.runtime.execute_pending_job() {
+            if let Err(e) = self.runtime.execute_pending_job() {
                 self.context.with(|ctx| {
                     if let Some(ex) = ctx.catch().into_exception() {
-                        eprintln!("JS error: {:?}", ex.message());
+                        log::error!("JS error (exception): {:?}", ex.message());
+                    } else {
+                        log::error!("JS error (job execution): {:?}", e);
                     }
                 });
             }
         }
+    }
+}
+
+impl Drop for JsBridge {
+    fn drop(&mut self) {
+        self.shared.borrow_mut().animation_callbacks.clear();
     }
 }

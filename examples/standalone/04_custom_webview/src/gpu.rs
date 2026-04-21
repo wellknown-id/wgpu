@@ -37,7 +37,9 @@ struct RectInstance {
     radius: f32,
     border: f32,
     border_color: [f32; 4],
-    _pad: [f32; 2],
+    transform: [f32; 16],
+    flags: u32,
+    _pad: u32,
 }
 
 #[repr(C)]
@@ -46,6 +48,8 @@ struct GlyphInstance {
     rect: [f32; 4],    // x, y, w, h in screen pixels
     uv_rect: [f32; 4], // u0, v0, u1, v1 in atlas UV
     color: [f32; 4],
+    flags: u32,
+    _pad: [u32; 3],
 }
 
 enum InternalDrawGroup {
@@ -233,6 +237,11 @@ struct RectInput {
     @location(4) radius: f32,
     @location(5) border: f32,
     @location(6) border_color: vec4<f32>,
+    @location(7) transform_0: vec4<f32>,
+    @location(8) transform_1: vec4<f32>,
+    @location(9) transform_2: vec4<f32>,
+    @location(10) transform_3: vec4<f32>,
+    @location(11) flags: u32,
 };
 
 struct RectOutput {
@@ -248,11 +257,32 @@ struct RectOutput {
 @vertex
 fn vs_rect(in: RectInput) -> RectOutput {
     var out: RectOutput;
-    let x = in.rect.x + in.pos.x * in.rect.z - screen.scroll.x;
-    let y = in.rect.y + in.pos.y * in.rect.w - screen.scroll.y;
+    
+    // Convert normalized instance pos to local coordinates (centered at 0,0)
+    let local_pos = vec4<f32>(in.pos.x * in.rect.z - in.rect.z * 0.5, 
+                             in.pos.y * in.rect.w - in.rect.w * 0.5, 
+                             0.0, 1.0);
+    
+    // Apply transform matrix
+    let matrix = mat4x4<f32>(in.transform_0, in.transform_1, in.transform_2, in.transform_3);
+    let world_pos_4 = matrix * local_pos;
+    
+    // Add original center position and subtract scroll
+    // Add original center position and subtract scroll if not fixed (flag bit 0)
+    let is_fixed = (in.flags & 1u) != 0u;
+    let s = select(screen.scroll, vec2<f32>(0.0), is_fixed);
+    
+    let x = world_pos_4.x + in.rect.x + in.rect.z * 0.5 - s.x;
+    let y = world_pos_4.y + in.rect.y + in.rect.w * 0.5 - s.y;
+    let z = world_pos_4.z;
+    let w = world_pos_4.w;
+
     let nx = (x / screen.size.x) * 2.0 - 1.0;
     let ny = (1.0 - (y / screen.size.y)) * 2.0 - 1.0;
-    out.pos = vec4<f32>(nx, ny, 0.0, 1.0);
+    
+    // Simple projection if w != 1 (already partially handled by matrix if it has perspective)
+    out.pos = vec4<f32>(nx, ny, z / 1000.0, w); 
+    
     out.color = in.color;
     out.local_pos = vec2<f32>(in.pos.x * in.rect.z, in.pos.y * in.rect.w);
     out.rect_size = vec2<f32>(in.rect.z, in.rect.w);
@@ -307,6 +337,7 @@ struct GlyphInput {
     @location(2) rect: vec4<f32>,
     @location(3) uv_rect: vec4<f32>,
     @location(4) color: vec4<f32>,
+    @location(5) flags: u32,
 };
 
 struct GlyphOutput {
@@ -318,8 +349,10 @@ struct GlyphOutput {
 @vertex
 fn vs_glyph(in: GlyphInput) -> GlyphOutput {
     var out: GlyphOutput;
-    let x = in.rect.x + in.pos.x * in.rect.z - screen.scroll.x;
-    let y = in.rect.y + in.pos.y * in.rect.w - screen.scroll.y;
+    let is_fixed = (in.flags & 1u) != 0u;
+    let s = select(screen.scroll, vec2<f32>(0.0), is_fixed);
+    let x = in.rect.x + in.pos.x * in.rect.z - s.x;
+    let y = in.rect.y + in.pos.y * in.rect.w - s.y;
     let nx = (x / screen.size.x) * 2.0 - 1.0;
     let ny = (1.0 - (y / screen.size.y)) * 2.0 - 1.0;
     out.pos = vec4<f32>(nx, ny, 0.0, 1.0);
@@ -551,6 +584,11 @@ impl GpuState {
                             4 => Float32,
                             5 => Float32,
                             6 => Float32x4,
+                            7 => Float32x4,
+                            8 => Float32x4,
+                            9 => Float32x4,
+                            10 => Float32x4,
+                            11 => Uint32,
                         ],
                     },
                 ],
@@ -660,6 +698,7 @@ impl GpuState {
                             2 => Float32x4,
                             3 => Float32x4,
                             4 => Float32x4,
+                            5 => Uint32,
                         ],
                     },
                 ],
@@ -897,6 +936,8 @@ impl GpuState {
                     rect,
                     color,
                     border_radius,
+                    transform,
+                    is_fixed,
                     ..
                 } => {
                     let inst = RectInstance {
@@ -905,7 +946,9 @@ impl GpuState {
                         radius: *border_radius,
                         border: 0.0,
                         border_color: [0.0; 4],
-                        _pad: [0.0; 2],
+                        transform: *transform,
+                        flags: if *is_fixed { 1 } else { 0 },
+                        _pad: 0,
                     };
                     if let Some(InternalDrawGroup::Rects(ref mut v)) = groups.last_mut() {
                         v.push(inst);
@@ -918,6 +961,8 @@ impl GpuState {
                     color,
                     width,
                     radius,
+                    transform,
+                    is_fixed,
                     ..
                 } => {
                     let inst = RectInstance {
@@ -926,7 +971,9 @@ impl GpuState {
                         radius: *radius,
                         border: *width,
                         border_color: *color,
-                        _pad: [0.0; 2],
+                        transform: *transform,
+                        flags: if *is_fixed { 1 } else { 0 },
+                        _pad: 0,
                     };
                     if let Some(InternalDrawGroup::Rects(ref mut v)) = groups.last_mut() {
                         v.push(inst);
@@ -941,10 +988,11 @@ impl GpuState {
                     max_width,
                     color,
                     font_size,
+                    is_fixed,
                     ..
                 } => {
                     let mut glyphs = Vec::new();
-                    self.rasterize_text(text, *x, *y, *max_width, *color, *font_size, &mut glyphs);
+                    self.rasterize_text(text, *x, *y, *max_width, *color, *font_size, *is_fixed, &mut glyphs);
                     if !glyphs.is_empty() {
                         if let Some(InternalDrawGroup::Glyphs(ref mut v)) = groups.last_mut() {
                             v.extend(glyphs);
@@ -1036,6 +1084,7 @@ impl GpuState {
         max_width: f32,
         color: [f32; 4],
         font_size: f32,
+        is_fixed: bool,
         instances: &mut Vec<GlyphInstance>,
     ) {
         let scale = self.scale_factor as f32;
@@ -1072,6 +1121,8 @@ impl GpuState {
                         rect: [gx, gy, entry.width as f32 * inv, entry.height as f32 * inv],
                         uv_rect: entry.uv,
                         color,
+                        flags: if is_fixed { 1 } else { 0 },
+                        _pad: [0; 3],
                     });
                 }
             }

@@ -70,12 +70,16 @@ fn emit_node(
 
     let current_id = node.id.as_deref().or(ancestor_id);
 
+    let is_fixed = node.style.position == Position::Fixed;
+
     if node.style.background_color[3] > 0.0 {
         commands.push(DrawCommand::Rect {
             rect: LayoutRect { x, y, w, h },
             color: node.style.background_color,
             border_radius: node.style.border_radius,
             element_id: current_id.map(|s| s.to_string()),
+            transform: node.style.transform,
+            is_fixed,
         });
     }
 
@@ -86,6 +90,8 @@ fn emit_node(
             width: node.style.border_width,
             radius: node.style.border_radius,
             element_id: current_id.map(|s| s.to_string()),
+            transform: node.style.transform,
+            is_fixed,
         });
     }
 
@@ -98,6 +104,7 @@ fn emit_node(
             color: node.style.color,
             font_size: node.style.font_size,
             element_id: current_id.map(|s| s.to_string()),
+            is_fixed,
         });
     }
 
@@ -128,6 +135,8 @@ fn emit_canvas_ops(ops: &[CanvasDrawOp], cx: f32, cy: f32, commands: &mut Vec<Dr
                     color: *color,
                     border_radius: 0.0,
                     element_id: None,
+                    transform: mat4_identity(),
+                    is_fixed: false,
                 });
             }
             CanvasDrawOp::StrokeRect {
@@ -149,6 +158,8 @@ fn emit_canvas_ops(ops: &[CanvasDrawOp], cx: f32, cy: f32, commands: &mut Vec<Dr
                     width: *line_width,
                     radius: 0.0,
                     element_id: None,
+                    transform: mat4_identity(),
+                    is_fixed: false,
                 });
             }
             CanvasDrawOp::FillCircle {
@@ -168,6 +179,8 @@ fn emit_canvas_ops(ops: &[CanvasDrawOp], cx: f32, cy: f32, commands: &mut Vec<Dr
                     color: *color,
                     border_radius: r,
                     element_id: None,
+                    transform: mat4_identity(),
+                    is_fixed: false,
                 });
             }
             CanvasDrawOp::StrokeCircle {
@@ -189,6 +202,8 @@ fn emit_canvas_ops(ops: &[CanvasDrawOp], cx: f32, cy: f32, commands: &mut Vec<Dr
                     width: *line_width,
                     radius: r,
                     element_id: None,
+                    transform: mat4_identity(),
+                    is_fixed: false,
                 });
             }
             CanvasDrawOp::Line {

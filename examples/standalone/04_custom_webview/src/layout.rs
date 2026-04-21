@@ -221,25 +221,27 @@ fn convert_style(s: &types::ComputedStyle) -> taffy::Style {
     use taffy::prelude::*;
 
     let position = match s.position {
-        types::Position::Fixed => taffy::Position::Absolute,
+        types::Position::Fixed | types::Position::Absolute => taffy::Position::Absolute,
         types::Position::Static => taffy::Position::Relative,
     };
 
-    let inset = if s.position == types::Position::Fixed {
-        taffy::Rect {
-            left: s
-                .left
-                .map(|v| length(v))
-                .unwrap_or(taffy::LengthPercentageAuto::auto()),
-            top: s
-                .top
-                .map(|v| length(v))
-                .unwrap_or(taffy::LengthPercentageAuto::auto()),
-            right: taffy::LengthPercentageAuto::auto(),
-            bottom: taffy::LengthPercentageAuto::auto(),
-        }
-    } else {
-        taffy::Rect::auto()
+    let inset = taffy::Rect {
+        left: s
+            .left
+            .map(|v| length(v))
+            .unwrap_or(taffy::LengthPercentageAuto::auto()),
+        top: s
+            .top
+            .map(|v| length(v))
+            .unwrap_or(taffy::LengthPercentageAuto::auto()),
+        right: s
+            .right
+            .map(|v| length(v))
+            .unwrap_or(taffy::LengthPercentageAuto::auto()),
+        bottom: s
+            .bottom
+            .map(|v| length(v))
+            .unwrap_or(taffy::LengthPercentageAuto::auto()),
     };
 
     taffy::Style {

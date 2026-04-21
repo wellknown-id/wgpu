@@ -15,6 +15,8 @@ pub struct ComputedStyle {
     pub position: Position,
     pub left: Option<f32>,
     pub top: Option<f32>,
+    pub right: Option<f32>,
+    pub bottom: Option<f32>,
     pub flex_direction: FlexDirection,
     pub justify_content: JustifyContent,
     pub align_items: AlignItems,
@@ -36,6 +38,8 @@ pub struct ComputedStyle {
     pub border_radius: f32,
     pub overflow_hidden: bool,
     pub pointer_events_none: bool,
+    pub transform: [f32; 16],
+    pub perspective: Option<f32>,
 }
 
 impl Default for ComputedStyle {
@@ -45,6 +49,8 @@ impl Default for ComputedStyle {
             position: Position::Static,
             left: None,
             top: None,
+            right: None,
+            bottom: None,
             flex_direction: FlexDirection::Row,
             justify_content: JustifyContent::Start,
             align_items: AlignItems::Stretch,
@@ -66,6 +72,13 @@ impl Default for ComputedStyle {
             border_radius: 0.0,
             overflow_hidden: false,
             pointer_events_none: false,
+            transform: [
+                1.0, 0.0, 0.0, 0.0,
+                0.0, 1.0, 0.0, 0.0,
+                0.0, 0.0, 1.0, 0.0,
+                0.0, 0.0, 0.0, 1.0,
+            ],
+            perspective: None,
         }
     }
 }
@@ -82,6 +95,7 @@ pub enum Display {
 pub enum Position {
     Static,
     Fixed,
+    Absolute,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -158,6 +172,8 @@ pub enum DrawCommand {
         color: [f32; 4],
         border_radius: f32,
         element_id: Option<String>,
+        transform: [f32; 16],
+        is_fixed: bool,
     },
     Border {
         rect: LayoutRect,
@@ -165,6 +181,8 @@ pub enum DrawCommand {
         width: f32,
         radius: f32,
         element_id: Option<String>,
+        transform: [f32; 16],
+        is_fixed: bool,
     },
     Text {
         text: String,
@@ -174,6 +192,7 @@ pub enum DrawCommand {
         color: [f32; 4],
         font_size: f32,
         element_id: Option<String>,
+        is_fixed: bool,
     },
     Line {
         x0: f32,
@@ -230,4 +249,64 @@ pub struct StyledNode {
     pub dom_node: DomNode,
     pub style: ComputedStyle,
     pub children: Vec<StyledNode>,
+}
+
+pub fn mat4_identity() -> [f32; 16] {
+    [
+        1.0, 0.0, 0.0, 0.0,
+        0.0, 1.0, 0.0, 0.0,
+        0.0, 0.0, 1.0, 0.0,
+        0.0, 0.0, 0.0, 1.0,
+    ]
+}
+
+pub fn mat4_mul(a: &[f32; 16], b: &[f32; 16]) -> [f32; 16] {
+    let mut out = [0.0; 16];
+    for i in 0..4 {
+        for j in 0..4 {
+            out[i * 4 + j] = a[i * 4 + 0] * b[0 * 4 + j]
+                + a[i * 4 + 1] * b[1 * 4 + j]
+                + a[i * 4 + 2] * b[2 * 4 + j]
+                + a[i * 4 + 3] * b[3 * 4 + j];
+        }
+    }
+    out
+}
+
+pub fn mat4_translate(m: &[f32; 16], x: f32, y: f32, z: f32) -> [f32; 16] {
+    let mut t = mat4_identity();
+    t[3] = x;
+    t[7] = y;
+    t[11] = z;
+    mat4_mul(m, &t)
+}
+
+pub fn mat4_rotate_x(m: &[f32; 16], rad: f32) -> [f32; 16] {
+    let mut r = mat4_identity();
+    let c = rad.cos();
+    let s = rad.sin();
+    r[5] = c;
+    r[6] = -s;
+    r[9] = s;
+    r[10] = c;
+    mat4_mul(m, &r)
+}
+
+pub fn mat4_rotate_y(m: &[f32; 16], rad: f32) -> [f32; 16] {
+    let mut r = mat4_identity();
+    let c = rad.cos();
+    let s = rad.sin();
+    r[0] = c;
+    r[2] = s;
+    r[8] = -s;
+    r[10] = c;
+    mat4_mul(m, &r)
+}
+
+pub fn mat4_perspective(m: &[f32; 16], d: f32) -> [f32; 16] {
+    let mut p = mat4_identity();
+    if d != 0.0 {
+        p[11] = -1.0 / d;
+    }
+    mat4_mul(m, &p)
 }
