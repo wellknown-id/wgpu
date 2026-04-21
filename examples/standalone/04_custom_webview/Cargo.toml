@@ -41,7 +41,7 @@ console_error_panic_hook = "0.1"
 
 [package.metadata.android]
 package = "com.example.custom_webview"
-build_targets = ["aarch64-linux-android"]
+build_targets = ["aarch64-linux-android", "armv7-linux-androideabi"]
 
 [package.metadata.android.sdk]
 min_sdk_version = 28
