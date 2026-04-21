@@ -105,6 +105,7 @@ fn emit_node(
             font_size: node.style.font_size,
             element_id: current_id.map(|s| s.to_string()),
             is_fixed,
+            transform: node.style.transform,
         });
     }
 

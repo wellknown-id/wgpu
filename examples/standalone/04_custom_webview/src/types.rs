@@ -193,6 +193,7 @@ pub enum DrawCommand {
         font_size: f32,
         element_id: Option<String>,
         is_fixed: bool,
+        transform: [f32; 16],
     },
     Line {
         x0: f32,
@@ -262,12 +263,15 @@ pub fn mat4_identity() -> [f32; 16] {
 
 pub fn mat4_mul(a: &[f32; 16], b: &[f32; 16]) -> [f32; 16] {
     let mut out = [0.0; 16];
-    for i in 0..4 {
-        for j in 0..4 {
-            out[i * 4 + j] = a[i * 4 + 0] * b[0 * 4 + j]
-                + a[i * 4 + 1] * b[1 * 4 + j]
-                + a[i * 4 + 2] * b[2 * 4 + j]
-                + a[i * 4 + 3] * b[3 * 4 + j];
+    for col in 0..4 {
+        for row in 0..4 {
+            let mut sum = 0.0;
+            for k in 0..4 {
+                // a[k, row] * b[col, k]
+                // Column-major index: col * 4 + row
+                sum += a[k * 4 + row] * b[col * 4 + k];
+            }
+            out[col * 4 + row] = sum;
         }
     }
     out
@@ -275,9 +279,9 @@ pub fn mat4_mul(a: &[f32; 16], b: &[f32; 16]) -> [f32; 16] {
 
 pub fn mat4_translate(m: &[f32; 16], x: f32, y: f32, z: f32) -> [f32; 16] {
     let mut t = mat4_identity();
-    t[3] = x;
-    t[7] = y;
-    t[11] = z;
+    t[12] = x;
+    t[13] = y;
+    t[14] = z;
     mat4_mul(m, &t)
 }
 
@@ -286,8 +290,8 @@ pub fn mat4_rotate_x(m: &[f32; 16], rad: f32) -> [f32; 16] {
     let c = rad.cos();
     let s = rad.sin();
     r[5] = c;
-    r[6] = -s;
-    r[9] = s;
+    r[6] = s;
+    r[9] = -s;
     r[10] = c;
     mat4_mul(m, &r)
 }
@@ -297,8 +301,8 @@ pub fn mat4_rotate_y(m: &[f32; 16], rad: f32) -> [f32; 16] {
     let c = rad.cos();
     let s = rad.sin();
     r[0] = c;
-    r[2] = s;
-    r[8] = -s;
+    r[2] = -s;
+    r[8] = s;
     r[10] = c;
     mat4_mul(m, &r)
 }
@@ -306,7 +310,7 @@ pub fn mat4_rotate_y(m: &[f32; 16], rad: f32) -> [f32; 16] {
 pub fn mat4_perspective(m: &[f32; 16], d: f32) -> [f32; 16] {
     let mut p = mat4_identity();
     if d != 0.0 {
-        p[11] = -1.0 / d;
+        p[11] = -1.0 / d; // Column 2, Row 3
     }
     mat4_mul(m, &p)
 }

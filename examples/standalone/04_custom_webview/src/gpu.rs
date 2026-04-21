@@ -50,6 +50,7 @@ struct GlyphInstance {
     color: [f32; 4],
     flags: u32,
     _pad: [u32; 3],
+    transform: [f32; 16],
 }
 
 enum InternalDrawGroup {
@@ -280,8 +281,11 @@ fn vs_rect(in: RectInput) -> RectOutput {
     let nx = (x / screen.size.x) * 2.0 - 1.0;
     let ny = (1.0 - (y / screen.size.y)) * 2.0 - 1.0;
     
-    // Simple projection if w != 1 (already partially handled by matrix if it has perspective)
-    out.pos = vec4<f32>(nx, ny, z / 1000.0, w); 
+    // Clip space = NDC * w
+    // WGPU NDC depth is 0.0 (near) to 1.0 (far).
+    // CSS +Z is towards camera. Let's map Z=0 to 0.5 depth.
+    let depth = (0.5 - (z / 2000.0)) * w;
+    out.pos = vec4<f32>(nx * w, ny * w, depth, w); 
     
     out.color = in.color;
     out.local_pos = vec2<f32>(in.pos.x * in.rect.z, in.pos.y * in.rect.w);
@@ -338,6 +342,10 @@ struct GlyphInput {
     @location(3) uv_rect: vec4<f32>,
     @location(4) color: vec4<f32>,
     @location(5) flags: u32,
+    @location(6) transform_0: vec4<f32>,
+    @location(7) transform_1: vec4<f32>,
+    @location(8) transform_2: vec4<f32>,
+    @location(9) transform_3: vec4<f32>,
 };
 
 struct GlyphOutput {
@@ -349,13 +357,27 @@ struct GlyphOutput {
 @vertex
 fn vs_glyph(in: GlyphInput) -> GlyphOutput {
     var out: GlyphOutput;
+    
+    // local_pos for glyph (it's already measured in pixels relative to text start)
+    // We should center it for transform if we want rotation to work nicely?
+    // Actually, text commands have an (x,y) which is top-left.
+    let local_pos = vec4<f32>(in.pos.x * in.rect.z, in.pos.y * in.rect.w, 0.0, 1.0);
+    let matrix = mat4x4<f32>(in.transform_0, in.transform_1, in.transform_2, in.transform_3);
+    let world_pos_4 = matrix * local_pos;
+
     let is_fixed = (in.flags & 1u) != 0u;
     let s = select(screen.scroll, vec2<f32>(0.0), is_fixed);
-    let x = in.rect.x + in.pos.x * in.rect.z - s.x;
-    let y = in.rect.y + in.pos.y * in.rect.w - s.y;
+    
+    let x = in.rect.x + world_pos_4.x - s.x;
+    let y = in.rect.y + world_pos_4.y - s.y;
+    let z = world_pos_4.z;
+    let w = world_pos_4.w;
+
     let nx = (x / screen.size.x) * 2.0 - 1.0;
     let ny = (1.0 - (y / screen.size.y)) * 2.0 - 1.0;
-    out.pos = vec4<f32>(nx, ny, 0.0, 1.0);
+    
+    let depth = (0.5 - (z / 2000.0)) * w;
+    out.pos = vec4<f32>(nx * w, ny * w, depth, w); 
     let u = in.uv_rect.x + in.uv.x * (in.uv_rect.z - in.uv_rect.x);
     let v = in.uv_rect.y + in.uv.y * (in.uv_rect.w - in.uv_rect.y);
     out.uv = vec2<f32>(u, v);
@@ -699,6 +721,10 @@ impl GpuState {
                             3 => Float32x4,
                             4 => Float32x4,
                             5 => Uint32,
+                            6 => Float32x4,
+                            7 => Float32x4,
+                            8 => Float32x4,
+                            9 => Float32x4,
                         ],
                     },
                 ],
@@ -992,7 +1018,7 @@ impl GpuState {
                     ..
                 } => {
                     let mut glyphs = Vec::new();
-                    self.rasterize_text(text, *x, *y, *max_width, *color, *font_size, *is_fixed, &mut glyphs);
+                    self.rasterize_text(text, *x, *y, *max_width, *color, *font_size, *is_fixed, *transform, &mut glyphs);
                     if !glyphs.is_empty() {
                         if let Some(InternalDrawGroup::Glyphs(ref mut v)) = groups.last_mut() {
                             v.extend(glyphs);
@@ -1085,6 +1111,7 @@ impl GpuState {
         color: [f32; 4],
         font_size: f32,
         is_fixed: bool,
+        transform: [f32; 16],
         instances: &mut Vec<GlyphInstance>,
     ) {
         let scale = self.scale_factor as f32;
@@ -1123,6 +1150,7 @@ impl GpuState {
                         color,
                         flags: if is_fixed { 1 } else { 0 },
                         _pad: [0; 3],
+                        transform,
                     });
                 }
             }
