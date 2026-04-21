@@ -224,20 +224,14 @@
   var drag = null;
   var hoverCol = -1;
 
-  var BOARD_LEFT = 12;
-  var BOARD_GAP = 12;
-
-  function getColumnFromX(x) {
-    var boardWidth = 800 - BOARD_LEFT * 2;
-    var colWidth = (boardWidth - BOARD_GAP * (COLS - 1)) / COLS;
-    var rel = x - BOARD_LEFT;
+  function getColumnFromXY(x, y) {
     for (var c = 0; c < COLS; c++) {
-      var colLeft = c * (colWidth + BOARD_GAP);
-      var colRight = colLeft + colWidth;
-      if (rel >= colLeft && rel <= colRight) return c;
+      var rect = document.getElementById('col-' + c).getBoundingClientRect();
+      if (x >= rect.left && x <= rect.right && y >= rect.top && y <= rect.bottom) {
+        return c;
+      }
     }
-    if (rel < 0) return 0;
-    return COLS - 1;
+    return -1;
   }
 
   var newCardIdx = 0;
@@ -351,7 +345,7 @@
     document.addEventListener('pointermove', function(e) {
       if (!drag) return;
       moveGhost(e.clientX, e.clientY);
-      var newHover = getColumnFromX(e.clientX);
+      var newHover = getColumnFromXY(e.clientX, e.clientY);
       if (newHover !== hoverCol) {
         hoverCol = newHover;
         render();
@@ -360,7 +354,7 @@
 
     document.addEventListener('pointerup', function(e) {
       if (!drag) return;
-      var targetCol = getColumnFromX(e.clientX);
+      var targetCol = getColumnFromXY(e.clientX, e.clientY);
       if (targetCol !== drag.srcCol && columns[targetCol].length < SLOTS) {
         var card = columns[drag.srcCol].splice(drag.srcIdx, 1)[0];
         columns[targetCol].push(card);

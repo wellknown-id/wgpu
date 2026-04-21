@@ -29,6 +29,7 @@ pub struct SharedState {
     pub canvas_ops: HashMap<String, Vec<CanvasDrawOp>>,
     pub pointer_capture: Option<String>,
     pub pointer_down_target: Option<String>,
+    pub element_rects: HashMap<String, crate::types::LayoutRect>,
 }
 
 impl JsBridge {
@@ -43,6 +44,7 @@ impl JsBridge {
             canvas_ops: HashMap::new(),
             pointer_capture: None,
             pointer_down_target: None,
+            element_rects: HashMap::new(),
         }));
 
         let mut bridge = Self {
@@ -287,6 +289,22 @@ impl JsBridge {
                 )?,
             )?;
 
+            let shared_clone = shared.clone();
+            globals.set(
+                "__hostGetBoundingRect",
+                Function::new(
+                    ctx.clone(),
+                    move |_ctx: rquickjs::Ctx<'_>, id: String| -> String {
+                        let s = shared_clone.borrow();
+                        if let Some(r) = s.element_rects.get(&id) {
+                            format!("{},{},{},{}", r.x, r.y, r.w, r.h)
+                        } else {
+                            "0,0,0,0".to_string()
+                        }
+                    },
+                )?,
+            )?;
+
             ctx.eval::<(), _>(
                 r#"
                 var __listeners = {};
@@ -374,6 +392,13 @@ impl JsBridge {
                             },
                             releasePointerCapture: function(pointerId) {
                                 __hostReleasePointerCapture();
+                            },
+                            getBoundingClientRect: function() {
+                                var s = __hostGetBoundingRect(id);
+                                var p = s.split(',');
+                                var x = parseFloat(p[0]), y = parseFloat(p[1]);
+                                var w = parseFloat(p[2]), h = parseFloat(p[3]);
+                                return {x:x, y:y, width:w, height:h, left:x, top:y, right:x+w, bottom:y+h};
                             }
                         };
                         Object.defineProperty(elem, 'textContent', {
@@ -583,6 +608,10 @@ impl JsBridge {
 
     pub fn pointer_capture(&self) -> Option<String> {
         self.shared.borrow().pointer_capture.clone()
+    }
+
+    pub fn update_element_rects(&self, rects: HashMap<String, crate::types::LayoutRect>) {
+        self.shared.borrow_mut().element_rects = rects;
     }
 
     pub fn text_overrides(&self) -> std::cell::Ref<'_, HashMap<String, String>> {

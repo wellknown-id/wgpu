@@ -66,6 +66,36 @@ impl LayoutTree {
             .map(|l| l.size.height)
             .unwrap_or(0.0)
     }
+
+    pub fn collect_element_rects(&self) -> std::collections::HashMap<String, types::LayoutRect> {
+        let mut map = std::collections::HashMap::new();
+        collect_rects_recursive(&self.taffy, &self.root, 0.0, 0.0, &mut map);
+        map
+    }
+}
+
+fn collect_rects_recursive(
+    taffy: &TaffyTree,
+    node: &LayoutNode,
+    parent_x: f32,
+    parent_y: f32,
+    map: &mut std::collections::HashMap<String, types::LayoutRect>,
+) {
+    let layout = match taffy.layout(node.taffy_id) {
+        Ok(l) => l,
+        Err(_) => return,
+    };
+    let x = parent_x + layout.location.x;
+    let y = parent_y + layout.location.y;
+    let w = layout.size.width;
+    let h = layout.size.height;
+
+    if let Some(ref id) = node.id {
+        map.insert(id.clone(), types::LayoutRect { x, y, w, h });
+    }
+    for child in &node.children {
+        collect_rects_recursive(taffy, child, x, y, map);
+    }
 }
 
 fn measure_text(

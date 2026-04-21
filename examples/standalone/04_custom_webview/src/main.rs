@@ -72,7 +72,12 @@ impl App {
         state.commands = generate_draw_commands(&state.layout, &canvas_ops);
         state.clear_color = styled.style.background_color;
         #[cfg(feature = "js")]
-        state.js.clear_dirty();
+        {
+            state
+                .js
+                .update_element_rects(state.layout.collect_element_rects());
+            state.js.clear_dirty();
+        }
     }
 
     fn navigate(&mut self, href: &str) {
