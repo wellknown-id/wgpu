@@ -12,6 +12,9 @@ pub struct DomNode {
 #[derive(Debug, Clone)]
 pub struct ComputedStyle {
     pub display: Display,
+    pub position: Position,
+    pub left: Option<f32>,
+    pub top: Option<f32>,
     pub flex_direction: FlexDirection,
     pub justify_content: JustifyContent,
     pub align_items: AlignItems,
@@ -32,12 +35,16 @@ pub struct ComputedStyle {
     pub border_color: [f32; 4],
     pub border_radius: f32,
     pub overflow_hidden: bool,
+    pub pointer_events_none: bool,
 }
 
 impl Default for ComputedStyle {
     fn default() -> Self {
         Self {
             display: Display::Block,
+            position: Position::Static,
+            left: None,
+            top: None,
             flex_direction: FlexDirection::Row,
             justify_content: JustifyContent::Start,
             align_items: AlignItems::Stretch,
@@ -58,6 +65,7 @@ impl Default for ComputedStyle {
             border_color: [0.0; 4],
             border_radius: 0.0,
             overflow_hidden: false,
+            pointer_events_none: false,
         }
     }
 }
@@ -68,6 +76,12 @@ pub enum Display {
     Flex,
     Inline,
     None,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum Position {
+    Static,
+    Fixed,
 }
 
 #[derive(Debug, Clone, Copy)]

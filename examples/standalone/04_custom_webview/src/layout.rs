@@ -162,12 +162,36 @@ fn build_node(
 fn convert_style(s: &types::ComputedStyle) -> taffy::Style {
     use taffy::prelude::*;
 
+    let position = match s.position {
+        types::Position::Fixed => taffy::Position::Absolute,
+        types::Position::Static => taffy::Position::Relative,
+    };
+
+    let inset = if s.position == types::Position::Fixed {
+        taffy::Rect {
+            left: s
+                .left
+                .map(|v| length(v))
+                .unwrap_or(taffy::LengthPercentageAuto::auto()),
+            top: s
+                .top
+                .map(|v| length(v))
+                .unwrap_or(taffy::LengthPercentageAuto::auto()),
+            right: taffy::LengthPercentageAuto::auto(),
+            bottom: taffy::LengthPercentageAuto::auto(),
+        }
+    } else {
+        taffy::Rect::auto()
+    };
+
     taffy::Style {
         display: match s.display {
             types::Display::Flex => taffy::Display::Flex,
             types::Display::None => taffy::Display::None,
-            _ => taffy::Display::Flex, // block maps to flex column in taffy
+            _ => taffy::Display::Flex,
         },
+        position,
+        inset,
         flex_direction: match s.display {
             types::Display::Block | types::Display::Inline => taffy::FlexDirection::Column,
             _ => match s.flex_direction {

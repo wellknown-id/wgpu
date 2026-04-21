@@ -305,19 +305,7 @@ impl ApplicationHandler for App {
                     }
                 }
                 let s = self.state.as_mut().unwrap();
-                let mut render_cmds = s.commands.clone();
-
-                #[cfg(feature = "js")]
-                if let Some(ref captured_id) = s.js.pointer_capture() {
-                    let (cx, cy) = unsafe { CURSOR_POS };
-                    let ox = cx + 12.0;
-                    let oy = cy - 10.0 + s.scroll_y;
-                    let overlay =
-                        renderer::generate_overlay_commands(&s.layout, captured_id, ox, oy);
-                    render_cmds.extend(overlay);
-                }
-
-                s.gpu.render(&render_cmds, s.clear_color, s.scroll_y);
+                s.gpu.render(&s.commands, s.clear_color, s.scroll_y);
                 s.gpu.window.request_redraw();
             }
             _ => {}

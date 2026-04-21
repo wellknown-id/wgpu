@@ -110,6 +110,32 @@
     background: #0f3460;
     color: #ffffff;
   }
+
+  .ghost {
+    display: none;
+    position: fixed;
+    left: 0px;
+    top: 0px;
+    width: 180px;
+    pointer-events: none;
+    flex-direction: column;
+    padding: 10px;
+    border-radius: 8px;
+    background: #1a2035;
+    border-width: 2px;
+    border-color: #5588fa;
+    gap: 4px;
+  }
+  .ghost-text {
+    font-size: 13px;
+    color: #e0e8f0;
+  }
+  .ghost-tag {
+    font-size: 11px;
+    border-radius: 4px;
+    padding: 3px;
+    color: #ffffff;
+  }
 </style>
 </head>
 <body>
@@ -164,12 +190,16 @@
     </div>
   </div>
 
+  <div class="ghost" id="ghost">
+    <div class="ghost-text" id="ghost-text">-</div>
+    <div class="ghost-tag" id="ghost-tag">-</div>
+  </div>
+
 <script>
   var COLS = 3;
   var SLOTS = 6;
   var COL_NAMES = ['Backlog', 'In Progress', 'Done'];
   var COL_COLORS = ['#7c3aed', '#0ea5e9', '#10b981'];
-  var COL_BG = ['#1c1042', '#0f3460', '#0a3a2a'];
   var TAG_COLORS = {
     'Feature': '#e94560', 'Core': '#53d8fb', 'Design': '#ffd460',
     'UX': '#6bcb77', 'Perf': '#ff7eb3', 'Docs': '#a78bfa', 'Testing': '#ff7eb3'
@@ -221,6 +251,29 @@
     {text: 'Add touch event support', tag: 'Feature'},
     {text: 'Theme customization', tag: 'Design'},
   ];
+
+  function showGhost(cardData, x, y) {
+    var ghost = document.getElementById('ghost');
+    var gt = document.getElementById('ghost-text');
+    var gg = document.getElementById('ghost-tag');
+    gt.textContent = cardData.text;
+    gg.textContent = cardData.tag;
+    gg.style.background = TAG_COLORS[cardData.tag] || '#e94560';
+    ghost.style.display = 'flex';
+    ghost.style.left = (x + 12) + 'px';
+    ghost.style.top = (y - 10) + 'px';
+  }
+
+  function moveGhost(x, y) {
+    var ghost = document.getElementById('ghost');
+    ghost.style.left = (x + 12) + 'px';
+    ghost.style.top = (y - 10) + 'px';
+  }
+
+  function hideGhost() {
+    var ghost = document.getElementById('ghost');
+    ghost.style.display = 'none';
+  }
 
   function render() {
     for (var c = 0; c < COLS; c++) {
@@ -288,6 +341,7 @@
             drag = {srcCol: col, srcIdx: idx};
             hoverCol = col;
             el.setPointerCapture(e.pointerId);
+            showGhost(columns[col][idx], e.clientX, e.clientY);
             render();
           });
         })(c, i);
@@ -296,6 +350,7 @@
 
     document.addEventListener('pointermove', function(e) {
       if (!drag) return;
+      moveGhost(e.clientX, e.clientY);
       var newHover = getColumnFromX(e.clientX);
       if (newHover !== hoverCol) {
         hoverCol = newHover;
@@ -312,6 +367,7 @@
       }
       drag = null;
       hoverCol = -1;
+      hideGhost();
       render();
     });
 
@@ -332,6 +388,7 @@
       ];
       drag = null;
       hoverCol = -1;
+      hideGhost();
       render();
     });
   }

@@ -257,6 +257,25 @@ fn apply_properties(props: &[(String, String)], style: &mut ComputedStyle) {
             "overflow" => {
                 style.overflow_hidden = val == "hidden";
             }
+            "position" => {
+                style.position = match val {
+                    "fixed" => Position::Fixed,
+                    _ => Position::Static,
+                };
+            }
+            "left" => {
+                if let Some(v) = parse_length(val) {
+                    style.left = Some(v);
+                }
+            }
+            "top" => {
+                if let Some(v) = parse_length(val) {
+                    style.top = Some(v);
+                }
+            }
+            "pointer-events" => {
+                style.pointer_events_none = val == "none";
+            }
             _ => {}
         }
     }
