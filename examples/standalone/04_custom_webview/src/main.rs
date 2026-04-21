@@ -27,6 +27,24 @@ use layout::{build_layout, LayoutTree};
 use renderer::generate_draw_commands;
 use types::DrawCommand;
 
+#[cfg(target_os = "android")]
+mod embedded_assets {
+    pub const INDEX_HTML: &str = include_str!("../assets/index.html");
+    pub const TODO_HTML: &str = include_str!("../assets/todo.html");
+    pub const ABOUT_HTML: &str = include_str!("../assets/about.html");
+    pub const CANVAS_HTML: &str = include_str!("../assets/canvas.html");
+
+    pub fn get(name: &str) -> Option<&'static str> {
+        match name {
+            "index.html" => Some(INDEX_HTML),
+            "todo.html" => Some(TODO_HTML),
+            "about.html" => Some(ABOUT_HTML),
+            "canvas.html" => Some(CANVAS_HTML),
+            _ => None,
+        }
+    }
+}
+
 struct WebviewState {
     gpu: GpuState,
     #[cfg(feature = "js")]
@@ -68,7 +86,12 @@ impl App {
         let canvas_ops = std::collections::HashMap::new();
 
         let size = state.gpu.size;
-        state.layout = build_layout(&styled, size.width as f32, size.height as f32);
+        let scale = state.gpu.scale_factor as f32;
+        state.layout = build_layout(
+            &styled,
+            size.width as f32 / scale,
+            size.height as f32 / scale,
+        );
         state.commands = generate_draw_commands(&state.layout, &canvas_ops);
         state.clear_color = styled.style.background_color;
         #[cfg(feature = "js")]
@@ -146,15 +169,11 @@ fn apply_text_overrides(
 
 impl ApplicationHandler for App {
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
-        let window = Arc::new(
-            event_loop
-                .create_window(
-                    Window::default_attributes()
-                        .with_title("Custom Webview - wgpu")
-                        .with_inner_size(winit::dpi::PhysicalSize::new(1280, 720)),
-                )
-                .unwrap(),
-        );
+        let window_attrs = Window::default_attributes().with_title("Custom Webview - wgpu");
+        #[cfg(not(target_os = "android"))]
+        let window_attrs = window_attrs.with_inner_size(winit::dpi::PhysicalSize::new(1280, 720));
+
+        let window = Arc::new(event_loop.create_window(window_attrs).unwrap());
 
         let gpu = pollster::block_on(GpuState::new(
             event_loop.owned_display_handle(),
@@ -162,12 +181,18 @@ impl ApplicationHandler for App {
         ))
         .unwrap();
 
-        let asset_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("assets");
-        let html_file = std::env::args()
-            .nth(1)
-            .unwrap_or_else(|| "index.html".to_string());
-        let html_source =
-            std::fs::read_to_string(asset_dir.join(&html_file)).expect("failed to read HTML file");
+        #[cfg(not(target_os = "android"))]
+        let html_source = {
+            let asset_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("assets");
+            let html_file = std::env::args()
+                .nth(1)
+                .unwrap_or_else(|| "index.html".to_string());
+            std::fs::read_to_string(asset_dir.join(&html_file)).expect("failed to read HTML file")
+        };
+        #[cfg(target_os = "android")]
+        let html_source = embedded_assets::get("todo.html")
+            .unwrap_or(embedded_assets::INDEX_HTML)
+            .to_string();
 
         let css_sources = extract_styles(&html_source);
 
@@ -194,7 +219,12 @@ impl ApplicationHandler for App {
         let canvas_ops = std::collections::HashMap::new();
 
         let size = gpu.size;
-        let layout_tree = build_layout(&styled, size.width as f32, size.height as f32);
+        let scale = gpu.scale_factor as f32;
+        let layout_tree = build_layout(
+            &styled,
+            size.width as f32 / scale,
+            size.height as f32 / scale,
+        );
         let commands = generate_draw_commands(&layout_tree, &canvas_ops);
 
         let clear_color = styled.style.background_color;
@@ -208,7 +238,10 @@ impl ApplicationHandler for App {
             clear_color,
             html_source,
             css_sources,
-            asset_dir,
+            #[cfg(not(target_os = "android"))]
+            asset_dir: PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("assets"),
+            #[cfg(target_os = "android")]
+            asset_dir: PathBuf::new(),
             start_time: Instant::now(),
             scroll_y: 0.0,
             mouse_down: false,
@@ -280,9 +313,59 @@ impl ApplicationHandler for App {
                     winit::event::MouseScrollDelta::LineDelta(_, y) => -y * 40.0,
                     winit::event::MouseScrollDelta::PixelDelta(pos) => -pos.y as f32,
                 };
-                let max_scroll = (s.layout.content_height() - s.gpu.size.height as f32).max(0.0);
+                let max_scroll = (s.layout.content_height()
+                    - s.gpu.size.height as f32 / s.gpu.scale_factor as f32)
+                    .max(0.0);
                 s.scroll_y = (s.scroll_y + dy).clamp(0.0, max_scroll);
                 s.gpu.window.request_redraw();
+            }
+            WindowEvent::Touch(touch) => {
+                let scale = self.state.as_ref().unwrap().gpu.scale_factor as f32;
+                let mx = touch.location.x as f32 / scale;
+                let my = touch.location.y as f32 / scale;
+                unsafe {
+                    CURSOR_POS = (mx, my);
+                }
+                match touch.phase {
+                    winit::event::TouchPhase::Started => {
+                        self.state.as_mut().unwrap().mouse_down = true;
+                        #[cfg(feature = "js")]
+                        {
+                            let s = self.state.as_mut().unwrap();
+                            let y = my + s.scroll_y;
+                            s.js.dispatch_pointer_down(&s.layout, mx, y);
+                            if s.js.is_dirty() {
+                                self.rebuild_layout();
+                            }
+                        }
+                        self.state.as_ref().unwrap().gpu.window.request_redraw();
+                    }
+                    winit::event::TouchPhase::Moved => {
+                        #[cfg(feature = "js")]
+                        {
+                            let s = self.state.as_mut().unwrap();
+                            let y = my + s.scroll_y;
+                            s.js.dispatch_pointer_move(&s.layout, mx, y);
+                            if s.js.is_dirty() {
+                                self.rebuild_layout();
+                            }
+                        }
+                        self.state.as_ref().unwrap().gpu.window.request_redraw();
+                    }
+                    winit::event::TouchPhase::Ended | winit::event::TouchPhase::Cancelled => {
+                        self.state.as_mut().unwrap().mouse_down = false;
+                        #[cfg(feature = "js")]
+                        {
+                            let s = self.state.as_mut().unwrap();
+                            let y = my + s.scroll_y;
+                            s.js.dispatch_pointer_up(&s.layout, mx, y);
+                            if s.js.is_dirty() {
+                                self.rebuild_layout();
+                            }
+                        }
+                        self.state.as_ref().unwrap().gpu.window.request_redraw();
+                    }
+                }
             }
             WindowEvent::CursorMoved { position, .. } => unsafe {
                 CURSOR_POS = (position.x as f32, position.y as f32);
@@ -321,12 +404,36 @@ impl ApplicationHandler for App {
 static mut CURSOR_POS: (f32, f32) = (0.0, 0.0);
 
 fn main() {
-    #[cfg(not(target_arch = "wasm32"))]
-    env_logger::init();
+    #[cfg(not(target_os = "android"))]
+    {
+        env_logger::init();
 
-    let event_loop = EventLoop::new().unwrap();
+        let event_loop = EventLoop::new().unwrap();
+        event_loop.set_control_flow(ControlFlow::Poll);
+
+        let mut app = App::default();
+        event_loop.run_app(&mut app).unwrap();
+    }
+}
+
+#[cfg(target_os = "android")]
+#[no_mangle]
+pub fn android_main(app: winit::platform::android::activity::AndroidApp) {
+    use winit::platform::android::EventLoopBuilderExtAndroid;
+
+    android_logger::init_once(
+        android_logger::Config::default().with_max_level(log::LevelFilter::Info),
+    );
+
+    std::panic::set_hook(Box::new(|info| {
+        log::error!("PANIC: {info}");
+    }));
+
+    log::info!("android_main: starting");
+
+    let event_loop = EventLoop::builder().with_android_app(app).build().unwrap();
     event_loop.set_control_flow(ControlFlow::Poll);
 
-    let mut app = App::default();
-    event_loop.run_app(&mut app).unwrap();
+    let mut application = App::default();
+    event_loop.run_app(&mut application).unwrap();
 }

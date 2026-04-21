@@ -389,6 +389,7 @@ pub struct GpuState {
     pub surface_format: wgpu::TextureFormat,
     render_format: wgpu::TextureFormat,
     pub size: winit::dpi::PhysicalSize<u32>,
+    pub scale_factor: f64,
 
     screen_buffer: wgpu::Buffer,
     vertex_buffer: wgpu::Buffer,
@@ -730,8 +731,17 @@ impl GpuState {
             cache: None,
         });
 
+        #[cfg(target_os = "android")]
+        let font_system = {
+            let mut db = cosmic_text::fontdb::Database::new();
+            db.load_fonts_dir("/system/fonts");
+            FontSystem::new_with_locale_and_db("en-US".to_string(), db)
+        };
+        #[cfg(not(target_os = "android"))]
         let font_system = FontSystem::new();
         let swash_cache = SwashCache::new();
+
+        let scale_factor = window.scale_factor();
 
         Ok(Self {
             window,
@@ -751,6 +761,7 @@ impl GpuState {
             atlas,
             font_system,
             swash_cache,
+            scale_factor,
         })
     }
 
@@ -794,8 +805,8 @@ impl GpuState {
             &self.screen_buffer,
             0,
             bytemuck::cast_slice(&[
-                self.size.width as f32,
-                self.size.height as f32,
+                self.size.width as f32 / self.scale_factor as f32,
+                self.size.height as f32 / self.scale_factor as f32,
                 0.0_f32,
                 scroll_y,
             ]),
@@ -983,30 +994,38 @@ impl GpuState {
         font_size: f32,
         instances: &mut Vec<GlyphInstance>,
     ) {
-        let metrics = Metrics::new(font_size, font_size * 1.2);
-        let attrs = Attrs::new().family(Family::SansSerif);
+        let scale = self.scale_factor as f32;
+        let phys_font_size = font_size * scale;
+        let metrics = Metrics::new(phys_font_size, phys_font_size * 1.2);
+        let family = if cfg!(target_os = "android") {
+            Family::Name("Roboto")
+        } else {
+            Family::SansSerif
+        };
+        let attrs = Attrs::new().family(family);
         let mut buffer = CosmicBuffer::new(&mut self.font_system, metrics);
-        buffer.set_size(&mut self.font_system, Some(max_width), None);
+        buffer.set_size(&mut self.font_system, Some(max_width * scale), None);
         buffer.set_text(&mut self.font_system, text, attrs, Shaping::Advanced);
         buffer.shape_until_scroll(&mut self.font_system, false);
 
+        let inv = 1.0 / scale;
         for run in buffer.layout_runs() {
             for glyph in run.glyphs.iter() {
-                let physical = glyph.physical((x, y), 1.0);
+                let physical = glyph.physical((x * scale, y * scale), 1.0);
                 if let Some(entry) = self.atlas.get_or_insert(
                     &self.queue,
                     &mut self.font_system,
                     &mut self.swash_cache,
                     physical.cache_key,
-                    font_size,
+                    phys_font_size,
                 ) {
                     if entry.width == 0 || entry.height == 0 {
                         continue;
                     }
-                    let gx = physical.x as f32 + entry.offset_x as f32;
-                    let gy = physical.y as f32 - entry.offset_y as f32 + run.line_y;
+                    let gx = (physical.x as f32 + entry.offset_x as f32) * inv;
+                    let gy = (physical.y as f32 - entry.offset_y as f32 + run.line_y) * inv;
                     instances.push(GlyphInstance {
-                        rect: [gx, gy, entry.width as f32, entry.height as f32],
+                        rect: [gx, gy, entry.width as f32 * inv, entry.height as f32 * inv],
                         uv_rect: entry.uv,
                         color,
                     });
@@ -1017,7 +1036,12 @@ impl GpuState {
 
     pub fn measure_text(&mut self, text: &str, font_size: f32, max_width: f32) -> (f32, f32) {
         let metrics = Metrics::new(font_size, font_size * 1.2);
-        let attrs = Attrs::new().family(Family::SansSerif);
+        let family = if cfg!(target_os = "android") {
+            Family::Name("Roboto")
+        } else {
+            Family::SansSerif
+        };
+        let attrs = Attrs::new().family(family);
         let mut buffer = CosmicBuffer::new(&mut self.font_system, metrics);
         buffer.set_size(&mut self.font_system, Some(max_width), None);
         buffer.set_text(&mut self.font_system, text, attrs, Shaping::Advanced);
