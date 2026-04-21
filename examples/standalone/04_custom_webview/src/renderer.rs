@@ -92,9 +92,9 @@ fn emit_node(
     if !node.text.is_empty() {
         commands.push(DrawCommand::Text {
             text: node.text.trim().to_string(),
-            x,
-            y,
-            max_width: w + 1.0,
+            x: x + node.style.padding.left,
+            y: y + node.style.padding.top,
+            max_width: (w - node.style.padding.left - node.style.padding.right).max(0.0) + 1.0,
             color: node.style.color,
             font_size: node.style.font_size,
             element_id: current_id.map(|s| s.to_string()),

@@ -243,6 +243,7 @@ fn convert_style(s: &types::ComputedStyle) -> taffy::Style {
     };
 
     taffy::Style {
+        box_sizing: taffy::BoxSizing::ContentBox,
         display: match s.display {
             types::Display::Flex => taffy::Display::Flex,
             types::Display::None => taffy::Display::None,
