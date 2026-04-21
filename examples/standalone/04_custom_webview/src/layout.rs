@@ -1,7 +1,8 @@
 use crate::types;
 
 pub struct TextMeasure {
-    pub text_len: f32,
+    pub text: String,
+    pub text_width: f32,
     pub font_size: f32,
 }
 
@@ -23,10 +24,15 @@ pub struct LayoutNode {
     pub children: Vec<LayoutNode>,
 }
 
-pub fn build_layout(styled: &types::StyledNode, viewport_w: f32, viewport_h: f32) -> LayoutTree {
+pub fn build_layout(
+    styled: &types::StyledNode,
+    viewport_w: f32,
+    viewport_h: f32,
+    measure_fn: &mut dyn FnMut(&str, f32, f32) -> (f32, f32),
+) -> LayoutTree {
     let mut taffy = TaffyTree::new();
     let mut index_counter = 0;
-    let root = build_node(&mut taffy, styled, &mut index_counter);
+    let root = build_node(&mut taffy, styled, &mut index_counter, measure_fn);
 
     let mut root_style = taffy.style(root.taffy_id).unwrap().clone();
     root_style.size = taffy::Size {
@@ -46,7 +52,26 @@ pub fn build_layout(styled: &types::StyledNode, viewport_w: f32, viewport_h: f32
         },
         |known_dimensions, available_space, _node_id, node_context, _style| {
             if let Some(Some(measure)) = node_context {
-                measure_text(known_dimensions, available_space, measure)
+                let max_w = known_dimensions
+                    .width
+                    .unwrap_or_else(|| match available_space.width {
+                        taffy::prelude::AvailableSpace::Definite(w) => measure.text_width.min(w),
+                        taffy::prelude::AvailableSpace::MinContent => measure.font_size * 2.0,
+                        taffy::prelude::AvailableSpace::MaxContent => measure.text_width,
+                    });
+                let line_h = measure.font_size * 1.2;
+                let height = known_dimensions.height.unwrap_or_else(|| {
+                    if max_w >= measure.text_width {
+                        line_h
+                    } else {
+                        let (_, h) = measure_fn(&measure.text, measure.font_size, max_w);
+                        h.max(line_h)
+                    }
+                });
+                taffy::Size {
+                    width: max_w,
+                    height,
+                }
             } else {
                 taffy::Size {
                     width: known_dimensions.width.unwrap_or(0.0),
@@ -98,39 +123,11 @@ fn collect_rects_recursive(
     }
 }
 
-fn measure_text(
-    known_dimensions: taffy::Size<Option<f32>>,
-    available_space: taffy::Size<taffy::prelude::AvailableSpace>,
-    measure: &TextMeasure,
-) -> taffy::Size<f32> {
-    let char_w = measure.font_size * 0.6;
-    let full_text_w = measure.text_len * char_w;
-    let line_h = measure.font_size * 1.3;
-
-    let width = known_dimensions
-        .width
-        .unwrap_or_else(|| match available_space.width {
-            taffy::prelude::AvailableSpace::Definite(w) => full_text_w.min(w),
-            taffy::prelude::AvailableSpace::MinContent => char_w * 3.0,
-            taffy::prelude::AvailableSpace::MaxContent => full_text_w,
-        });
-
-    let height = known_dimensions.height.unwrap_or_else(|| {
-        if width > 0.0 && full_text_w > 0.0 {
-            let lines = (full_text_w / width).ceil().max(1.0);
-            lines * line_h
-        } else {
-            line_h
-        }
-    });
-
-    taffy::Size { width, height }
-}
-
 fn build_node(
     taffy: &mut TaffyTree,
     styled: &types::StyledNode,
     index_counter: &mut usize,
+    measure_fn: &mut dyn FnMut(&str, f32, f32) -> (f32, f32),
 ) -> LayoutNode {
     let idx = *index_counter;
     *index_counter += 1;
@@ -154,7 +151,7 @@ fn build_node(
     let child_nodes: Vec<LayoutNode> = styled
         .children
         .iter()
-        .map(|c| build_node(taffy, c, index_counter))
+        .map(|c| build_node(taffy, c, index_counter, measure_fn))
         .collect();
 
     let child_ids: Vec<taffy::NodeId> = child_nodes.iter().map(|c| c.taffy_id).collect();
@@ -163,8 +160,11 @@ fn build_node(
 
     let taffy_id = if child_ids.is_empty() {
         if !styled.dom_node.text.is_empty() {
+            let trimmed = styled.dom_node.text.trim();
+            let (tw, _) = measure_fn(trimmed, s.font_size, f32::MAX);
             let context = TextMeasure {
-                text_len: styled.dom_node.text.len() as f32,
+                text: trimmed.to_string(),
+                text_width: tw,
                 font_size: s.font_size,
             };
             taffy

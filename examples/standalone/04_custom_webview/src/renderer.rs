@@ -78,10 +78,10 @@ fn emit_node(
 
     if !node.text.is_empty() {
         commands.push(DrawCommand::Text {
-            text: node.text.clone(),
+            text: node.text.trim().to_string(),
             x,
             y,
-            max_width: w,
+            max_width: w + 1.0,
             color: node.style.color,
             font_size: node.style.font_size,
         });

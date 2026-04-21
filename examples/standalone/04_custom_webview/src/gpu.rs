@@ -1035,7 +1035,8 @@ impl GpuState {
     }
 
     pub fn measure_text(&mut self, text: &str, font_size: f32, max_width: f32) -> (f32, f32) {
-        let metrics = Metrics::new(font_size, font_size * 1.2);
+        let line_height = font_size * 1.2;
+        let metrics = Metrics::new(font_size, line_height);
         let family = if cfg!(target_os = "android") {
             Family::Name("Roboto")
         } else {
@@ -1051,7 +1052,7 @@ impl GpuState {
         let mut height = 0.0_f32;
         for run in buffer.layout_runs() {
             width = width.max(run.line_w);
-            height = run.line_y + font_size;
+            height = run.line_y + line_height;
         }
         (width, height)
     }

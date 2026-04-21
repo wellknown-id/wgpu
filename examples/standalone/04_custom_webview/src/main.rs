@@ -91,6 +91,7 @@ impl App {
             &styled,
             size.width as f32 / scale,
             size.height as f32 / scale,
+            &mut |text, font_size, max_width| state.gpu.measure_text(text, font_size, max_width),
         );
         state.commands = generate_draw_commands(&state.layout, &canvas_ops);
         state.clear_color = styled.style.background_color;
@@ -175,7 +176,7 @@ impl ApplicationHandler for App {
 
         let window = Arc::new(event_loop.create_window(window_attrs).unwrap());
 
-        let gpu = pollster::block_on(GpuState::new(
+        let mut gpu = pollster::block_on(GpuState::new(
             event_loop.owned_display_handle(),
             window.clone(),
         ))
@@ -224,6 +225,7 @@ impl ApplicationHandler for App {
             &styled,
             size.width as f32 / scale,
             size.height as f32 / scale,
+            &mut |text, font_size, max_width| gpu.measure_text(text, font_size, max_width),
         );
         let commands = generate_draw_commands(&layout_tree, &canvas_ops);
 
