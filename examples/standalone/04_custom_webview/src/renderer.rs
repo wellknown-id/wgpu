@@ -106,6 +106,7 @@ fn emit_node(
             element_id: current_id.map(|s| s.to_string()),
             is_fixed,
             transform: node.style.transform,
+            center: [x + w * 0.5, y + h * 0.5],
         });
     }
 

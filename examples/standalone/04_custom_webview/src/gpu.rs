@@ -19,7 +19,8 @@ struct LineInstance {
     p1: [f32; 2],
     color: [f32; 4],
     width: f32,
-    _pad: [f32; 3],
+    draw_order: f32,
+    _pad: [f32; 2],
 }
 
 #[repr(C)]
@@ -39,7 +40,7 @@ struct RectInstance {
     border_color: [f32; 4],
     transform: [f32; 16],
     flags: u32,
-    _pad: u32,
+    draw_order: f32,
 }
 
 #[repr(C)]
@@ -48,9 +49,10 @@ struct GlyphInstance {
     rect: [f32; 4],    // x, y, w, h in screen pixels
     uv_rect: [f32; 4], // u0, v0, u1, v1 in atlas UV
     color: [f32; 4],
-    flags: u32,
-    _pad: [u32; 3],
     transform: [f32; 16],
+    center: [f32; 2],
+    flags: u32,
+    draw_order: f32,
 }
 
 enum InternalDrawGroup {
@@ -243,6 +245,7 @@ struct RectInput {
     @location(9) transform_2: vec4<f32>,
     @location(10) transform_3: vec4<f32>,
     @location(11) flags: u32,
+    @location(12) draw_order: f32,
 };
 
 struct RectOutput {
@@ -281,10 +284,11 @@ fn vs_rect(in: RectInput) -> RectOutput {
     let nx = (x / screen.size.x) * 2.0 - 1.0;
     let ny = (1.0 - (y / screen.size.y)) * 2.0 - 1.0;
     
-    // Clip space = NDC * w
-    // WGPU NDC depth is 0.0 (near) to 1.0 (far).
-    // CSS +Z is towards camera. Let's map Z=0 to 0.5 depth.
-    let depth = (0.5 - (z / 2000.0)) * w;
+    // depth from draw order: later elements are closer to camera
+    // base_depth goes from 1.0 (far) to near-0 as draw_order increases
+    let base_depth = 1.0 - in.draw_order * 0.0001;
+    // 3D transforms shift depth via z
+    let depth = (base_depth - (z / 2000.0)) * w;
     out.pos = vec4<f32>(nx * w, ny * w, depth, w); 
     
     out.color = in.color;
@@ -304,8 +308,10 @@ fn rounded_rect_sdf(pos: vec2<f32>, half_size: vec2<f32>, radius: f32) -> f32 {
 @fragment
 fn fs_rect(in: RectOutput) -> @location(0) vec4<f32> {
     let half_size = in.rect_size * 0.5;
+    let radius = in.radius;
+    let border = in.border;
     let centered = in.local_pos - half_size;
-    let r = min(in.radius, min(half_size.x, half_size.y));
+    let r = min(radius, min(half_size.x, half_size.y));
     let dist = rounded_rect_sdf(centered, half_size, r);
 
     if dist > 0.5 {
@@ -314,8 +320,8 @@ fn fs_rect(in: RectOutput) -> @location(0) vec4<f32> {
 
     let alpha = 1.0 - smoothstep(-0.5, 0.5, dist);
 
-    if in.border > 0.0 {
-        let inner_dist = rounded_rect_sdf(centered, half_size - vec2(in.border), max(r - in.border, 0.0));
+    if border > 0.0 {
+        let inner_dist = rounded_rect_sdf(centered, half_size - vec2(border), max(r - border, 0.0));
         let inner_alpha = smoothstep(-0.5, 0.5, inner_dist);
         let fill = in.color * (1.0 - inner_alpha);
         let border_fill = in.border_color * inner_alpha;
@@ -341,11 +347,13 @@ struct GlyphInput {
     @location(2) rect: vec4<f32>,
     @location(3) uv_rect: vec4<f32>,
     @location(4) color: vec4<f32>,
-    @location(5) flags: u32,
-    @location(6) transform_0: vec4<f32>,
-    @location(7) transform_1: vec4<f32>,
-    @location(8) transform_2: vec4<f32>,
-    @location(9) transform_3: vec4<f32>,
+    @location(5) transform_0: vec4<f32>,
+    @location(6) transform_1: vec4<f32>,
+    @location(7) transform_2: vec4<f32>,
+    @location(8) transform_3: vec4<f32>,
+    @location(9) center: vec2<f32>,
+    @location(10) flags: u32,
+    @location(11) draw_order: f32,
 };
 
 struct GlyphOutput {
@@ -357,26 +365,29 @@ struct GlyphOutput {
 @vertex
 fn vs_glyph(in: GlyphInput) -> GlyphOutput {
     var out: GlyphOutput;
+    // For text, the given in.rect is the individual glyph bounding box.
+    // Calculate raw position of the vertex
+    let raw_x = in.rect.x + in.pos.x * in.rect.z;
+    let raw_y = in.rect.y + in.pos.y * in.rect.w;
     
-    // local_pos for glyph (it's already measured in pixels relative to text start)
-    // We should center it for transform if we want rotation to work nicely?
-    // Actually, text commands have an (x,y) which is top-left.
-    let local_pos = vec4<f32>(in.pos.x * in.rect.z, in.pos.y * in.rect.w, 0.0, 1.0);
+    // Offset by container's center before applying transform
+    let local_pos = vec4<f32>(raw_x - in.center.x, raw_y - in.center.y, 0.0, 1.0);
     let matrix = mat4x4<f32>(in.transform_0, in.transform_1, in.transform_2, in.transform_3);
     let world_pos_4 = matrix * local_pos;
 
     let is_fixed = (in.flags & 1u) != 0u;
     let s = select(screen.scroll, vec2<f32>(0.0), is_fixed);
     
-    let x = in.rect.x + world_pos_4.x - s.x;
-    let y = in.rect.y + world_pos_4.y - s.y;
+    let x = in.center.x + world_pos_4.x - s.x;
+    let y = in.center.y + world_pos_4.y - s.y;
     let z = world_pos_4.z;
     let w = world_pos_4.w;
 
     let nx = (x / screen.size.x) * 2.0 - 1.0;
     let ny = (1.0 - (y / screen.size.y)) * 2.0 - 1.0;
     
-    let depth = (0.5 - (z / 2000.0)) * w;
+    let base_depth = 1.0 - in.draw_order * 0.0001;
+    let depth = (base_depth - (z / 2000.0)) * w;
     out.pos = vec4<f32>(nx * w, ny * w, depth, w); 
     let u = in.uv_rect.x + in.uv.x * (in.uv_rect.z - in.uv_rect.x);
     let v = in.uv_rect.y + in.uv.y * (in.uv_rect.w - in.uv_rect.y);
@@ -406,6 +417,7 @@ struct LineInput {
     @location(3) p1: vec2<f32>,
     @location(4) color: vec4<f32>,
     @location(5) width: f32,
+    @location(6) draw_order: f32,
 };
 
 struct LineOutput {
@@ -431,7 +443,8 @@ fn vs_line(in: LineInput) -> LineOutput {
     let y = screen_pos.y - screen.scroll.y;
     let nx = (x / screen.size.x) * 2.0 - 1.0;
     let ny = (1.0 - (y / screen.size.y)) * 2.0 - 1.0;
-    out.pos = vec4<f32>(nx, ny, 0.0, 1.0);
+    let base_depth = 1.0 - in.draw_order * 0.0001;
+    out.pos = vec4<f32>(nx, ny, base_depth, 1.0);
     out.color = in.color;
     return out;
 }
@@ -468,6 +481,7 @@ pub struct GpuState {
     swash_cache: SwashCache,
     pub static_dirty: bool,
     cached_static_groups: Vec<InternalDrawGroup>,
+    depth_view: wgpu::TextureView,
 }
 
 impl GpuState {
@@ -512,6 +526,8 @@ impl GpuState {
                 desired_maximum_frame_latency: 2,
             },
         );
+
+        let depth_view = create_depth_view(&device, size.width, size.height);
 
         let screen_buffer = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("screen uniform"),
@@ -611,6 +627,7 @@ impl GpuState {
                             9 => Float32x4,
                             10 => Float32x4,
                             11 => Uint32,
+                            12 => Float32,
                         ],
                     },
                 ],
@@ -629,7 +646,13 @@ impl GpuState {
                 topology: wgpu::PrimitiveTopology::TriangleList,
                 ..Default::default()
             },
-            depth_stencil: None,
+            depth_stencil: Some(wgpu::DepthStencilState {
+                format: wgpu::TextureFormat::Depth32Float,
+                depth_write_enabled: Some(true),
+                depth_compare: Some(wgpu::CompareFunction::LessEqual),
+                stencil: wgpu::StencilState::default(),
+                bias: wgpu::DepthBiasState::default(),
+            }),
             multisample: Default::default(),
             multiview_mask: None,
             cache: None,
@@ -717,14 +740,16 @@ impl GpuState {
                         array_stride: std::mem::size_of::<GlyphInstance>() as u64,
                         step_mode: wgpu::VertexStepMode::Instance,
                         attributes: &wgpu::vertex_attr_array![
-                            2 => Float32x4,
-                            3 => Float32x4,
-                            4 => Float32x4,
-                            5 => Uint32,
-                            6 => Float32x4,
-                            7 => Float32x4,
-                            8 => Float32x4,
-                            9 => Float32x4,
+                            2 => Float32x4,   // rect
+                            3 => Float32x4,   // uv
+                            4 => Float32x4,   // color
+                            5 => Float32x4,   // transform 0
+                            6 => Float32x4,   // transform 1
+                            7 => Float32x4,   // transform 2
+                            8 => Float32x4,   // transform 3
+                            9 => Float32x2,   // center
+                            10 => Uint32,     // flags
+                            11 => Float32,    // draw_order
                         ],
                     },
                 ],
@@ -743,7 +768,13 @@ impl GpuState {
                 topology: wgpu::PrimitiveTopology::TriangleList,
                 ..Default::default()
             },
-            depth_stencil: None,
+            depth_stencil: Some(wgpu::DepthStencilState {
+                format: wgpu::TextureFormat::Depth32Float,
+                depth_write_enabled: Some(true),
+                depth_compare: Some(wgpu::CompareFunction::LessEqual),
+                stencil: wgpu::StencilState::default(),
+                bias: wgpu::DepthBiasState::default(),
+            }),
             multisample: Default::default(),
             multiview_mask: None,
             cache: None,
@@ -780,6 +811,7 @@ impl GpuState {
                             3 => Float32x2,
                             4 => Float32x4,
                             5 => Float32,
+                            6 => Float32,
                         ],
                     },
                 ],
@@ -798,7 +830,13 @@ impl GpuState {
                 topology: wgpu::PrimitiveTopology::TriangleList,
                 ..Default::default()
             },
-            depth_stencil: None,
+            depth_stencil: Some(wgpu::DepthStencilState {
+                format: wgpu::TextureFormat::Depth32Float,
+                depth_write_enabled: Some(true),
+                depth_compare: Some(wgpu::CompareFunction::LessEqual),
+                stencil: wgpu::StencilState::default(),
+                bias: wgpu::DepthBiasState::default(),
+            }),
             multisample: Default::default(),
             multiview_mask: None,
             cache: None,
@@ -837,32 +875,33 @@ impl GpuState {
             scale_factor,
             static_dirty: true,
             cached_static_groups: Vec::new(),
+            depth_view,
         })
     }
 
     pub fn resize(&mut self, new_size: winit::dpi::PhysicalSize<u32>) {
-        if new_size.width == 0 || new_size.height == 0 {
-            return;
+        if new_size.width > 0 && new_size.height > 0 {
+            self.size = new_size;
+            let view_formats = if self.render_format != self.surface_format {
+                vec![self.render_format]
+            } else {
+                vec![]
+            };
+            self.surface.configure(
+                &self.device,
+                &wgpu::SurfaceConfiguration {
+                    usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+                    format: self.surface_format,
+                    width: new_size.width,
+                    height: new_size.height,
+                    present_mode: wgpu::PresentMode::AutoVsync,
+                    alpha_mode: wgpu::CompositeAlphaMode::Auto,
+                    view_formats,
+                    desired_maximum_frame_latency: 2,
+                },
+            );
+            self.depth_view = create_depth_view(&self.device, new_size.width, new_size.height);
         }
-        self.size = new_size;
-        let view_formats = if self.render_format != self.surface_format {
-            vec![self.render_format]
-        } else {
-            vec![]
-        };
-        self.surface.configure(
-            &self.device,
-            &wgpu::SurfaceConfiguration {
-                usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
-                format: self.surface_format,
-                width: new_size.width,
-                height: new_size.height,
-                present_mode: wgpu::PresentMode::AutoVsync,
-                alpha_mode: wgpu::CompositeAlphaMode::Auto,
-                view_formats,
-                desired_maximum_frame_latency: 2,
-            },
-        );
     }
 
     pub fn render(
@@ -922,7 +961,14 @@ impl GpuState {
                     },
                     depth_slice: None,
                 })],
-                depth_stencil_attachment: None,
+                depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                    view: &self.depth_view,
+                    depth_ops: Some(wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(1.0),
+                        store: wgpu::StoreOp::Store,
+                    }),
+                    stencil_ops: None,
+                }),
                 timestamp_writes: None,
                 occlusion_query_set: None,
                 multiview_mask: None,
@@ -942,7 +988,14 @@ impl GpuState {
                     },
                     depth_slice: None,
                 })],
-                depth_stencil_attachment: None,
+                depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                    view: &self.depth_view,
+                    depth_ops: Some(wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(1.0),
+                        store: wgpu::StoreOp::Store,
+                    }),
+                    stencil_ops: None,
+                }),
                 timestamp_writes: None,
                 occlusion_query_set: None,
                 multiview_mask: None,
@@ -956,6 +1009,7 @@ impl GpuState {
 
     fn build_draw_groups(&mut self, commands: &[DrawCommand]) -> Vec<InternalDrawGroup> {
         let mut groups: Vec<InternalDrawGroup> = Vec::new();
+        let mut draw_order: f32 = 0.0;
         for cmd in commands {
             match cmd {
                 DrawCommand::Rect {
@@ -974,8 +1028,9 @@ impl GpuState {
                         border_color: [0.0; 4],
                         transform: *transform,
                         flags: if *is_fixed { 1 } else { 0 },
-                        _pad: 0,
+                        draw_order,
                     };
+                    draw_order += 1.0;
                     if let Some(InternalDrawGroup::Rects(ref mut v)) = groups.last_mut() {
                         v.push(inst);
                     } else {
@@ -999,8 +1054,9 @@ impl GpuState {
                         border_color: *color,
                         transform: *transform,
                         flags: if *is_fixed { 1 } else { 0 },
-                        _pad: 0,
+                        draw_order,
                     };
+                    draw_order += 1.0;
                     if let Some(InternalDrawGroup::Rects(ref mut v)) = groups.last_mut() {
                         v.push(inst);
                     } else {
@@ -1015,11 +1071,17 @@ impl GpuState {
                     color,
                     font_size,
                     is_fixed,
+                    transform,
+                    center,
                     ..
                 } => {
                     let mut glyphs = Vec::new();
-                    self.rasterize_text(text, *x, *y, *max_width, *color, *font_size, *is_fixed, *transform, &mut glyphs);
+                    self.rasterize_text(text, *x, *y, *max_width, *color, *font_size, *is_fixed, *transform, *center, &mut glyphs);
                     if !glyphs.is_empty() {
+                        for g in &mut glyphs {
+                            g.draw_order = draw_order;
+                        }
+                        draw_order += 1.0;
                         if let Some(InternalDrawGroup::Glyphs(ref mut v)) = groups.last_mut() {
                             v.extend(glyphs);
                         } else {
@@ -1040,8 +1102,10 @@ impl GpuState {
                         p1: [*x1, *y1],
                         color: *color,
                         width: *width,
-                        _pad: [0.0; 3],
+                        draw_order,
+                        _pad: [0.0; 2],
                     };
+                    draw_order += 1.0;
                     if let Some(InternalDrawGroup::Lines(ref mut v)) = groups.last_mut() {
                         v.push(inst);
                     } else {
@@ -1112,6 +1176,7 @@ impl GpuState {
         font_size: f32,
         is_fixed: bool,
         transform: [f32; 16],
+        center: [f32; 2],
         instances: &mut Vec<GlyphInstance>,
     ) {
         let scale = self.scale_factor as f32;
@@ -1148,9 +1213,10 @@ impl GpuState {
                         rect: [gx, gy, entry.width as f32 * inv, entry.height as f32 * inv],
                         uv_rect: entry.uv,
                         color,
-                        flags: if is_fixed { 1 } else { 0 },
-                        _pad: [0; 3],
                         transform,
+                        center,
+                        flags: if is_fixed { 1 } else { 0 },
+                        draw_order: 0.0,
                     });
                 }
             }
@@ -1171,12 +1237,33 @@ impl GpuState {
         buffer.set_text(&mut self.font_system, text, attrs, Shaping::Advanced);
         buffer.shape_until_scroll(&mut self.font_system, false);
 
-        let mut width = 0.0_f32;
-        let mut height = 0.0_f32;
+        let mut w = 0.0f32;
+        let mut h = 0.0f32;
         for run in buffer.layout_runs() {
-            width = width.max(run.line_w);
-            height = run.line_y + line_height;
+            h += run.line_height;
+            for glyph in run.glyphs {
+                w = w.max(glyph.x + glyph.w);
+            }
         }
-        (width, height)
+        (w, h)
     }
+}
+
+fn create_depth_view(device: &wgpu::Device, width: u32, height: u32) -> wgpu::TextureView {
+    device
+        .create_texture(&wgpu::TextureDescriptor {
+            label: Some("depth texture"),
+            size: wgpu::Extent3d {
+                width,
+                height,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Depth32Float,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+            view_formats: &[],
+        })
+        .create_view(&wgpu::TextureViewDescriptor::default())
 }

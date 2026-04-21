@@ -194,6 +194,7 @@ pub enum DrawCommand {
         element_id: Option<String>,
         is_fixed: bool,
         transform: [f32; 16],
+        center: [f32; 2],
     },
     Line {
         x0: f32,
