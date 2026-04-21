@@ -14,6 +14,8 @@ pub fn generate_draw_commands(
         0.0,
         0.0,
         None,
+        mat4_identity(),
+        [0.0, 0.0],
         canvas_ops,
         &mut commands,
     );
@@ -51,6 +53,8 @@ fn emit_node(
     parent_x: f32,
     parent_y: f32,
     ancestor_id: Option<&str>,
+    parent_transform: [f32; 16],
+    parent_center: [f32; 2],
     canvas_ops: &HashMap<String, Vec<CanvasDrawOp>>,
     commands: &mut Vec<DrawCommand>,
 ) {
@@ -72,13 +76,18 @@ fn emit_node(
 
     let is_fixed = node.style.position == Position::Fixed;
 
+    let own_transform = node.style.transform;
+    let is_identity = own_transform == mat4_identity();
+    let effective_transform = if is_identity { parent_transform } else { own_transform };
+    let effective_center = if is_identity { parent_center } else { [x + w * 0.5, y + h * 0.5] };
+
     if node.style.background_color[3] > 0.0 {
         commands.push(DrawCommand::Rect {
             rect: LayoutRect { x, y, w, h },
             color: node.style.background_color,
             border_radius: node.style.border_radius,
             element_id: current_id.map(|s| s.to_string()),
-            transform: node.style.transform,
+            transform: effective_transform,
             is_fixed,
         });
     }
@@ -90,7 +99,7 @@ fn emit_node(
             width: node.style.border_width,
             radius: node.style.border_radius,
             element_id: current_id.map(|s| s.to_string()),
-            transform: node.style.transform,
+            transform: effective_transform,
             is_fixed,
         });
     }
@@ -105,8 +114,8 @@ fn emit_node(
             font_size: node.style.font_size,
             element_id: current_id.map(|s| s.to_string()),
             is_fixed,
-            transform: node.style.transform,
-            center: [x + w * 0.5, y + h * 0.5],
+            transform: effective_transform,
+            center: effective_center,
         });
     }
 
@@ -119,7 +128,7 @@ fn emit_node(
     }
 
     for child in &node.children {
-        emit_node(taffy, child, x, y, current_id, canvas_ops, commands);
+        emit_node(taffy, child, x, y, current_id, effective_transform, effective_center, canvas_ops, commands);
     }
 }
 

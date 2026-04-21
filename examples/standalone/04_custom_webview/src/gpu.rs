@@ -276,19 +276,21 @@ fn vs_rect(in: RectInput) -> RectOutput {
     let is_fixed = (in.flags & 1u) != 0u;
     let s = select(screen.scroll, vec2<f32>(0.0), is_fixed);
     
-    let x = world_pos_4.x + in.rect.x + in.rect.z * 0.5 - s.x;
-    let y = world_pos_4.y + in.rect.y + in.rect.w * 0.5 - s.y;
-    let z = world_pos_4.z;
     let w = world_pos_4.w;
+    let z = world_pos_4.z;
+    // Screen-space center offset, scaled by w for correct homogeneous coords
+    let cx = (in.rect.x + in.rect.z * 0.5 - s.x);
+    let cy = (in.rect.y + in.rect.w * 0.5 - s.y);
+    
+    let x = world_pos_4.x + cx * w;
+    let y = world_pos_4.y + cy * w;
 
-    let nx = (x / screen.size.x) * 2.0 - 1.0;
-    let ny = (1.0 - (y / screen.size.y)) * 2.0 - 1.0;
+    let nx = (x / (screen.size.x * w)) * 2.0 - 1.0;
+    let ny = (1.0 - (y / (screen.size.y * w))) * 2.0 - 1.0;
     
     // depth from draw order: later elements are closer to camera
-    // base_depth goes from 1.0 (far) to near-0 as draw_order increases
     let base_depth = 1.0 - in.draw_order * 0.0001;
-    // 3D transforms shift depth via z
-    let depth = (base_depth - (z / 2000.0)) * w;
+    let depth = (base_depth - (z / (2000.0 * w))) * w;
     out.pos = vec4<f32>(nx * w, ny * w, depth, w); 
     
     out.color = in.color;
@@ -378,16 +380,19 @@ fn vs_glyph(in: GlyphInput) -> GlyphOutput {
     let is_fixed = (in.flags & 1u) != 0u;
     let s = select(screen.scroll, vec2<f32>(0.0), is_fixed);
     
-    let x = in.center.x + world_pos_4.x - s.x;
-    let y = in.center.y + world_pos_4.y - s.y;
-    let z = world_pos_4.z;
     let w = world_pos_4.w;
+    let z = world_pos_4.z;
+    let cx = in.center.x - s.x;
+    let cy = in.center.y - s.y;
+    
+    let x = world_pos_4.x + cx * w;
+    let y = world_pos_4.y + cy * w;
 
-    let nx = (x / screen.size.x) * 2.0 - 1.0;
-    let ny = (1.0 - (y / screen.size.y)) * 2.0 - 1.0;
+    let nx = (x / (screen.size.x * w)) * 2.0 - 1.0;
+    let ny = (1.0 - (y / (screen.size.y * w))) * 2.0 - 1.0;
     
     let base_depth = 1.0 - in.draw_order * 0.0001;
-    let depth = (base_depth - (z / 2000.0)) * w;
+    let depth = (base_depth - (z / (2000.0 * w))) * w;
     out.pos = vec4<f32>(nx * w, ny * w, depth, w); 
     let u = in.uv_rect.x + in.uv.x * (in.uv_rect.z - in.uv_rect.x);
     let v = in.uv_rect.y + in.uv.y * (in.uv_rect.w - in.uv_rect.y);
