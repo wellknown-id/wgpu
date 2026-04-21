@@ -251,3 +251,47 @@ fn hit_test_node(
         }
     }
 }
+
+fn find_node_by_id<'a>(node: &'a LayoutNode, target_id: &str) -> Option<&'a LayoutNode> {
+    if node.id.as_deref() == Some(target_id) {
+        return Some(node);
+    }
+    for child in &node.children {
+        if let Some(found) = find_node_by_id(child, target_id) {
+            return Some(found);
+        }
+    }
+    None
+}
+
+pub fn generate_overlay_commands(
+    tree: &LayoutTree,
+    element_id: &str,
+    target_x: f32,
+    target_y: f32,
+) -> Vec<DrawCommand> {
+    let mut commands = Vec::new();
+    if let Some(node) = find_node_by_id(&tree.root, element_id) {
+        if let Ok(layout) = tree.taffy.layout(node.taffy_id) {
+            let w = layout.size.width;
+            let h = layout.size.height;
+            let px = target_x - layout.location.x;
+            let py = target_y - layout.location.y;
+
+            emit_node(&tree.taffy, node, px, py, &HashMap::new(), &mut commands);
+
+            commands.push(DrawCommand::Border {
+                rect: LayoutRect {
+                    x: target_x,
+                    y: target_y,
+                    w,
+                    h,
+                },
+                color: [0.33, 0.53, 0.98, 0.7],
+                width: 2.0,
+                radius: node.style.border_radius,
+            });
+        }
+    }
+    commands
+}
