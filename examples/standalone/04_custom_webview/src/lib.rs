@@ -26,7 +26,7 @@ use layout::{build_layout, LayoutTree, TextMeasureCache};
 use renderer::generate_draw_commands;
 use types::DrawCommand;
 
-#[cfg(target_os = "android")]
+#[cfg(any(target_os = "android", target_os = "ios"))]
 pub mod embedded_assets {
     pub const INDEX_HTML: &str = include_str!("../assets/index.html");
     pub const TODO_HTML: &str = include_str!("../assets/todo.html");
@@ -193,7 +193,7 @@ impl App {
 
     pub fn navigate(&mut self, href: &str) {
         let state = self.state.as_mut().unwrap();
-        #[cfg(not(target_os = "android"))]
+        #[cfg(not(any(target_os = "android", target_os = "ios")))]
         let html_source = match std::fs::read_to_string(&state.asset_dir.join(href)) {
             Ok(s) => s,
             Err(e) => {
@@ -201,7 +201,7 @@ impl App {
                 return;
             }
         };
-        #[cfg(target_os = "android")]
+        #[cfg(any(target_os = "android", target_os = "ios"))]
         let html_source = match embedded_assets::get(href) {
             Some(s) => s.to_string(),
             None => {
@@ -266,7 +266,7 @@ pub fn apply_text_overrides(
 impl ApplicationHandler for App {
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
         let window_attrs = Window::default_attributes().with_title("Custom Webview - wgpu");
-        #[cfg(not(target_os = "android"))]
+        #[cfg(not(any(target_os = "android", target_os = "ios")))]
         let window_attrs = window_attrs.with_inner_size(winit::dpi::PhysicalSize::new(1280, 720));
 
         let window = Arc::new(event_loop.create_window(window_attrs).unwrap());
@@ -277,7 +277,7 @@ impl ApplicationHandler for App {
         ))
         .unwrap();
 
-        #[cfg(not(target_os = "android"))]
+        #[cfg(not(any(target_os = "android", target_os = "ios")))]
         let html_source = {
             let asset_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("assets");
             let html_file = std::env::args()
@@ -285,7 +285,7 @@ impl ApplicationHandler for App {
                 .unwrap_or_else(|| "index.html".to_string());
             std::fs::read_to_string(asset_dir.join(&html_file)).expect("failed to read HTML file")
         };
-        #[cfg(target_os = "android")]
+        #[cfg(any(target_os = "android", target_os = "ios"))]
         let html_source = embedded_assets::get("index.html")
             .unwrap_or(embedded_assets::INDEX_HTML)
             .to_string();
@@ -347,9 +347,9 @@ impl ApplicationHandler for App {
             html_source,
             css_sources,
             styled_base,
-            #[cfg(not(target_os = "android"))]
+            #[cfg(not(any(target_os = "android", target_os = "ios")))]
             asset_dir: PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("assets"),
-            #[cfg(target_os = "android")]
+            #[cfg(any(target_os = "android", target_os = "ios"))]
             asset_dir: PathBuf::new(),
             start_time: Instant::now(),
             scroll_y: 0.0,

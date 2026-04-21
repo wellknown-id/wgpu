@@ -850,7 +850,14 @@ impl GpuState {
             db.load_fonts_dir("/system/fonts");
             FontSystem::new_with_locale_and_db("en-US".to_string(), db)
         };
-        #[cfg(not(target_os = "android"))]
+        #[cfg(target_os = "ios")]
+        let font_system = {
+            let mut db = cosmic_text::fontdb::Database::new();
+            db.load_fonts_dir("/System/Library/Fonts");
+            db.load_fonts_dir("/System/Library/Fonts/Core");
+            FontSystem::new_with_locale_and_db("en-US".to_string(), db)
+        };
+        #[cfg(not(any(target_os = "android", target_os = "ios")))]
         let font_system = FontSystem::new();
         let swash_cache = SwashCache::new();
 
