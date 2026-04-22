@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>WebXR Demo</title>
+<title>WebXR + WebGPU Demo</title>
 <style>
 * { margin: 0; padding: 0; box-sizing: border-box; }
 
@@ -91,10 +91,6 @@ h1 {
   font-size: 0.9em;
 }
 .back-link:hover { color: #aabbcc; }
-
-canvas {
-  display: none;
-}
 </style>
 </head>
 <body>
@@ -102,8 +98,8 @@ canvas {
 <a href="index.html" class="back-link">&larr; Back</a>
 
 <div class="container">
-  <h1>WebXR</h1>
-  <p class="subtitle">Immersive VR via WebGL + WebXR</p>
+  <h1>WebXR + WebGPU</h1>
+  <p class="subtitle">Immersive VR via the WebXR-WebGPU Binding</p>
 
   <div id="status" class="status">Checking XR support...</div>
 
@@ -111,23 +107,23 @@ canvas {
 
   <div class="info">
     Renders a spinning cube in stereoscopic VR using the WebXR Device API
-    with a standard WebGL2 rendering context.
+    with the new WebGPU binding (XRGPUBinding).
   </div>
 </div>
-
-<canvas id="xrCanvas"></canvas>
 
 <script>
 var statusEl = document.getElementById('status');
 var btn = document.getElementById('enterVrBtn');
-var canvas = document.getElementById('xrCanvas');
 var xrSession = null;
 var xrRefSpace = null;
-var gl = null;
-var glProgram = null;
-var glVBO = null;
-var glIBO = null;
-var uMVP = null;
+var device = null;
+var pipeline = null;
+var vbuf = null;
+var ibuf = null;
+var uniformBuf = null;
+var bindGroup = null;
+var xrBinding = null;
+var xrLayer = null;
 var indexCount = 0;
 
 function log(msg) {
@@ -135,104 +131,30 @@ function log(msg) {
   if (statusEl) statusEl.textContent = msg;
 }
 
-// --- WebGL shader setup ---
+// --- Shader ---
 
-var VS_SRC = [
-  'attribute vec3 aPos;',
-  'attribute vec3 aColor;',
-  'uniform mat4 uMVP;',
-  'varying vec3 vColor;',
-  'void main() {',
-  '  gl_Position = uMVP * vec4(aPos, 1.0);',
-  '  vColor = aColor;',
-  '}'
-].join('\n');
+var SHADER = `
+struct Uniforms { mvp: mat4x4<f32> }
+@group(0) @binding(0) var<uniform> u: Uniforms;
 
-var FS_SRC = [
-  'precision mediump float;',
-  'varying vec3 vColor;',
-  'void main() {',
-  '  gl_FragColor = vec4(vColor, 1.0);',
-  '}'
-].join('\n');
-
-function compileShader(gl, type, src) {
-  var s = gl.createShader(type);
-  gl.shaderSource(s, src);
-  gl.compileShader(s);
-  if (!gl.getShaderParameter(s, gl.COMPILE_STATUS)) {
-    log('Shader error: ' + gl.getShaderInfoLog(s));
-    return null;
-  }
-  return s;
+struct VsOut {
+  @builtin(position) pos: vec4<f32>,
+  @location(0) color: vec3<f32>,
 }
 
-function initGL() {
-  gl = canvas.getContext('webgl2', { xrCompatible: true });
-  if (!gl) {
-    gl = canvas.getContext('webgl', { xrCompatible: true });
-  }
-  if (!gl) {
-    log('WebGL not available');
-    return false;
-  }
-
-  var vs = compileShader(gl, gl.VERTEX_SHADER, VS_SRC);
-  var fs = compileShader(gl, gl.FRAGMENT_SHADER, FS_SRC);
-  glProgram = gl.createProgram();
-  gl.attachShader(glProgram, vs);
-  gl.attachShader(glProgram, fs);
-  gl.bindAttribLocation(glProgram, 0, 'aPos');
-  gl.bindAttribLocation(glProgram, 1, 'aColor');
-  gl.linkProgram(glProgram);
-  if (!gl.getProgramParameter(glProgram, gl.LINK_STATUS)) {
-    log('Program link error: ' + gl.getProgramInfoLog(glProgram));
-    return false;
-  }
-  uMVP = gl.getUniformLocation(glProgram, 'uMVP');
-
-  // Cube: 8 vertices with colors, 36 indices
-  var verts = new Float32Array([
-    // pos              color
-    -0.3, -0.3,  0.3,   1.0, 0.2, 0.3,
-     0.3, -0.3,  0.3,   1.0, 0.6, 0.0,
-     0.3,  0.3,  0.3,   0.2, 1.0, 0.5,
-    -0.3,  0.3,  0.3,   0.5, 0.2, 1.0,
-    -0.3, -0.3, -0.3,   0.0, 0.5, 1.0,
-     0.3, -0.3, -0.3,   0.5, 1.0, 0.0,
-     0.3,  0.3, -0.3,   1.0, 1.0, 0.2,
-    -0.3,  0.3, -0.3,   1.0, 0.2, 1.0
-  ]);
-
-  var indices = new Uint16Array([
-    0,1,2, 0,2,3,  // front
-    4,6,5, 4,7,6,  // back
-    3,2,6, 3,6,7,  // top
-    0,5,1, 0,4,5,  // bottom
-    1,5,6, 1,6,2,  // right
-    0,3,7, 0,7,4   // left
-  ]);
-  indexCount = indices.length;
-
-  glVBO = gl.createBuffer();
-  gl.bindBuffer(gl.ARRAY_BUFFER, glVBO);
-  gl.bufferData(gl.ARRAY_BUFFER, verts, gl.STATIC_DRAW);
-
-  glIBO = gl.createBuffer();
-  gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, glIBO);
-  gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, indices, gl.STATIC_DRAW);
-
-  gl.enable(gl.DEPTH_TEST);
-  gl.enable(gl.CULL_FACE);
-
-  return true;
+@vertex fn vs(@location(0) p: vec3<f32>, @location(1) c: vec3<f32>) -> VsOut {
+  var o: VsOut;
+  o.pos = u.mvp * vec4<f32>(p, 1.0);
+  o.color = c;
+  return o;
 }
+
+@fragment fn fs(@location(0) c: vec3<f32>) -> @location(0) vec4<f32> {
+  return vec4<f32>(c, 1.0);
+}
+`;
 
 // --- Matrix math ---
-
-function mat4Identity() {
-  return new Float32Array([1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1]);
-}
 
 function mat4Multiply(a, b) {
   var r = new Float32Array(16);
@@ -258,41 +180,81 @@ function mat4Translate(x, y, z) {
   return new Float32Array([1,0,0,0, 0,1,0,0, 0,0,1,0, x,y,z,1]);
 }
 
-function mat4Perspective(fovY, aspect, near, far) {
-  var f = 1.0 / Math.tan(fovY / 2);
-  var nf = 1 / (near - far);
-  return new Float32Array([
-    f/aspect, 0, 0, 0,
-    0, f, 0, 0,
-    0, 0, (far+near)*nf, -1,
-    0, 0, 2*far*near*nf, 0
-  ]);
-}
+// --- GPU init ---
 
-// --- Render a single eye ---
+function initGpu(colorFormat) {
+  return navigator.gpu.requestAdapter({ xrCompatible: true }).then(function(adapter) {
+    return adapter.requestDevice();
+  }).then(function(dev) {
+    device = dev;
 
-function renderView(projMatrix, viewMatrix, viewport, time) {
-  gl.viewport(viewport.x, viewport.y, viewport.width, viewport.height);
+    var module = device.createShaderModule({ code: SHADER });
 
-  var model = mat4Multiply(
-    mat4Translate(0, 0, -2),
-    mat4Multiply(mat4RotateY(time * 0.001), mat4RotateX(time * 0.0007))
-  );
+    // Cube vertices: position (vec3) + color (vec3)
+    var verts = new Float32Array([
+      -0.3,-0.3, 0.3,  1.0,0.2,0.3,
+       0.3,-0.3, 0.3,  1.0,0.6,0.0,
+       0.3, 0.3, 0.3,  0.2,1.0,0.5,
+      -0.3, 0.3, 0.3,  0.5,0.2,1.0,
+      -0.3,-0.3,-0.3,  0.0,0.5,1.0,
+       0.3,-0.3,-0.3,  0.5,1.0,0.0,
+       0.3, 0.3,-0.3,  1.0,1.0,0.2,
+      -0.3, 0.3,-0.3,  1.0,0.2,1.0
+    ]);
 
-  var mv = mat4Multiply(viewMatrix, model);
-  var mvp = mat4Multiply(projMatrix, mv);
+    var indices = new Uint16Array([
+      0,1,2, 0,2,3,
+      4,6,5, 4,7,6,
+      3,2,6, 3,6,7,
+      0,5,1, 0,4,5,
+      1,5,6, 1,6,2,
+      0,3,7, 0,7,4
+    ]);
+    indexCount = indices.length;
 
-  gl.useProgram(glProgram);
-  gl.uniformMatrix4fv(uMVP, false, mvp);
+    vbuf = device.createBuffer({ size: verts.byteLength, usage: GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST });
+    device.queue.writeBuffer(vbuf, 0, verts);
 
-  gl.bindBuffer(gl.ARRAY_BUFFER, glVBO);
-  gl.enableVertexAttribArray(0);
-  gl.vertexAttribPointer(0, 3, gl.FLOAT, false, 24, 0);
-  gl.enableVertexAttribArray(1);
-  gl.vertexAttribPointer(1, 3, gl.FLOAT, false, 24, 12);
+    ibuf = device.createBuffer({ size: indices.byteLength, usage: GPUBufferUsage.INDEX | GPUBufferUsage.COPY_DST });
+    device.queue.writeBuffer(ibuf, 0, indices);
 
-  gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, glIBO);
-  gl.drawElements(gl.TRIANGLES, indexCount, gl.UNSIGNED_SHORT, 0);
+    uniformBuf = device.createBuffer({ size: 64, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
+
+    var bgl = device.createBindGroupLayout({
+      entries: [{ binding: 0, visibility: GPUShaderStage.VERTEX, buffer: { type: 'uniform' } }]
+    });
+
+    bindGroup = device.createBindGroup({
+      layout: bgl,
+      entries: [{ binding: 0, resource: { buffer: uniformBuf } }]
+    });
+
+    pipeline = device.createRenderPipeline({
+      layout: device.createPipelineLayout({ bindGroupLayouts: [bgl] }),
+      vertex: {
+        module: module, entryPoint: 'vs',
+        buffers: [{
+          arrayStride: 24,
+          attributes: [
+            { shaderLocation: 0, offset: 0, format: 'float32x3' },
+            { shaderLocation: 1, offset: 12, format: 'float32x3' }
+          ]
+        }]
+      },
+      fragment: {
+        module: module, entryPoint: 'fs',
+        targets: [{ format: colorFormat }]
+      },
+      depthStencil: {
+        format: 'depth24plus',
+        depthWriteEnabled: true,
+        depthCompare: 'less'
+      },
+      primitive: { topology: 'triangle-list', cullMode: 'back' }
+    });
+
+    log('GPU initialized');
+  });
 }
 
 // --- XR frame loop ---
@@ -300,24 +262,61 @@ function renderView(projMatrix, viewMatrix, viewport, time) {
 function onXrFrame(time, frame) {
   xrSession.requestAnimationFrame(onXrFrame);
 
-  var glLayer = xrSession.renderState.baseLayer;
-  gl.bindFramebuffer(gl.FRAMEBUFFER, glLayer.framebuffer);
-  gl.clearColor(0.02, 0.02, 0.06, 1.0);
-  gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
-
   var pose = frame.getViewerPose(xrRefSpace);
   if (!pose) return;
 
+  var encoder = device.createCommandEncoder();
+
   for (var i = 0; i < pose.views.length; i++) {
     var view = pose.views[i];
-    var vp = glLayer.getViewport(view);
-    renderView(
-      view.projectionMatrix,
-      view.transform.inverse.matrix,
-      vp,
-      time
+    var subImage = xrBinding.getViewSubImage(xrLayer, view);
+
+    var colorView = subImage.colorTexture.createView(subImage.getViewDescriptor());
+
+    // Create a per-eye depth texture matching the sub-image size
+    var vp = subImage.viewport;
+    var depthTex = device.createTexture({
+      size: [subImage.colorTexture.width, subImage.colorTexture.height],
+      format: 'depth24plus',
+      usage: GPUTextureUsage.RENDER_ATTACHMENT
+    });
+
+    // Build MVP
+    var model = mat4Multiply(
+      mat4Translate(0, 0, -2),
+      mat4Multiply(mat4RotateY(time * 0.001), mat4RotateX(time * 0.0007))
     );
+    var mv = mat4Multiply(view.transform.inverse.matrix, model);
+    var mvp = mat4Multiply(view.projectionMatrix, mv);
+    device.queue.writeBuffer(uniformBuf, 0, mvp);
+
+    var pass = encoder.beginRenderPass({
+      colorAttachments: [{
+        view: colorView,
+        loadOp: 'clear',
+        storeOp: 'store',
+        clearValue: { r: 0.02, g: 0.02, b: 0.06, a: 1.0 }
+      }],
+      depthStencilAttachment: {
+        view: depthTex.createView(),
+        depthLoadOp: 'clear',
+        depthStoreOp: 'store',
+        depthClearValue: 1.0
+      }
+    });
+
+    pass.setViewport(vp.x, vp.y, vp.width, vp.height, 0.0, 1.0);
+    pass.setPipeline(pipeline);
+    pass.setBindGroup(0, bindGroup);
+    pass.setVertexBuffer(0, vbuf);
+    pass.setIndexBuffer(ibuf, 'uint16');
+    pass.drawIndexed(indexCount);
+    pass.end();
+
+    depthTex.destroy();
   }
+
+  device.queue.submit([encoder.finish()]);
 }
 
 // --- Session management ---
@@ -342,22 +341,27 @@ function checkXrSupport() {
 
 function enterVR() {
   btn.disabled = true;
-  log('Starting...');
+  log('Requesting XR session...');
 
-  if (!initGL()) {
-    btn.disabled = false;
-    return;
-  }
-
-  navigator.xr.requestSession('immersive-vr').then(function(session) {
+  navigator.xr.requestSession('immersive-vr', {
+    requiredFeatures: ['webgpu']
+  }).then(function(session) {
     xrSession = session;
-    log('Session started');
+    log('Session created, initializing GPU...');
 
-    session.updateRenderState({
-      baseLayer: new XRWebGLLayer(session, gl)
-    });
+    return initGpu(navigator.gpu.getPreferredCanvasFormat ? navigator.gpu.getPreferredCanvasFormat() : 'rgba8unorm').then(function() {
+      xrBinding = new XRGPUBinding(session, device);
 
-    session.requestReferenceSpace('local').then(function(refSpace) {
+      var colorFormat = xrBinding.getPreferredColorFormat();
+      xrLayer = xrBinding.createProjectionLayer({
+        colorFormat: colorFormat,
+        depthStencilFormat: 'depth24plus'
+      });
+
+      session.updateRenderState({ layers: [xrLayer] });
+
+      return session.requestReferenceSpace('local');
+    }).then(function(refSpace) {
       xrRefSpace = refSpace;
       session.requestAnimationFrame(onXrFrame);
       log('VR active');
@@ -365,16 +369,17 @@ function enterVR() {
       btn.disabled = false;
       btn.onclick = exitVR;
     });
-
-    session.addEventListener('end', function() {
-      log('Session ended');
-      xrSession = null;
-      btn.textContent = 'Enter VR';
-      btn.onclick = enterVR;
-      btn.disabled = false;
-    });
-  }).catch(function(e) {
+  }).then(null, function(e) {
     log('Failed: ' + e.message);
+    console.log('[XR] Error:', e);
+    btn.disabled = false;
+  });
+
+  xrSession && xrSession.addEventListener('end', function() {
+    log('Session ended');
+    xrSession = null;
+    btn.textContent = 'Enter VR';
+    btn.onclick = enterVR;
     btn.disabled = false;
   });
 }
