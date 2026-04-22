@@ -472,10 +472,57 @@ fn fs_line(in: LineOutput) -> @location(0) vec4<f32> {
 }
 "#;
 
+const TEXTURED_RECT_SHADER: &str = r#"
+struct ScreenUniform {
+    size: vec2<f32>,
+    srgb_target: f32,
+    scroll_y: f32,
+};
+
+fn linearize(c: vec3<f32>, srgb: f32) -> vec3<f32> {
+    return mix(c, pow(c, vec3<f32>(2.2)), srgb);
+}
+@group(0) @binding(0) var<uniform> screen: ScreenUniform;
+
+struct TexRectInput {
+    @location(0) pos: vec2<f32>,
+    @location(1) uv: vec2<f32>,
+    @location(2) rect: vec4<f32>,
+    @location(3) draw_order: f32,
+};
+
+struct TexRectOutput {
+    @builtin(position) pos: vec4<f32>,
+    @location(0) uv: vec2<f32>,
+};
+
+@vertex
+fn vs_texrect(in: TexRectInput) -> TexRectOutput {
+    var out: TexRectOutput;
+    let x = in.rect.x + in.pos.x * in.rect.z;
+    let y = in.rect.y + in.pos.y * in.rect.w - screen.scroll_y;
+    let nx = (x / screen.size.x) * 2.0 - 1.0;
+    let ny = (1.0 - (y / screen.size.y)) * 2.0 - 1.0;
+    let depth = 1.0 - in.draw_order * 0.001;
+    out.pos = vec4<f32>(nx, ny, depth, 1.0);
+    out.uv = in.uv;
+    return out;
+}
+
+@group(1) @binding(0) var canvas_tex: texture_2d<f32>;
+@group(1) @binding(1) var canvas_sampler: sampler;
+
+@fragment
+fn fs_texrect(in: TexRectOutput) -> @location(0) vec4<f32> {
+    let c = textureSample(canvas_tex, canvas_sampler, in.uv);
+    return vec4<f32>(linearize(c.rgb, screen.srgb_target), c.a);
+}
+"#;
+
 pub struct GpuState {
     pub window: Arc<Window>,
-    pub device: wgpu::Device,
-    pub queue: wgpu::Queue,
+    pub device: Arc<wgpu::Device>,
+    pub queue: Arc<wgpu::Queue>,
     pub surface: wgpu::Surface<'static>,
     pub surface_format: wgpu::TextureFormat,
     render_format: wgpu::TextureFormat,
@@ -492,6 +539,10 @@ pub struct GpuState {
     glyph_bind_group: wgpu::BindGroup,
 
     line_pipeline: wgpu::RenderPipeline,
+
+    texrect_pipeline: wgpu::RenderPipeline,
+    texrect_bgl: wgpu::BindGroupLayout,
+    texrect_sampler: wgpu::Sampler,
 
     atlas: GlyphAtlas,
     pub font_system: FontSystem,
@@ -513,6 +564,8 @@ impl GpuState {
         let (device, queue) = adapter
             .request_device(&wgpu::DeviceDescriptor::default())
             .await?;
+        let device = Arc::new(device);
+        let queue = Arc::new(queue);
 
         let size = window.inner_size();
         let surface = instance.create_surface(window.clone())?;
@@ -869,6 +922,97 @@ impl GpuState {
             cache: None,
         });
 
+        // -- textured rect pipeline (for WebGPU canvas compositing) --
+        let texrect_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("texrect shader"),
+            source: wgpu::ShaderSource::Wgsl(Cow::Borrowed(TEXTURED_RECT_SHADER)),
+        });
+        let texrect_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("texrect bgl"),
+            entries: &[
+                wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: false,
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 1,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                    count: None,
+                },
+            ],
+        });
+        let texrect_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
+            mag_filter: wgpu::FilterMode::Linear,
+            min_filter: wgpu::FilterMode::Linear,
+            ..Default::default()
+        });
+        let texrect_pl = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("texrect pl"),
+            bind_group_layouts: &[Some(&rect_bgl), Some(&texrect_bgl)],
+            immediate_size: 0,
+        });
+
+        #[repr(C)]
+        #[derive(Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
+        struct TexRectInstance {
+            rect: [f32; 4],
+            draw_order: f32,
+        }
+
+        let texrect_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("texrect pipeline"),
+            layout: Some(&texrect_pl),
+            vertex: wgpu::VertexState {
+                module: &texrect_shader,
+                entry_point: Some("vs_texrect"),
+                compilation_options: Default::default(),
+                buffers: &[
+                    wgpu::VertexBufferLayout {
+                        array_stride: std::mem::size_of::<Vertex>() as u64,
+                        step_mode: wgpu::VertexStepMode::Vertex,
+                        attributes: &wgpu::vertex_attr_array![0 => Float32x2, 1 => Float32x2],
+                    },
+                    wgpu::VertexBufferLayout {
+                        array_stride: std::mem::size_of::<TexRectInstance>() as u64,
+                        step_mode: wgpu::VertexStepMode::Instance,
+                        attributes: &wgpu::vertex_attr_array![2 => Float32x4, 3 => Float32],
+                    },
+                ],
+            },
+            fragment: Some(wgpu::FragmentState {
+                module: &texrect_shader,
+                entry_point: Some("fs_texrect"),
+                targets: &[Some(wgpu::ColorTargetState {
+                    format: render_format,
+                    blend: Some(wgpu::BlendState::ALPHA_BLENDING),
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
+                compilation_options: Default::default(),
+            }),
+            primitive: wgpu::PrimitiveState {
+                topology: wgpu::PrimitiveTopology::TriangleList,
+                ..Default::default()
+            },
+            depth_stencil: Some(wgpu::DepthStencilState {
+                format: wgpu::TextureFormat::Depth32Float,
+                depth_write_enabled: Some(true),
+                depth_compare: Some(wgpu::CompareFunction::LessEqual),
+                stencil: wgpu::StencilState::default(),
+                bias: wgpu::DepthBiasState::default(),
+            }),
+            multisample: Default::default(),
+            multiview_mask: None,
+            cache: None,
+        });
+
+
         #[cfg(target_os = "android")]
         let font_system = {
             let mut db = cosmic_text::fontdb::Database::new();
@@ -912,6 +1056,9 @@ impl GpuState {
             glyph_pipeline,
             glyph_bind_group,
             line_pipeline,
+            texrect_pipeline,
+            texrect_bgl,
+            texrect_sampler,
             atlas,
             font_system,
             swash_cache,
@@ -953,6 +1100,7 @@ impl GpuState {
         ghost_commands: &[DrawCommand],
         clear_color: [f32; 4],
         scroll_y: f32,
+        webgpu_canvases: &[([f32; 4], &wgpu::TextureView)],
     ) {
         let frame = match self.surface.get_current_texture() {
             wgpu::CurrentSurfaceTexture::Success(t)
@@ -1048,6 +1196,74 @@ impl GpuState {
                 multiview_mask: None,
             });
             self.render_groups(&ghost_groups, &mut rpass);
+        }
+
+        // Draw WebGPU canvas textures
+        if !webgpu_canvases.is_empty() {
+            #[repr(C)]
+            #[derive(Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
+            struct TexRectInstance {
+                rect: [f32; 4],
+                draw_order: f32,
+            }
+
+            let mut rpass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("texrect pass"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: &view,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Load,
+                        store: wgpu::StoreOp::Store,
+                    },
+                    depth_slice: None,
+                })],
+                depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                    view: &self.depth_view,
+                    depth_ops: Some(wgpu::Operations {
+                        load: wgpu::LoadOp::Load,
+                        store: wgpu::StoreOp::Store,
+                    }),
+                    stencil_ops: None,
+                }),
+                timestamp_writes: None,
+                occlusion_query_set: None,
+                multiview_mask: None,
+            });
+            rpass.set_pipeline(&self.texrect_pipeline);
+            rpass.set_bind_group(0, Some(&self.rect_bind_group), &[]);
+            rpass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
+
+            for (rect, tex_view) in webgpu_canvases {
+                let instance = TexRectInstance {
+                    rect: *rect,
+                    draw_order: 500.0,
+                };
+                let instance_buf = self.device.create_buffer_init(
+                    &wgpu::util::BufferInitDescriptor {
+                        label: Some("texrect instance"),
+                        contents: bytemuck::cast_slice(&[instance]),
+                        usage: wgpu::BufferUsages::VERTEX,
+                    },
+                );
+                let tex_bg = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+                    label: Some("texrect bg"),
+                    layout: &self.texrect_bgl,
+                    entries: &[
+                        wgpu::BindGroupEntry {
+                            binding: 0,
+                            resource: wgpu::BindingResource::TextureView(tex_view),
+                        },
+                        wgpu::BindGroupEntry {
+                            binding: 1,
+                            resource: wgpu::BindingResource::Sampler(&self.texrect_sampler),
+                        },
+                    ],
+                });
+                rpass.set_bind_group(1, Some(&tex_bg), &[]);
+                rpass.set_vertex_buffer(1, instance_buf.slice(..));
+                rpass.draw(0..6, 0..1);
+            }
         }
 
         self.queue.submit(std::iter::once(encoder.finish()));

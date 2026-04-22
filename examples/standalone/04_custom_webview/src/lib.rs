@@ -7,6 +7,8 @@ pub mod js_bridge;
 pub mod layout;
 pub mod renderer;
 pub mod types;
+#[cfg(feature = "js")]
+pub mod webgpu_bridge;
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -33,6 +35,7 @@ pub mod embedded_assets {
     pub const ABOUT_HTML: &str = include_str!("../assets/about.html");
     pub const CANVAS_HTML: &str = include_str!("../assets/canvas.html");
     pub const CSS3D_HTML: &str = include_str!("../assets/css3d.html");
+    pub const WEBGL_HTML: &str = include_str!("../assets/webgl.html");
 
     pub fn get(name: &str) -> Option<&'static str> {
         match name {
@@ -41,6 +44,7 @@ pub mod embedded_assets {
             "about.html" => Some(ABOUT_HTML),
             "canvas.html" => Some(CANVAS_HTML),
             "css3d.html" => Some(CSS3D_HTML),
+            "webgl.html" => Some(WEBGL_HTML),
             _ => None,
         }
     }
@@ -214,8 +218,14 @@ impl App {
         #[cfg(feature = "js")]
         {
             let script = html_parser::extract_script(&html_source);
-            state.js =
-                js_bridge::JsBridge::new(script.as_deref()).expect("failed to init JS bridge");
+            let mut new_js = js_bridge::JsBridge::new().expect("failed to init JS bridge");
+            new_js.init_webgpu(state.gpu.device.clone(), state.gpu.queue.clone());
+            if let Some(script) = script.as_deref() {
+                if let Err(e) = new_js.eval_script(script) {
+                    log::error!("failed to eval JS: {:?}", e);
+                }
+            }
+            state.js = new_js;
         }
 
         state.html_source = html_source;
@@ -293,10 +303,18 @@ impl ApplicationHandler for App {
         let css_sources = extract_styles(&html_source);
 
         #[cfg(feature = "js")]
-        let js = {
+        let mut js = {
             let script = html_parser::extract_script(&html_source);
-            match js_bridge::JsBridge::new(script.as_deref()) {
-                Ok(js) => js,
+            match js_bridge::JsBridge::new() {
+                Ok(mut js) => {
+                    js.init_webgpu(gpu.device.clone(), gpu.queue.clone());
+                    if let Some(script) = script.as_deref() {
+                        if let Err(e) = js.eval_script(script) {
+                            log::error!("failed to eval JS: {:?}", e);
+                        }
+                    }
+                    js
+                }
                 Err(e) => {
                     log::error!("failed to init JS bridge: {:?}", e);
                     panic!("failed to init JS bridge: {:?}", e);
@@ -535,11 +553,38 @@ impl ApplicationHandler for App {
                     }
                 }
                 let s = self.state.as_mut().unwrap();
+
+                #[cfg(feature = "js")]
+                {
+                    let bridge_ref = s.js.webgpu_bridge();
+                    let canvases: Vec<([f32; 4], &wgpu::TextureView)> = if let Some(ref bridge) = *bridge_ref {
+                        let elem_rects = s.layout.collect_element_rects();
+                        bridge.canvas_ids()
+                            .iter()
+                            .filter_map(|id| {
+                                let tv = bridge.get_canvas_texture_view(id)?;
+                                let lr = elem_rects.get(id)?;
+                                Some(([lr.x, lr.y, lr.w, lr.h], tv))
+                            })
+                            .collect()
+                    } else {
+                        Vec::new()
+                    };
+                    s.gpu.render(
+                        &s.static_commands,
+                        &s.ghost_commands,
+                        s.clear_color,
+                        s.scroll_y,
+                        &canvases,
+                    );
+                }
+                #[cfg(not(feature = "js"))]
                 s.gpu.render(
                     &s.static_commands,
                     &s.ghost_commands,
                     s.clear_color,
                     s.scroll_y,
+                    &[],
                 );
                 s.gpu.window.request_redraw();
             }
