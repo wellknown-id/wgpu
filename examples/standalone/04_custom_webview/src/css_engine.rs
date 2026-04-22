@@ -180,7 +180,9 @@ fn apply_properties(props: &[(String, String)], style: &mut ComputedStyle) {
                         }
                     }
                     2 => {
-                        if let (Some(tb), Some(lr)) = (parse_length(parts[0]), parse_length(parts[1])) {
+                        if let (Some(tb), Some(lr)) =
+                            (parse_length(parts[0]), parse_length(parts[1]))
+                        {
                             style.padding.top = tb;
                             style.padding.bottom = tb;
                             style.padding.left = lr;
@@ -232,7 +234,9 @@ fn apply_properties(props: &[(String, String)], style: &mut ComputedStyle) {
                         }
                     }
                     2 => {
-                        if let (Some(tb), Some(lr)) = (parse_length(parts[0]), parse_length(parts[1])) {
+                        if let (Some(tb), Some(lr)) =
+                            (parse_length(parts[0]), parse_length(parts[1]))
+                        {
                             style.margin.top = tb;
                             style.margin.bottom = tb;
                             style.margin.left = lr;
@@ -353,11 +357,13 @@ fn parse_transform(s: &str) -> [f32; 16] {
     // but our demo doesn't have them.
     for part in s.split(')') {
         let part = part.trim();
-        if part.is_empty() { continue; }
+        if part.is_empty() {
+            continue;
+        }
         if let Some(brace_start) = part.find('(') {
             let func = &part[..brace_start].trim();
             let args_str = &part[brace_start + 1..];
-            
+
             match *func {
                 "perspective" => {
                     if let Some(d) = parse_length(args_str) {

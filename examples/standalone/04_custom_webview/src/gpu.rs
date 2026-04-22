@@ -521,6 +521,8 @@ fn fs_texrect(in: TexRectOutput) -> @location(0) vec4<f32> {
 
 pub struct GpuState {
     pub window: Arc<Window>,
+    pub instance: wgpu::Instance,
+    pub adapter: wgpu::Adapter,
     pub device: Arc<wgpu::Device>,
     pub queue: Arc<wgpu::Queue>,
     pub surface: wgpu::Surface<'static>,
@@ -1012,15 +1014,10 @@ impl GpuState {
             cache: None,
         });
 
-
         #[cfg(target_os = "android")]
         let font_system = {
             let mut db = cosmic_text::fontdb::Database::new();
-            for name in &[
-                "DroidSans.ttf",
-                "DroidSans-Bold.ttf",
-                "DroidSansMono.ttf",
-            ] {
+            for name in &["DroidSans.ttf", "DroidSans-Bold.ttf", "DroidSansMono.ttf"] {
                 let path = format!("/system/fonts/{name}");
                 if std::path::Path::new(&path).exists() {
                     db.load_font_file(path).ok();
@@ -1043,6 +1040,8 @@ impl GpuState {
 
         Ok(Self {
             window,
+            instance,
+            adapter,
             device,
             queue,
             surface,
@@ -1239,13 +1238,13 @@ impl GpuState {
                     rect: *rect,
                     draw_order: 500.0,
                 };
-                let instance_buf = self.device.create_buffer_init(
-                    &wgpu::util::BufferInitDescriptor {
-                        label: Some("texrect instance"),
-                        contents: bytemuck::cast_slice(&[instance]),
-                        usage: wgpu::BufferUsages::VERTEX,
-                    },
-                );
+                let instance_buf =
+                    self.device
+                        .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                            label: Some("texrect instance"),
+                            contents: bytemuck::cast_slice(&[instance]),
+                            usage: wgpu::BufferUsages::VERTEX,
+                        });
                 let tex_bg = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
                     label: Some("texrect bg"),
                     layout: &self.texrect_bgl,
@@ -1339,7 +1338,18 @@ impl GpuState {
                     ..
                 } => {
                     let mut glyphs = Vec::new();
-                    self.rasterize_text(text, *x, *y, *max_width, *color, *font_size, *is_fixed, *transform, *center, &mut glyphs);
+                    self.rasterize_text(
+                        text,
+                        *x,
+                        *y,
+                        *max_width,
+                        *color,
+                        *font_size,
+                        *is_fixed,
+                        *transform,
+                        *center,
+                        &mut glyphs,
+                    );
                     if !glyphs.is_empty() {
                         for g in &mut glyphs {
                             g.draw_order = draw_order;

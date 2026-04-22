@@ -8,6 +8,7 @@ publish = false
 [features]
 default = ["js"]
 js = ["rquickjs"]
+xr = ["openxr", "ash"]
 
 [lib]
 name = "wgpu_example_04_custom_webview"
@@ -22,6 +23,8 @@ html5ever = "0.38"
 markup5ever_rcdom = "0.38"
 pollster = "0.4"
 rquickjs = { version = "0.11.0", features = ["loader", "bindgen"], optional = true }
+openxr = { version = "0.21", optional = true }
+ash = { version = "0.38", optional = true }
 log = "0.4"
 taffy = "0.10.0"
 wgpu = "29.0.0"
@@ -55,3 +58,10 @@ version = 1
 [package.metadata.android.signing.release]
 path = "/home/ben/.android/debug.keystore"
 keystore_password = "android"
+
+[package.metadata.android.application.activity]
+config_changes = "screenSize|screenLayout|orientation|keyboardHidden|keyboard|navigation|uiMode|density"
+
+[[package.metadata.android.application.activity.intent_filter]]
+actions = ["android.intent.action.MAIN"]
+categories = ["android.intent.category.LAUNCHER"]

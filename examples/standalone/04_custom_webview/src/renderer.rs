@@ -78,8 +78,16 @@ fn emit_node(
 
     let own_transform = node.style.transform;
     let is_identity = own_transform == mat4_identity();
-    let effective_transform = if is_identity { parent_transform } else { own_transform };
-    let effective_center = if is_identity { parent_center } else { [x + w * 0.5, y + h * 0.5] };
+    let effective_transform = if is_identity {
+        parent_transform
+    } else {
+        own_transform
+    };
+    let effective_center = if is_identity {
+        parent_center
+    } else {
+        [x + w * 0.5, y + h * 0.5]
+    };
 
     if node.style.background_color[3] > 0.0 {
         commands.push(DrawCommand::Rect {
@@ -128,7 +136,17 @@ fn emit_node(
     }
 
     for child in &node.children {
-        emit_node(taffy, child, x, y, current_id, effective_transform, effective_center, canvas_ops, commands);
+        emit_node(
+            taffy,
+            child,
+            x,
+            y,
+            current_id,
+            effective_transform,
+            effective_center,
+            canvas_ops,
+            commands,
+        );
     }
 }
 

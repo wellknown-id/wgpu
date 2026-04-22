@@ -22,13 +22,20 @@ fn unpack_color(packed: u32) -> [f32; 4] {
 fn serde_json_mini_parse_attrs(json: &str) -> Vec<(u64, u32, u32)> {
     let mut result = Vec::new();
     let json = json.trim();
-    if json.len() < 2 { return result; }
-    let s = &json[1..json.len()-1]; // strip outer []
+    if json.len() < 2 {
+        return result;
+    }
+    let s = &json[1..json.len() - 1]; // strip outer []
     let mut depth = 0;
     let mut start = 0;
     for (i, c) in s.char_indices() {
         match c {
-            '[' => { if depth == 0 { start = i + 1; } depth += 1; }
+            '[' => {
+                if depth == 0 {
+                    start = i + 1;
+                }
+                depth += 1;
+            }
             ']' => {
                 depth -= 1;
                 if depth == 0 {
@@ -72,6 +79,8 @@ pub struct SharedState {
     pub element_rects: HashMap<String, crate::types::LayoutRect>,
     pub animation_callbacks: Vec<rquickjs::Persistent<rquickjs::Function<'static>>>,
     pub webgpu: Option<WebGpuBridge>,
+    pub xr_request_pending: bool,
+    pub xr_end_requested: bool,
 }
 
 impl JsBridge {
@@ -89,6 +98,8 @@ impl JsBridge {
             element_rects: HashMap::new(),
             animation_callbacks: Vec::new(),
             webgpu: None,
+            xr_request_pending: false,
+            xr_end_requested: false,
         }));
 
         Ok(Self {
@@ -145,6 +156,24 @@ impl JsBridge {
                         }
                     },
                 )?,
+            )?;
+
+            let shared_clone = shared.clone();
+            globals.set(
+                "__hostXrRequestSession",
+                Function::new(ctx.clone(), move |_ctx: rquickjs::Ctx<'_>| {
+                    log::info!("JS requested XR session");
+                    shared_clone.borrow_mut().xr_request_pending = true;
+                })?,
+            )?;
+
+            let shared_clone = shared.clone();
+            globals.set(
+                "__hostXrEndSession",
+                Function::new(ctx.clone(), move |_ctx: rquickjs::Ctx<'_>| {
+                    log::info!("JS requested XR end");
+                    shared_clone.borrow_mut().xr_end_requested = true;
+                })?,
             )?;
 
             let shared_clone = shared.clone();
@@ -378,17 +407,29 @@ impl JsBridge {
                 function __dispatchPointerEvent(eventType, idsStr, targetId, x, y) {
                     var ids = idsStr ? idsStr.split(',') : [];
                     var stopped = false;
+                    var targetElem = __elementCache[targetId] || {id: targetId};
+                    var rect = targetElem.getBoundingClientRect ? targetElem.getBoundingClientRect() : {x:0,y:0};
                     var evt = {
                         type: eventType,
                         clientX: x,
                         clientY: y,
+                        offsetX: x - rect.x,
+                        offsetY: y - rect.y,
                         pointerId: 1,
                         pointerType: 'mouse',
-                        target: {id: targetId},
+                        button: 0,
+                        buttons: eventType === 'pointerup' ? 0 : 1,
+                        target: targetElem,
+                        currentTarget: null,
+                        ctrlKey: false,
+                        shiftKey: false,
+                        altKey: false,
+                        metaKey: false,
                         stopPropagation: function() { stopped = true; },
                         preventDefault: function() {}
                     };
                     for (var i = 0; i < ids.length && !stopped; i++) {
+                        evt.currentTarget = __elementCache[ids[i]] || {id: ids[i]};
                         var key = eventType + ':' + ids[i];
                         var cbs = __listeners[key];
                         if (cbs) {
@@ -396,8 +437,12 @@ impl JsBridge {
                                 cbs[j](evt);
                             }
                         }
+                        if (eventType === 'click' && evt.currentTarget.onclick) {
+                            evt.currentTarget.onclick(evt);
+                        }
                     }
                     if (!stopped) {
+                        evt.currentTarget = null;
                         var gcbs = __globalListeners[eventType] || [];
                         for (var i = 0; i < gcbs.length; i++) {
                             gcbs[i](evt);
@@ -435,167 +480,207 @@ impl JsBridge {
                     return ((c[0] & 0xFF) * 16777216) + ((c[1] & 0xFF) * 65536) + ((c[2] & 0xFF) * 256) + (c[3] & 0xFF);
                 }
 
+                var __elementCache = {};
+                var __textValues = {};
+
+                function __makeElement(id) {
+                    var elem = {
+                        id: id,
+                        tagName: 'DIV',
+                        addEventListener: function(event, cb) {
+                            __hostAddEventListener(event + ':' + id, cb);
+                        },
+                        setPointerCapture: function(pointerId) {
+                            __hostSetPointerCapture(id);
+                        },
+                        releasePointerCapture: function(pointerId) {
+                            __hostReleasePointerCapture();
+                        },
+                        getBoundingClientRect: function() {
+                            var s = __hostGetBoundingRect(id);
+                            var p = s.split(',');
+                            var x = parseFloat(p[0]), y = parseFloat(p[1]);
+                            var w = parseFloat(p[2]), h = parseFloat(p[3]);
+                            return {x:x, y:y, width:w, height:h, left:x, top:y, right:x+w, bottom:y+h};
+                        },
+                        onclick: null,
+                        disabled: false
+                    };
+                    Object.defineProperty(elem, 'textContent', {
+                        set: function(v) { __textValues[id] = '' + v; __hostSetText(id, '' + v); },
+                        get: function() { return __textValues[id] || ''; }
+                    });
+                    var _width = 0, _height = 0;
+                    Object.defineProperty(elem, 'width', {
+                        set: function(v) {
+                            _width = v;
+                            if (elem.tagName === 'CANVAS' && elem._canvasCreated) {
+                                __hostCanvasCreate(id, _width, _height);
+                            }
+                        },
+                        get: function() { return _width; }
+                    });
+                    Object.defineProperty(elem, 'height', {
+                        set: function(v) {
+                            _height = v;
+                            if (elem.tagName === 'CANVAS' && elem._canvasCreated) {
+                                __hostCanvasCreate(id, _width, _height);
+                            }
+                        },
+                        get: function() { return _height; }
+                    });
+                    elem._canvasCreated = false;
+                    elem.style = new Proxy({}, {
+                        set: function(target, prop, value) {
+                            var cssProp = prop.replace(/([A-Z])/g, '-$1').toLowerCase();
+                            __hostSetStyle(id, cssProp, '' + value);
+                            target[prop] = value;
+                            return true;
+                        }
+                    });
+                    elem.getContext = function(type) {
+                        if (type === 'webgpu') {
+                            elem.tagName = 'CANVAS';
+                            var gpuCtx = {
+                                canvasId: id,
+                                _configured: false,
+                                configure: function(config) {
+                                    var w = elem.width || 400;
+                                    var h = elem.height || 300;
+                                    __hostGpuConfigureCanvas(id, w, h);
+                                    this._configured = true;
+                                },
+                                getCurrentTexture: function() {
+                                    return {
+                                        createView: function() { return { __canvasId: id }; }
+                                    };
+                                }
+                            };
+                            return gpuCtx;
+                        }
+                        if (type !== '2d') return null;
+                        elem.tagName = 'CANVAS';
+                        var _fillColor = [0, 0, 0, 255];
+                        var _strokeColor = [0, 0, 0, 255];
+                        var _lineWidth = 1;
+                        var _canvasWidth = elem.width || 400;
+                        var _canvasHeight = elem.height || 300;
+                        __hostCanvasCreate(id, _canvasWidth, _canvasHeight);
+                        elem._canvasCreated = true;
+
+                        var ctx2d = {
+                            get canvas() { return elem; },
+                            get lineWidth() { return _lineWidth; },
+                            set lineWidth(v) { _lineWidth = v; },
+                            get fillStyle() { return 'rgba(' + _fillColor.join(',') + ')'; },
+                            set fillStyle(v) { _fillColor = __parseColor(v); },
+                            get strokeStyle() { return 'rgba(' + _strokeColor.join(',') + ')'; },
+                            set strokeStyle(v) { _strokeColor = __parseColor(v); },
+
+                            clearRect: function(x, y, w, h) {
+                                __hostCanvasFillRect(id, x, y, w, h, 0);
+                            },
+                            fillRect: function(x, y, w, h) {
+                                __hostCanvasFillRect(id, x, y, w, h, __packRgba(_fillColor));
+                            },
+                            strokeRect: function(x, y, w, h) {
+                                var packed = __packRgba(_strokeColor);
+                                var lw = Math.round(_lineWidth);
+                                __hostCanvasStrokeRect(id, x, y, w, h, lw * 4294967296 + packed);
+                            },
+
+                            _pathOps: [],
+                            beginPath: function() { this._pathOps = []; },
+                            arc: function(cx, cy, r, startAngle, endAngle, ccw) {
+                                this._pathOps.push({type: 'arc', cx: cx, cy: cy, r: r, start: startAngle, end: endAngle, ccw: ccw || false});
+                            },
+                            moveTo: function(x, y) {
+                                this._pathOps.push({type: 'moveTo', x: x, y: y});
+                            },
+                            lineTo: function(x, y) {
+                                this._pathOps.push({type: 'lineTo', x: x, y: y});
+                            },
+                            closePath: function() {
+                                this._pathOps.push({type: 'close'});
+                            },
+                            fill: function() {
+                                var packed = __packRgba(_fillColor);
+                                for (var i = 0; i < this._pathOps.length; i++) {
+                                    var op = this._pathOps[i];
+                                    if (op.type === 'arc') {
+                                        var fullCircle = Math.abs(op.end - op.start) >= Math.PI * 2 - 0.001;
+                                        if (fullCircle) {
+                                            __hostCanvasFillCircle(id, Math.round(op.cx), Math.round(op.cy), Math.round(op.r), packed);
+                                        }
+                                    }
+                                }
+                            },
+                            stroke: function() {
+                                var packed = __packRgba(_strokeColor);
+                                var pts = [];
+                                for (var i = 0; i < this._pathOps.length; i++) {
+                                    var op = this._pathOps[i];
+                                    if (op.type === 'arc') {
+                                        var fullCircle = Math.abs(op.end - op.start) >= Math.PI * 2 - 0.001;
+                                        if (fullCircle) {
+                                            __hostCanvasStrokeCircle(id, Math.round(op.cx), Math.round(op.cy), Math.round(op.r), packed, _lineWidth);
+                                        } else {
+                                            var steps = Math.max(Math.round(Math.abs(op.end - op.start) * op.r * 0.5), 12);
+                                            for (var j = 0; j <= steps; j++) {
+                                                var t = op.start + (op.end - op.start) * j / steps;
+                                                pts.push({x: op.cx + Math.cos(t) * op.r, y: op.cy + Math.sin(t) * op.r});
+                                            }
+                                        }
+                                    } else if (op.type === 'moveTo') {
+                                        if (pts.length >= 2) {
+                                            for (var k = 0; k < pts.length - 1; k++) {
+                                                __hostCanvasLine(id, pts[k].x, pts[k].y, pts[k+1].x, pts[k+1].y, Math.round(_lineWidth) * 4294967296 + packed);
+                                            }
+                                        }
+                                        pts = [{x: op.x, y: op.y}];
+                                    } else if (op.type === 'lineTo') {
+                                        pts.push({x: op.x, y: op.y});
+                                    } else if (op.type === 'close') {
+                                        if (pts.length >= 2) {
+                                            pts.push(pts[0]);
+                                        }
+                                    }
+                                }
+                                if (pts.length >= 2) {
+                                    for (var k = 0; k < pts.length - 1; k++) {
+                                        __hostCanvasLine(id, pts[k].x, pts[k].y, pts[k+1].x, pts[k+1].y, Math.round(_lineWidth) * 4294967296 + packed);
+                                    }
+                                }
+                            },
+
+                            fillText: function() {},
+                            strokeText: function() {},
+                            save: function() {},
+                            restore: function() {},
+                            translate: function() {},
+                            rotate: function() {},
+                            scale: function() {},
+                        };
+                        return ctx2d;
+                    };
+                    return elem;
+                }
+
                 var document = {
                     addEventListener: function(event, cb) {
                         if (!__globalListeners[event]) __globalListeners[event] = [];
                         __globalListeners[event].push(cb);
                     },
                     getElementById: function(id) {
-                        var elem = {
-                            id: id,
-                            tagName: 'DIV',
-                            addEventListener: function(event, cb) {
-                                __hostAddEventListener(event + ':' + id, cb);
-                            },
-                            setPointerCapture: function(pointerId) {
-                                __hostSetPointerCapture(id);
-                            },
-                            releasePointerCapture: function(pointerId) {
-                                __hostReleasePointerCapture();
-                            },
-                            getBoundingClientRect: function() {
-                                var s = __hostGetBoundingRect(id);
-                                var p = s.split(',');
-                                var x = parseFloat(p[0]), y = parseFloat(p[1]);
-                                var w = parseFloat(p[2]), h = parseFloat(p[3]);
-                                return {x:x, y:y, width:w, height:h, left:x, top:y, right:x+w, bottom:y+h};
-                            }
-                        };
-                        Object.defineProperty(elem, 'textContent', {
-                            set: function(v) { __hostSetText(id, '' + v); },
-                            get: function() { return ''; }
-                        });
-                        elem.style = new Proxy({}, {
-                            set: function(target, prop, value) {
-                                var cssProp = prop.replace(/([A-Z])/g, '-$1').toLowerCase();
-                                __hostSetStyle(id, cssProp, '' + value);
-                                target[prop] = value;
-                                return true;
-                            }
-                        });
-                        elem.getContext = function(type) {
-                            if (type === 'webgpu') {
-                                elem.tagName = 'CANVAS';
-                                var gpuCtx = {
-                                    canvasId: id,
-                                    _configured: false,
-                                    configure: function(config) {
-                                        var w = elem.width || 400;
-                                        var h = elem.height || 300;
-                                        __hostGpuConfigureCanvas(id, w, h);
-                                        this._configured = true;
-                                    },
-                                    getCurrentTexture: function() {
-                                        return {
-                                            createView: function() { return { __canvasId: id }; }
-                                        };
-                                    }
-                                };
-                                return gpuCtx;
-                            }
-                            if (type !== '2d') return null;
-                            elem.tagName = 'CANVAS';
-                            var _fillColor = [0, 0, 0, 255];
-                            var _strokeColor = [0, 0, 0, 255];
-                            var _lineWidth = 1;
-                            var _canvasWidth = elem.width || 400;
-                            var _canvasHeight = elem.height || 300;
-                            __hostCanvasCreate(id, _canvasWidth, _canvasHeight);
-
-                            var ctx2d = {
-                                get lineWidth() { return _lineWidth; },
-                                set lineWidth(v) { _lineWidth = v; },
-                                get fillStyle() { return 'rgba(' + _fillColor.join(',') + ')'; },
-                                set fillStyle(v) { _fillColor = __parseColor(v); },
-                                get strokeStyle() { return 'rgba(' + _strokeColor.join(',') + ')'; },
-                                set strokeStyle(v) { _strokeColor = __parseColor(v); },
-
-                                clearRect: function(x, y, w, h) {
-                                    __hostCanvasFillRect(id, x, y, w, h, 0);
-                                },
-                                fillRect: function(x, y, w, h) {
-                                    __hostCanvasFillRect(id, x, y, w, h, __packRgba(_fillColor));
-                                },
-                                strokeRect: function(x, y, w, h) {
-                                    var packed = __packRgba(_strokeColor);
-                                    var lw = Math.round(_lineWidth);
-                                    __hostCanvasStrokeRect(id, x, y, w, h, lw * 4294967296 + packed);
-                                },
-
-                                _pathOps: [],
-                                beginPath: function() { this._pathOps = []; },
-                                arc: function(cx, cy, r, startAngle, endAngle, ccw) {
-                                    this._pathOps.push({type: 'arc', cx: cx, cy: cy, r: r, start: startAngle, end: endAngle, ccw: ccw || false});
-                                },
-                                moveTo: function(x, y) {
-                                    this._pathOps.push({type: 'moveTo', x: x, y: y});
-                                },
-                                lineTo: function(x, y) {
-                                    this._pathOps.push({type: 'lineTo', x: x, y: y});
-                                },
-                                closePath: function() {
-                                    this._pathOps.push({type: 'close'});
-                                },
-                                fill: function() {
-                                    var packed = __packRgba(_fillColor);
-                                    for (var i = 0; i < this._pathOps.length; i++) {
-                                        var op = this._pathOps[i];
-                                        if (op.type === 'arc') {
-                                            var fullCircle = Math.abs(op.end - op.start) >= Math.PI * 2 - 0.001;
-                                            if (fullCircle) {
-                                                __hostCanvasFillCircle(id, Math.round(op.cx), Math.round(op.cy), Math.round(op.r), packed);
-                                            }
-                                        }
-                                    }
-                                },
-                                stroke: function() {
-                                    var packed = __packRgba(_strokeColor);
-                                    var pts = [];
-                                    for (var i = 0; i < this._pathOps.length; i++) {
-                                        var op = this._pathOps[i];
-                                        if (op.type === 'arc') {
-                                            var fullCircle = Math.abs(op.end - op.start) >= Math.PI * 2 - 0.001;
-                                            if (fullCircle) {
-                                                __hostCanvasStrokeCircle(id, Math.round(op.cx), Math.round(op.cy), Math.round(op.r), packed, _lineWidth);
-                                            } else {
-                                                var steps = Math.max(Math.round(Math.abs(op.end - op.start) * op.r * 0.5), 12);
-                                                for (var j = 0; j <= steps; j++) {
-                                                    var t = op.start + (op.end - op.start) * j / steps;
-                                                    pts.push({x: op.cx + Math.cos(t) * op.r, y: op.cy + Math.sin(t) * op.r});
-                                                }
-                                            }
-                                        } else if (op.type === 'moveTo') {
-                                            if (pts.length >= 2) {
-                                                for (var k = 0; k < pts.length - 1; k++) {
-                                                    __hostCanvasLine(id, pts[k].x, pts[k].y, pts[k+1].x, pts[k+1].y, Math.round(_lineWidth) * 4294967296 + packed);
-                                                }
-                                            }
-                                            pts = [{x: op.x, y: op.y}];
-                                        } else if (op.type === 'lineTo') {
-                                            pts.push({x: op.x, y: op.y});
-                                        } else if (op.type === 'close') {
-                                            if (pts.length >= 2) {
-                                                pts.push(pts[0]);
-                                            }
-                                        }
-                                    }
-                                    if (pts.length >= 2) {
-                                        for (var k = 0; k < pts.length - 1; k++) {
-                                            __hostCanvasLine(id, pts[k].x, pts[k].y, pts[k+1].x, pts[k+1].y, Math.round(_lineWidth) * 4294967296 + packed);
-                                        }
-                                    }
-                                },
-
-                                fillText: function() {},
-                                strokeText: function() {},
-                                save: function() {},
-                                restore: function() {},
-                                translate: function() {},
-                                rotate: function() {},
-                                scale: function() {},
-                            };
-                            return ctx2d;
-                        };
+                        if (__elementCache[id]) return __elementCache[id];
+                        var elem = __makeElement(id);
+                        __elementCache[id] = elem;
+                        return elem;
+                    },
+                    createElement: function(tag) {
+                        var fakeId = '__dyn_' + Math.random().toString(36).substr(2, 8);
+                        var elem = __makeElement(fakeId);
+                        elem.tagName = tag.toUpperCase();
                         return elem;
                     }
                 };
@@ -688,6 +773,56 @@ impl JsBridge {
                         });
                     }
                 }};
+
+                navigator.xr = {
+                    isSessionSupported: function(mode) {
+                        return Promise.resolve(mode === 'immersive-vr' && typeof __hostXrRequestSession !== 'undefined');
+                    },
+                    requestSession: function(mode) {
+                        if (mode === 'immersive-vr' && typeof __hostXrRequestSession !== 'undefined') {
+                            __hostXrRequestSession();
+                            var session = {
+                                _ended: false,
+                                _rafCb: null,
+                                _endListeners: [],
+                                requestReferenceSpace: function(type) {
+                                    return Promise.resolve({ type: type });
+                                },
+                                requestAnimationFrame: function(cb) {
+                                    session._rafCb = cb;
+                                    return requestAnimationFrame(function(t) {
+                                        if (!session._ended && session._rafCb) {
+                                            var frame = {
+                                                getViewerPose: function() {
+                                                    return {
+                                                        views: [
+                                                            { eye: 'left', projectionMatrix: new Float32Array(16), transform: { inverse: { matrix: new Float32Array(16) } } },
+                                                            { eye: 'right', projectionMatrix: new Float32Array(16), transform: { inverse: { matrix: new Float32Array(16) } } }
+                                                        ]
+                                                    };
+                                                }
+                                            };
+                                            session._rafCb(t, frame);
+                                        }
+                                    });
+                                },
+                                addEventListener: function(type, cb) {
+                                    if (type === 'end') session._endListeners.push(cb);
+                                },
+                                end: function() {
+                                    session._ended = true;
+                                    if (typeof __hostXrEndSession !== 'undefined') __hostXrEndSession();
+                                    for (var i = 0; i < session._endListeners.length; i++) {
+                                        session._endListeners[i]();
+                                    }
+                                    return Promise.resolve();
+                                }
+                            };
+                            return Promise.resolve(session);
+                        }
+                        return Promise.reject(new Error('XR mode not supported: ' + mode));
+                    }
+                };
             "#,
             )?;
 
@@ -711,7 +846,12 @@ impl JsBridge {
     }
 
     pub fn tick(&mut self, now_ms: f64) {
-        let callbacks: Vec<_> = self.shared.borrow_mut().animation_callbacks.drain(..).collect();
+        let callbacks: Vec<_> = self
+            .shared
+            .borrow_mut()
+            .animation_callbacks
+            .drain(..)
+            .collect();
         if !callbacks.is_empty() {
             let _ = self.context.with(|ctx| -> Result<()> {
                 for cb in callbacks {
@@ -835,7 +975,11 @@ impl JsBridge {
         }
     }
 
-    pub fn init_webgpu(&mut self, device: std::sync::Arc<wgpu::Device>, queue: std::sync::Arc<wgpu::Queue>) {
+    pub fn init_webgpu(
+        &mut self,
+        device: std::sync::Arc<wgpu::Device>,
+        queue: std::sync::Arc<wgpu::Queue>,
+    ) {
         self.shared.borrow_mut().webgpu = Some(WebGpuBridge::new(device, queue));
 
         let shared = self.shared.clone();
@@ -844,132 +988,187 @@ impl JsBridge {
 
             // __hostGpuCreateShaderModule(code) -> handle
             let s = shared.clone();
-            globals.set("__hostGpuCreateShaderModule", Function::new(ctx.clone(),
-                move |_ctx: rquickjs::Ctx<'_>, code: String| -> u64 {
-                    let mut st = s.borrow_mut();
-                    if let Some(ref mut gpu) = st.webgpu {
-                        gpu.create_shader_module(&code)
-                    } else { 0 }
-                }
-            )?)?;
+            globals.set(
+                "__hostGpuCreateShaderModule",
+                Function::new(
+                    ctx.clone(),
+                    move |_ctx: rquickjs::Ctx<'_>, code: String| -> u64 {
+                        let mut st = s.borrow_mut();
+                        if let Some(ref mut gpu) = st.webgpu {
+                            gpu.create_shader_module(&code)
+                        } else {
+                            0
+                        }
+                    },
+                )?,
+            )?;
 
             // __hostGpuCreatePipeline(vs, fs, vs_entry, fs_entry, stride, attr_json) -> handle
             let s = shared.clone();
-            globals.set("__hostGpuCreatePipeline", Function::new(ctx.clone(),
-                move |_ctx: rquickjs::Ctx<'_>, vs: u64, fs: u64, vs_entry: String, fs_entry: String,
-                      stride: u64, attr_json: String| -> u64 {
-                    let mut st = s.borrow_mut();
-                    if let Some(ref mut gpu) = st.webgpu {
-                        let attrs: Vec<(u64, u32, u32)> = serde_json_mini_parse_attrs(&attr_json);
-                        let wgpu_attrs: Vec<wgpu::VertexAttribute> = attrs.iter().enumerate().map(|(i, (offset, fmt_code, _))| {
-                            wgpu::VertexAttribute {
-                                format: vertex_format_from_code(*fmt_code),
-                                offset: *offset,
-                                shader_location: i as u32,
-                            }
-                        }).collect();
-                        let layouts = vec![crate::webgpu_bridge::VertexBufferLayoutDesc {
-                            array_stride: stride,
-                            attributes: wgpu_attrs,
-                        }];
-                        let format = gpu.preferred_format();
-                        gpu.create_render_pipeline(vs, fs, &vs_entry, &fs_entry, &layouts, format, wgpu::PrimitiveTopology::TriangleList)
-                    } else { 0 }
-                }
-            )?)?;
+            globals.set(
+                "__hostGpuCreatePipeline",
+                Function::new(
+                    ctx.clone(),
+                    move |_ctx: rquickjs::Ctx<'_>,
+                          vs: u64,
+                          fs: u64,
+                          vs_entry: String,
+                          fs_entry: String,
+                          stride: u64,
+                          attr_json: String|
+                          -> u64 {
+                        let mut st = s.borrow_mut();
+                        if let Some(ref mut gpu) = st.webgpu {
+                            let attrs: Vec<(u64, u32, u32)> =
+                                serde_json_mini_parse_attrs(&attr_json);
+                            let wgpu_attrs: Vec<wgpu::VertexAttribute> = attrs
+                                .iter()
+                                .enumerate()
+                                .map(|(i, (offset, fmt_code, _))| wgpu::VertexAttribute {
+                                    format: vertex_format_from_code(*fmt_code),
+                                    offset: *offset,
+                                    shader_location: i as u32,
+                                })
+                                .collect();
+                            let layouts = vec![crate::webgpu_bridge::VertexBufferLayoutDesc {
+                                array_stride: stride,
+                                attributes: wgpu_attrs,
+                            }];
+                            let format = gpu.preferred_format();
+                            gpu.create_render_pipeline(
+                                vs,
+                                fs,
+                                &vs_entry,
+                                &fs_entry,
+                                &layouts,
+                                format,
+                                wgpu::PrimitiveTopology::TriangleList,
+                            )
+                        } else {
+                            0
+                        }
+                    },
+                )?,
+            )?;
 
             // __hostGpuCreateBuffer(size, usage) -> handle
             let s = shared.clone();
-            globals.set("__hostGpuCreateBuffer", Function::new(ctx.clone(),
-                move |_ctx: rquickjs::Ctx<'_>, size: u64, usage: u32| -> u64 {
-                    let mut st = s.borrow_mut();
-                    if let Some(ref mut gpu) = st.webgpu {
-                        gpu.create_buffer(size, usage)
-                    } else { 0 }
-                }
-            )?)?;
+            globals.set(
+                "__hostGpuCreateBuffer",
+                Function::new(
+                    ctx.clone(),
+                    move |_ctx: rquickjs::Ctx<'_>, size: u64, usage: u32| -> u64 {
+                        let mut st = s.borrow_mut();
+                        if let Some(ref mut gpu) = st.webgpu {
+                            gpu.create_buffer(size, usage)
+                        } else {
+                            0
+                        }
+                    },
+                )?,
+            )?;
 
             // __hostGpuWriteBuffer(handle, data: ArrayBuffer | TypedArray | Array)
             let s = shared.clone();
-            globals.set("__hostGpuWriteBuffer", Function::new(ctx.clone(),
-                move |ctx: rquickjs::Ctx<'_>, handle: u64, data: rquickjs::Value<'_>| {
-                    let st = s.borrow();
-                    if let Some(ref gpu) = st.webgpu {
-                        // Try extracting as an Object first (covers TypedArray and ArrayBuffer)
-                        if let Some(obj) = data.as_object() {
-                            // TypedArray path: get .buffer property (the backing ArrayBuffer)
-                            if let Ok(buf_val) = obj.get::<_, rquickjs::Value>("buffer") {
-                                if let Some(buf_obj) = buf_val.as_object() {
-                                    if let Some(ab) = buf_obj.as_array_buffer() {
-                                        if let Some(bytes) = ab.as_bytes() {
-                                            gpu.write_buffer(handle, bytes);
-                                            return;
+            globals.set(
+                "__hostGpuWriteBuffer",
+                Function::new(
+                    ctx.clone(),
+                    move |ctx: rquickjs::Ctx<'_>, handle: u64, data: rquickjs::Value<'_>| {
+                        let st = s.borrow();
+                        if let Some(ref gpu) = st.webgpu {
+                            // Try extracting as an Object first (covers TypedArray and ArrayBuffer)
+                            if let Some(obj) = data.as_object() {
+                                // TypedArray path: get .buffer property (the backing ArrayBuffer)
+                                if let Ok(buf_val) = obj.get::<_, rquickjs::Value>("buffer") {
+                                    if let Some(buf_obj) = buf_val.as_object() {
+                                        if let Some(ab) = buf_obj.as_array_buffer() {
+                                            if let Some(bytes) = ab.as_bytes() {
+                                                gpu.write_buffer(handle, bytes);
+                                                return;
+                                            }
                                         }
                                     }
                                 }
-                            }
-                            // Direct ArrayBuffer path
-                            if let Some(ab) = obj.as_array_buffer() {
-                                if let Some(bytes) = ab.as_bytes() {
-                                    gpu.write_buffer(handle, bytes);
-                                    return;
+                                // Direct ArrayBuffer path
+                                if let Some(ab) = obj.as_array_buffer() {
+                                    if let Some(bytes) = ab.as_bytes() {
+                                        gpu.write_buffer(handle, bytes);
+                                        return;
+                                    }
                                 }
                             }
-                        }
-                        // Slow fallback: plain JS array
-                        if let Some(arr) = data.as_array() {
-                            let mut floats = Vec::with_capacity(arr.len());
-                            for i in 0..arr.len() {
-                                if let Ok(v) = arr.get::<f32>(i) {
-                                    floats.push(v);
+                            // Slow fallback: plain JS array
+                            if let Some(arr) = data.as_array() {
+                                let mut floats = Vec::with_capacity(arr.len());
+                                for i in 0..arr.len() {
+                                    if let Ok(v) = arr.get::<f32>(i) {
+                                        floats.push(v);
+                                    }
                                 }
+                                let bytes: &[u8] = bytemuck::cast_slice(&floats);
+                                gpu.write_buffer(handle, bytes);
                             }
-                            let bytes: &[u8] = bytemuck::cast_slice(&floats);
-                            gpu.write_buffer(handle, bytes);
                         }
-                    }
-                    let _ = ctx;
-                }
-            )?)?;
+                        let _ = ctx;
+                    },
+                )?,
+            )?;
 
             // __hostGpuConfigureCanvas(canvas_id, width, height)
             let s = shared.clone();
-            globals.set("__hostGpuConfigureCanvas", Function::new(ctx.clone(),
-                move |_ctx: rquickjs::Ctx<'_>, canvas_id: String, width: u32, height: u32| {
-                    let mut st = s.borrow_mut();
-                    if let Some(ref mut gpu) = st.webgpu {
-                        let fmt = gpu.preferred_format();
-                        gpu.configure_canvas(&canvas_id, width, height, fmt);
-                    }
-                    st.dom_dirty = true;
-                }
-            )?)?;
+            globals.set(
+                "__hostGpuConfigureCanvas",
+                Function::new(
+                    ctx.clone(),
+                    move |_ctx: rquickjs::Ctx<'_>, canvas_id: String, width: u32, height: u32| {
+                        let mut st = s.borrow_mut();
+                        if let Some(ref mut gpu) = st.webgpu {
+                            let fmt = gpu.preferred_format();
+                            gpu.configure_canvas(&canvas_id, width, height, fmt);
+                        }
+                        st.dom_dirty = true;
+                    },
+                )?,
+            )?;
 
             // __hostGpuDraw(canvas_id, pipeline, vbuf, vertex_count, clear_packed)
             // clear_packed encodes RGBA as a comma-separated string
             let s = shared.clone();
-            globals.set("__hostGpuDraw", Function::new(ctx.clone(),
-                move |_ctx: rquickjs::Ctx<'_>, canvas_id: String, pipeline: u64, vbuf: u64,
-                      vertex_count: u32, clear_packed: String| {
-                    let parts: Vec<f64> = clear_packed.split(',').filter_map(|s| s.trim().parse().ok()).collect();
-                    let cr = parts.get(0).copied().unwrap_or(0.0);
-                    let cg = parts.get(1).copied().unwrap_or(0.0);
-                    let cb = parts.get(2).copied().unwrap_or(0.0);
-                    let ca = parts.get(3).copied().unwrap_or(1.0);
-                    let mut st = s.borrow_mut();
-                    if let Some(ref mut gpu) = st.webgpu {
-                        gpu.begin_render_pass(&canvas_id, [cr, cg, cb, ca]);
-                        gpu.render_pass_draw(pipeline, vbuf, vertex_count);
-                    }
-                }
-            )?)?;
+            globals.set(
+                "__hostGpuDraw",
+                Function::new(
+                    ctx.clone(),
+                    move |_ctx: rquickjs::Ctx<'_>,
+                          canvas_id: String,
+                          pipeline: u64,
+                          vbuf: u64,
+                          vertex_count: u32,
+                          clear_packed: String| {
+                        let parts: Vec<f64> = clear_packed
+                            .split(',')
+                            .filter_map(|s| s.trim().parse().ok())
+                            .collect();
+                        let cr = parts.get(0).copied().unwrap_or(0.0);
+                        let cg = parts.get(1).copied().unwrap_or(0.0);
+                        let cb = parts.get(2).copied().unwrap_or(0.0);
+                        let ca = parts.get(3).copied().unwrap_or(1.0);
+                        let mut st = s.borrow_mut();
+                        if let Some(ref mut gpu) = st.webgpu {
+                            gpu.begin_render_pass(&canvas_id, [cr, cg, cb, ca]);
+                            gpu.render_pass_draw(pipeline, vbuf, vertex_count);
+                        }
+                    },
+                )?,
+            )?;
 
             // __hostGpuPreferredFormat() -> string
-            globals.set("__hostGpuPreferredFormat", Function::new(ctx.clone(),
-                move |_ctx: rquickjs::Ctx<'_>| -> String {
+            globals.set(
+                "__hostGpuPreferredFormat",
+                Function::new(ctx.clone(), move |_ctx: rquickjs::Ctx<'_>| -> String {
                     "rgba8unorm-srgb".to_string()
-                }
-            )?)?;
+                })?,
+            )?;
 
             Ok(())
         });
@@ -977,6 +1176,20 @@ impl JsBridge {
 
     pub fn webgpu_bridge(&self) -> std::cell::Ref<'_, Option<WebGpuBridge>> {
         std::cell::Ref::map(self.shared.borrow(), |s| &s.webgpu)
+    }
+
+    pub fn take_xr_request(&mut self) -> bool {
+        let mut s = self.shared.borrow_mut();
+        let pending = s.xr_request_pending;
+        s.xr_request_pending = false;
+        pending
+    }
+
+    pub fn take_xr_end_request(&mut self) -> bool {
+        let mut s = self.shared.borrow_mut();
+        let req = s.xr_end_requested;
+        s.xr_end_requested = false;
+        req
     }
 }
 

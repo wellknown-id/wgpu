@@ -9,6 +9,8 @@ pub mod renderer;
 pub mod types;
 #[cfg(feature = "js")]
 pub mod webgpu_bridge;
+#[cfg(feature = "xr")]
+pub mod xr_session;
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -36,6 +38,7 @@ pub mod embedded_assets {
     pub const CANVAS_HTML: &str = include_str!("../assets/canvas.html");
     pub const CSS3D_HTML: &str = include_str!("../assets/css3d.html");
     pub const WEBGPU_HTML: &str = include_str!("../assets/webgpu.html");
+    pub const WEBXR_HTML: &str = include_str!("../assets/webxr.html");
 
     pub fn get(name: &str) -> Option<&'static str> {
         match name {
@@ -45,6 +48,7 @@ pub mod embedded_assets {
             "canvas.html" => Some(CANVAS_HTML),
             "css3d.html" => Some(CSS3D_HTML),
             "webgpu.html" => Some(WEBGPU_HTML),
+            "webxr.html" => Some(WEBXR_HTML),
             _ => None,
         }
     }
@@ -69,6 +73,8 @@ pub struct WebviewState {
     pub text_cache: TextMeasureCache,
     pub ghost_pos: Option<(f32, f32)>,
     pub last_touch_y: Option<f32>,
+    #[cfg(feature = "xr")]
+    pub xr_session: Option<xr_session::XrSession>,
 }
 
 #[derive(Default)]
@@ -375,6 +381,8 @@ impl ApplicationHandler for App {
             text_cache,
             ghost_pos: None,
             last_touch_y: None,
+            #[cfg(feature = "xr")]
+            xr_session: None,
         });
 
         window.request_redraw();
@@ -531,6 +539,109 @@ impl ApplicationHandler for App {
                 }
             },
             WindowEvent::RedrawRequested => {
+                // XR session lifecycle management
+                #[cfg(all(feature = "js", feature = "xr"))]
+                {
+                    let s = self.state.as_mut().unwrap();
+                    if s.js.take_xr_request() && s.xr_session.is_none() {
+                        log::info!("Creating XR session from JS request");
+                        match xr_session::XrSession::new(
+                            &s.gpu.instance,
+                            &s.gpu.adapter,
+                            &s.gpu.device,
+                        ) {
+                            Ok(session) => {
+                                s.xr_session = Some(session);
+                                log::info!("XR session created");
+                            }
+                            Err(e) => log::error!("Failed to create XR session: {:?}", e),
+                        }
+                    }
+                    if s.js.take_xr_end_request() {
+                        s.xr_session = None;
+                        log::info!("XR session ended");
+                    }
+                }
+
+                // XR render loop (when session is active)
+                #[cfg(feature = "xr")]
+                {
+                    let s = self.state.as_mut().unwrap();
+                    let mut xr_rendered = false;
+                    if let Some(ref mut xr) = s.xr_session {
+                        if let Err(e) = xr.poll_events() {
+                            log::error!("XR poll error: {:?}", e);
+                        }
+                        if xr.state() == xr_session::XrState::Running {
+                            match xr.wait_frame() {
+                                Ok(Some(frame_data)) => match xr.acquire_swapchain_image() {
+                                    Ok((texture, _idx)) => {
+                                        let view =
+                                            texture.create_view(&wgpu::TextureViewDescriptor {
+                                                dimension: Some(
+                                                    wgpu::TextureViewDimension::D2Array,
+                                                ),
+                                                ..Default::default()
+                                            });
+                                        let mut encoder = s.gpu.device.create_command_encoder(
+                                            &wgpu::CommandEncoderDescriptor {
+                                                label: Some("xr encoder"),
+                                            },
+                                        );
+                                        {
+                                            let _rpass = encoder.begin_render_pass(
+                                                &wgpu::RenderPassDescriptor {
+                                                    label: Some("xr clear"),
+                                                    color_attachments: &[Some(
+                                                        wgpu::RenderPassColorAttachment {
+                                                            view: &view,
+                                                            resolve_target: None,
+                                                            ops: wgpu::Operations {
+                                                                load: wgpu::LoadOp::Clear(
+                                                                    wgpu::Color {
+                                                                        r: 0.02,
+                                                                        g: 0.02,
+                                                                        b: 0.05,
+                                                                        a: 1.0,
+                                                                    },
+                                                                ),
+                                                                store: wgpu::StoreOp::Store,
+                                                            },
+                                                            depth_slice: None,
+                                                        },
+                                                    )],
+                                                    depth_stencil_attachment: None,
+                                                    timestamp_writes: None,
+                                                    occlusion_query_set: None,
+                                                    multiview_mask: None,
+                                                },
+                                            );
+                                        }
+                                        s.gpu.queue.submit(std::iter::once(encoder.finish()));
+                                        if let Err(e) = xr.release_and_end_frame(&frame_data) {
+                                            log::error!("XR end frame error: {:?}", e);
+                                        }
+                                        xr_rendered = true;
+                                    }
+                                    Err(e) => {
+                                        log::error!("XR acquire error: {:?}", e);
+                                    }
+                                },
+                                Ok(None) => {}
+                                Err(e) => log::error!("XR wait_frame error: {:?}", e),
+                            }
+                        } else if xr.state() == xr_session::XrState::Stopping {
+                            drop(s.xr_session.take());
+                            log::info!("XR session stopped");
+                        }
+                    }
+                    if xr_rendered {
+                        s.gpu.window.request_redraw();
+                        return;
+                    }
+                }
+
+                // Normal 2D panel rendering
                 #[cfg(feature = "js")]
                 {
                     {
@@ -557,19 +668,21 @@ impl ApplicationHandler for App {
                 #[cfg(feature = "js")]
                 {
                     let bridge_ref = s.js.webgpu_bridge();
-                    let canvases: Vec<([f32; 4], &wgpu::TextureView)> = if let Some(ref bridge) = *bridge_ref {
-                        let elem_rects = s.layout.collect_element_rects();
-                        bridge.canvas_ids()
-                            .iter()
-                            .filter_map(|id| {
-                                let tv = bridge.get_canvas_texture_view(id)?;
-                                let lr = elem_rects.get(id)?;
-                                Some(([lr.x, lr.y, lr.w, lr.h], tv))
-                            })
-                            .collect()
-                    } else {
-                        Vec::new()
-                    };
+                    let canvases: Vec<([f32; 4], &wgpu::TextureView)> =
+                        if let Some(ref bridge) = *bridge_ref {
+                            let elem_rects = s.layout.collect_element_rects();
+                            bridge
+                                .canvas_ids()
+                                .iter()
+                                .filter_map(|id| {
+                                    let tv = bridge.get_canvas_texture_view(id)?;
+                                    let lr = elem_rects.get(id)?;
+                                    Some(([lr.x, lr.y, lr.w, lr.h], tv))
+                                })
+                                .collect()
+                        } else {
+                            Vec::new()
+                        };
                     s.gpu.render(
                         &s.static_commands,
                         &s.ghost_commands,

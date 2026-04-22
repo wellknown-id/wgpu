@@ -50,10 +50,12 @@ impl WebGpuBridge {
     }
 
     pub fn create_shader_module(&mut self, wgsl_source: &str) -> Handle {
-        let module = self.device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label: Some("webgpu user shader"),
-            source: wgpu::ShaderSource::Wgsl(std::borrow::Cow::Borrowed(wgsl_source)),
-        });
+        let module = self
+            .device
+            .create_shader_module(wgpu::ShaderModuleDescriptor {
+                label: Some("webgpu user shader"),
+                source: wgpu::ShaderSource::Wgsl(std::borrow::Cow::Borrowed(wgsl_source)),
+            });
         let h = self.alloc_handle();
         self.shader_modules.insert(h, module);
         h
@@ -72,7 +74,6 @@ impl WebGpuBridge {
         let vs_module = self.shader_modules.get(&vs_handle).expect("bad vs handle");
         let fs_module = self.shader_modules.get(&fs_handle).expect("bad fs handle");
 
-
         let wgpu_layouts: Vec<wgpu::VertexBufferLayout> = vertex_buffer_layouts
             .iter()
             .map(|l| wgpu::VertexBufferLayout {
@@ -82,51 +83,55 @@ impl WebGpuBridge {
             })
             .collect();
 
-        let pipeline_layout = self.device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-            label: Some("webgpu user pl"),
-            bind_group_layouts: &[],
-            immediate_size: 0,
-        });
+        let pipeline_layout = self
+            .device
+            .create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                label: Some("webgpu user pl"),
+                bind_group_layouts: &[],
+                immediate_size: 0,
+            });
 
-        let pipeline = self.device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-            label: Some("webgpu user pipeline"),
-            layout: Some(&pipeline_layout),
-            vertex: wgpu::VertexState {
-                module: vs_module,
-                entry_point: Some(vs_entry),
-                buffers: &wgpu_layouts,
-                compilation_options: Default::default(),
-            },
-            fragment: Some(wgpu::FragmentState {
-                module: fs_module,
-                entry_point: Some(fs_entry),
-                targets: &[Some(wgpu::ColorTargetState {
-                    format,
-                    blend: Some(wgpu::BlendState::ALPHA_BLENDING),
-                    write_mask: wgpu::ColorWrites::ALL,
-                })],
-                compilation_options: Default::default(),
-            }),
-            primitive: wgpu::PrimitiveState {
-                topology,
-                strip_index_format: None,
-                front_face: wgpu::FrontFace::Ccw,
-                cull_mode: None,
-                polygon_mode: wgpu::PolygonMode::Fill,
-                unclipped_depth: false,
-                conservative: false,
-            },
-            depth_stencil: Some(wgpu::DepthStencilState {
-                format: wgpu::TextureFormat::Depth24Plus,
-                depth_write_enabled: Some(true),
-                depth_compare: Some(wgpu::CompareFunction::Less),
-                stencil: wgpu::StencilState::default(),
-                bias: wgpu::DepthBiasState::default(),
-            }),
-            multisample: wgpu::MultisampleState::default(),
-            multiview_mask: None,
-            cache: None,
-        });
+        let pipeline = self
+            .device
+            .create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                label: Some("webgpu user pipeline"),
+                layout: Some(&pipeline_layout),
+                vertex: wgpu::VertexState {
+                    module: vs_module,
+                    entry_point: Some(vs_entry),
+                    buffers: &wgpu_layouts,
+                    compilation_options: Default::default(),
+                },
+                fragment: Some(wgpu::FragmentState {
+                    module: fs_module,
+                    entry_point: Some(fs_entry),
+                    targets: &[Some(wgpu::ColorTargetState {
+                        format,
+                        blend: Some(wgpu::BlendState::ALPHA_BLENDING),
+                        write_mask: wgpu::ColorWrites::ALL,
+                    })],
+                    compilation_options: Default::default(),
+                }),
+                primitive: wgpu::PrimitiveState {
+                    topology,
+                    strip_index_format: None,
+                    front_face: wgpu::FrontFace::Ccw,
+                    cull_mode: None,
+                    polygon_mode: wgpu::PolygonMode::Fill,
+                    unclipped_depth: false,
+                    conservative: false,
+                },
+                depth_stencil: Some(wgpu::DepthStencilState {
+                    format: wgpu::TextureFormat::Depth24Plus,
+                    depth_write_enabled: Some(true),
+                    depth_compare: Some(wgpu::CompareFunction::Less),
+                    stencil: wgpu::StencilState::default(),
+                    bias: wgpu::DepthBiasState::default(),
+                }),
+                multisample: wgpu::MultisampleState::default(),
+                multiview_mask: None,
+                cache: None,
+            });
 
         let h = self.alloc_handle();
         self.render_pipelines.insert(h, pipeline);
@@ -163,10 +168,20 @@ impl WebGpuBridge {
         }
     }
 
-    pub fn configure_canvas(&mut self, canvas_id: &str, width: u32, height: u32, format: wgpu::TextureFormat) {
+    pub fn configure_canvas(
+        &mut self,
+        canvas_id: &str,
+        width: u32,
+        height: u32,
+        format: wgpu::TextureFormat,
+    ) {
         let texture = self.device.create_texture(&wgpu::TextureDescriptor {
             label: Some("webgpu canvas"),
-            size: wgpu::Extent3d { width, height, depth_or_array_layers: 1 },
+            size: wgpu::Extent3d {
+                width,
+                height,
+                depth_or_array_layers: 1,
+            },
             mip_level_count: 1,
             sample_count: 1,
             dimension: wgpu::TextureDimension::D2,
@@ -178,7 +193,11 @@ impl WebGpuBridge {
 
         let depth_tex = self.device.create_texture(&wgpu::TextureDescriptor {
             label: Some("webgpu canvas depth"),
-            size: wgpu::Extent3d { width, height, depth_or_array_layers: 1 },
+            size: wgpu::Extent3d {
+                width,
+                height,
+                depth_or_array_layers: 1,
+            },
             mip_level_count: 1,
             sample_count: 1,
             dimension: wgpu::TextureDimension::D2,
@@ -188,15 +207,18 @@ impl WebGpuBridge {
         });
         let depth_view = depth_tex.create_view(&Default::default());
 
-        self.canvas_textures.insert(canvas_id.to_string(), CanvasTexture {
-            texture,
-            view,
-            depth_view,
-            width,
-            height,
-            format,
-            dirty: false,
-        });
+        self.canvas_textures.insert(
+            canvas_id.to_string(),
+            CanvasTexture {
+                texture,
+                view,
+                depth_view,
+                width,
+                height,
+                format,
+                dirty: false,
+            },
+        );
     }
 
     pub fn begin_render_pass(&mut self, canvas_id: &str, clear_color: [f64; 4]) -> bool {
@@ -204,9 +226,11 @@ impl WebGpuBridge {
             return false;
         }
 
-        let encoder = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
-            label: Some("webgpu user encoder"),
-        });
+        let encoder = self
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("webgpu user encoder"),
+            });
 
         self.active_encoder = Some(encoder);
         self.active_pass_canvas = Some(canvas_id.to_string());
@@ -230,7 +254,10 @@ impl WebGpuBridge {
             None => return,
         };
 
-        let clear_color = self.active_clear_color.take().unwrap_or([0.0, 0.0, 0.0, 1.0]);
+        let clear_color = self
+            .active_clear_color
+            .take()
+            .unwrap_or([0.0, 0.0, 0.0, 1.0]);
 
         let canvas = match self.canvas_textures.get(&canvas_id) {
             Some(c) => c,
@@ -287,7 +314,9 @@ impl WebGpuBridge {
     }
 
     pub fn get_canvas_size(&self, canvas_id: &str) -> Option<(u32, u32)> {
-        self.canvas_textures.get(canvas_id).map(|c| (c.width, c.height))
+        self.canvas_textures
+            .get(canvas_id)
+            .map(|c| (c.width, c.height))
     }
 
     pub fn has_canvas(&self, canvas_id: &str) -> bool {
