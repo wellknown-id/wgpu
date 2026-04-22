@@ -977,7 +977,13 @@ impl JsBridge {
             let _ = self.context.with(|ctx| -> Result<()> {
                 for cb in callbacks {
                     let f: rquickjs::Function<'_> = cb.restore(&ctx)?;
-                    let _ = f.call::<_, ()>((now_ms,));
+                    if let Err(e) = f.call::<_, ()>((now_ms,)) {
+                        if let Some(ex) = ctx.catch().into_exception() {
+                            log::error!("JS XR animation frame error: {:?}", ex.message());
+                        } else {
+                            log::error!("JS XR animation frame error: {:?}", e);
+                        }
+                    }
                 }
                 Ok(())
             });
