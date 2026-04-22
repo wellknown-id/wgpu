@@ -5,4 +5,5 @@ rustflags = ["-C", "link-arg=-z", "-C", "link-arg=max-page-size=16384"]
 rustflags = ["-C", "link-arg=-z", "-C", "link-arg=max-page-size=16384"]
 
 [env]
+BINDGEN_EXTRA_CLANG_ARGS_aarch64_linux_android = "--sysroot=/home/ben/Android/Sdk/ndk/27.2.12479018/toolchains/llvm/prebuilt/linux-x86_64/sysroot"
 BINDGEN_EXTRA_CLANG_ARGS_armv7_linux_androideabi = "--sysroot=/home/ben/Android/Sdk/ndk/27.2.12479018/toolchains/llvm/prebuilt/linux-x86_64/sysroot"

@@ -63,6 +63,20 @@ fn vertex_format_from_code(code: u32) -> wgpu::VertexFormat {
     }
 }
 
+pub struct XrEyeData {
+    pub tex_handle: u64,
+    pub view_handle: u64,
+    pub width: u32,
+    pub height: u32,
+    pub proj_matrix: [f32; 16],
+    pub view_inv_matrix: [f32; 16],
+}
+
+pub struct XrViewData {
+    pub left: XrEyeData,
+    pub right: XrEyeData,
+}
+
 pub struct JsBridge {
     shared: Rc<RefCell<SharedState>>,
     context: Context,
@@ -81,6 +95,7 @@ pub struct SharedState {
     pub webgpu: Option<WebGpuBridge>,
     pub xr_request_pending: bool,
     pub xr_end_requested: bool,
+    pub xr_view_data: Option<XrViewData>,
 }
 
 impl JsBridge {
@@ -100,6 +115,7 @@ impl JsBridge {
             webgpu: None,
             xr_request_pending: false,
             xr_end_requested: false,
+            xr_view_data: None,
         }));
 
         Ok(Self {
@@ -685,106 +701,200 @@ impl JsBridge {
                     }
                 };
 
+                var GPUBufferUsage = { MAP_READ: 1, MAP_WRITE: 2, COPY_SRC: 4, COPY_DST: 8, INDEX: 16, VERTEX: 32, UNIFORM: 64, STORAGE: 128, INDIRECT: 256, QUERY_RESOLVE: 512 };
+                var GPUShaderStage = { VERTEX: 1, FRAGMENT: 2, COMPUTE: 4 };
+                var GPUTextureUsage = { COPY_SRC: 1, COPY_DST: 2, TEXTURE_BINDING: 4, STORAGE_BINDING: 8, RENDER_ATTACHMENT: 16 };
+
+                function __makeGpuDevice() {
+                    var dev = {
+                        createShaderModule: function(desc) {
+                            var h = __hostGpuCreateShaderModule(desc.code);
+                            return { __handle: h };
+                        },
+                        createBuffer: function(desc) {
+                            var h = __hostGpuCreateBuffer(desc.size, desc.usage);
+                            return { __handle: h, size: desc.size };
+                        },
+                        createBindGroupLayout: function(desc) {
+                            var entries = [];
+                            for (var i = 0; i < desc.entries.length; i++) {
+                                var e = desc.entries[i];
+                                var vis = e.visibility || 0;
+                                var btype = 'uniform';
+                                if (e.buffer && e.buffer.type) btype = e.buffer.type;
+                                entries.push(e.binding + ':' + vis + ':' + btype);
+                            }
+                            var h = __hostGpuCreateBindGroupLayout(entries.join(';'));
+                            return { __handle: h };
+                        },
+                        createBindGroup: function(desc) {
+                            var bindings = [];
+                            for (var i = 0; i < desc.entries.length; i++) {
+                                var e = desc.entries[i];
+                                var bufH = e.resource.buffer ? e.resource.buffer.__handle : 0;
+                                bindings.push(e.binding + ':' + bufH);
+                            }
+                            var h = __hostGpuCreateBindGroup(desc.layout.__handle, bindings.join(';'));
+                            return { __handle: h };
+                        },
+                        createPipelineLayout: function(desc) {
+                            var handles = [];
+                            for (var i = 0; i < desc.bindGroupLayouts.length; i++) {
+                                handles.push(desc.bindGroupLayouts[i].__handle);
+                            }
+                            var h = __hostGpuCreatePipelineLayout(handles.join(','));
+                            return { __handle: h };
+                        },
+                        createTexture: function(desc) {
+                            var w = Array.isArray(desc.size) ? desc.size[0] : (desc.size.width || 1);
+                            var h2 = Array.isArray(desc.size) ? (desc.size[1] || 1) : (desc.size.height || 1);
+                            var fmt = desc.format || 'rgba8unorm';
+                            var usage = desc.usage || 0;
+                            var texH = __hostGpuCreateTexture(w, h2, fmt, usage);
+                            return {
+                                __handle: texH, width: w, height: h2, format: fmt,
+                                createView: function(viewDesc) {
+                                    var vh = __hostGpuCreateTextureView(texH);
+                                    return { __handle: vh };
+                                },
+                                destroy: function() {}
+                            };
+                        },
+                        createRenderPipeline: function(desc) {
+                            var vs = desc.vertex.module.__handle;
+                            var fs = desc.fragment.module.__handle;
+                            var vsEntry = desc.vertex.entryPoint || 'vs_main';
+                            var fsEntry = desc.fragment.entryPoint || 'fs_main';
+                            var bufs = desc.vertex.buffers || [];
+                            var stride = bufs.length > 0 ? bufs[0].arrayStride : 0;
+                            var attrs = [];
+                            if (bufs.length > 0 && bufs[0].attributes) {
+                                for (var i = 0; i < bufs[0].attributes.length; i++) {
+                                    var a = bufs[0].attributes[i];
+                                    var fmtCode = 4;
+                                    if (a.format === 'float32x3') fmtCode = 3;
+                                    if (a.format === 'float32x4') fmtCode = 4;
+                                    attrs.push([a.offset, fmtCode, 0]);
+                                }
+                            }
+                            var attrJson = JSON.stringify(attrs);
+                            var plH = desc.layout ? desc.layout.__handle : 0;
+                            var colorFmt = 'rgba8unorm-srgb';
+                            if (desc.fragment.targets && desc.fragment.targets[0]) {
+                                colorFmt = desc.fragment.targets[0].format || colorFmt;
+                            }
+                            var hasDepth = desc.depthStencil ? 1 : 0;
+                            var depthFmt = hasDepth ? (desc.depthStencil.format || 'depth24plus') : '';
+                            var cullMode = desc.primitive && desc.primitive.cullMode ? desc.primitive.cullMode : 'none';
+                            var opts = vsEntry + '|' + fsEntry + '|' + stride + '|' + colorFmt + '|' + depthFmt + '|' + cullMode;
+                            var h = __hostGpuCreatePipelineExt(vs, fs, attrJson, plH, opts);
+                            return { __handle: h };
+                        },
+                        createCommandEncoder: function() {
+                            return {
+                                _passes: [],
+                                beginRenderPass: function(desc) {
+                                    var passRec = { colorView: 0, clearColor: [0,0,0,1], depthView: 0, ops: [] };
+                                    if (desc.colorAttachments && desc.colorAttachments[0]) {
+                                        var ca = desc.colorAttachments[0];
+                                        if (ca.view && ca.view.__handle) passRec.colorView = ca.view.__handle;
+                                        if (ca.view && ca.view.__canvasId) passRec.canvasId = ca.view.__canvasId;
+                                        if (ca.clearValue) {
+                                            var cv = ca.clearValue;
+                                            passRec.clearColor = [cv.r || 0, cv.g || 0, cv.b || 0, cv.a !== undefined ? cv.a : 1];
+                                        }
+                                    }
+                                    if (desc.depthStencilAttachment && desc.depthStencilAttachment.view) {
+                                        passRec.depthView = desc.depthStencilAttachment.view.__handle || 0;
+                                    }
+                                    this._passes.push(passRec);
+                                    var ops = passRec.ops;
+                                    return {
+                                        setViewport: function(x, y, w, h, minD, maxD) {
+                                            ops.push({t: 'vp', x: x, y: y, w: w, h: h, d0: minD, d1: maxD});
+                                        },
+                                        setPipeline: function(p) { ops.push({t: 'pipe', h: p.__handle}); },
+                                        setBindGroup: function(idx, bg) { ops.push({t: 'bg', i: idx, h: bg.__handle}); },
+                                        setVertexBuffer: function(slot, buf) { ops.push({t: 'vb', s: slot, h: buf.__handle}); },
+                                        setIndexBuffer: function(buf, fmt) { ops.push({t: 'ib', h: buf.__handle, f: fmt === 'uint32' ? 1 : 0}); },
+                                        draw: function(count) { ops.push({t: 'draw', n: count}); },
+                                        drawIndexed: function(count) { ops.push({t: 'dridx', n: count}); },
+                                        end: function() {}
+                                    };
+                                },
+                                finish: function() { return this; }
+                            };
+                        },
+                        queue: {
+                            writeBuffer: function(buf, offset, data) {
+                                __hostGpuWriteBuffer(buf.__handle, data);
+                            },
+                            submit: function(cmdBufs) {
+                                for (var i = 0; i < cmdBufs.length; i++) {
+                                    var cb = cmdBufs[i];
+                                    if (cb._passes && cb._passes.length > 0) {
+                                        __hostGpuSubmitCommands(JSON.stringify(cb._passes));
+                                    }
+                                }
+                            }
+                        },
+                        __isGpuDevice: true
+                    };
+                    return dev;
+                }
+
                 var navigator = { gpu: {
-                    requestAdapter: function() {
+                    requestAdapter: function(opts) {
                         return Promise.resolve({
                             requestDevice: function() {
-                                return Promise.resolve({
-                                    createShaderModule: function(desc) {
-                                        var h = __hostGpuCreateShaderModule(desc.code);
-                                        return { __handle: h };
-                                    },
-                                    createRenderPipeline: function(desc) {
-                                        var vs = desc.vertex.module.__handle;
-                                        var fs = desc.fragment.module.__handle;
-                                        var vsEntry = desc.vertex.entryPoint || 'vs_main';
-                                        var fsEntry = desc.fragment.entryPoint || 'fs_main';
-                                        var bufs = desc.vertex.buffers || [];
-                                        var stride = bufs.length > 0 ? bufs[0].arrayStride : 0;
-                                        var attrs = [];
-                                        if (bufs.length > 0 && bufs[0].attributes) {
-                                            for (var i = 0; i < bufs[0].attributes.length; i++) {
-                                                var a = bufs[0].attributes[i];
-                                                var fmtCode = 4;
-                                                if (a.format === 'float32x3') fmtCode = 3;
-                                                if (a.format === 'float32x4') fmtCode = 4;
-                                                attrs.push([a.offset, fmtCode, 0]);
-                                            }
-                                        }
-                                        var attrJson = JSON.stringify(attrs);
-                                        var h = __hostGpuCreatePipeline(vs, fs, vsEntry, fsEntry, stride, attrJson);
-                                        return { __handle: h };
-                                    },
-                                    createBuffer: function(desc) {
-                                        var usage = 0;
-                                        if (desc.usage & 0x20) usage |= 0x20;
-                                        if (desc.usage & 0x40) usage |= 0x40;
-                                        if (desc.usage & 0x10) usage |= 0x10;
-                                        usage |= 0x8;
-                                        var h = __hostGpuCreateBuffer(desc.size, usage);
-                                        return { __handle: h, size: desc.size };
-                                    },
-                                    createCommandEncoder: function() {
-                                        return {
-                                            _canvasId: null,
-                                            _pipeline: null,
-                                            _vbuf: null,
-                                            _clearColor: [0,0,0,1],
-                                            beginRenderPass: function(desc) {
-                                                var self = this;
-                                                if (desc.colorAttachments && desc.colorAttachments[0]) {
-                                                    var ca = desc.colorAttachments[0];
-                                                    if (ca.view && ca.view.__canvasId) {
-                                                        self._canvasId = ca.view.__canvasId;
-                                                    }
-                                                    if (ca.clearValue) {
-                                                        var cv = ca.clearValue;
-                                                        self._clearColor = [cv.r || 0, cv.g || 0, cv.b || 0, cv.a !== undefined ? cv.a : 1];
-                                                    }
-                                                }
-                                                return {
-                                                    setPipeline: function(p) { self._pipeline = p.__handle; },
-                                                    setVertexBuffer: function(slot, buf) { self._vbuf = buf.__handle; },
-                                                    draw: function(count) { self._vertexCount = count; },
-                                                    end: function() {}
-                                                };
-                                            },
-                                            finish: function() { return this; }
-                                        };
-                                    },
-                                    queue: {
-                                        writeBuffer: function(buf, offset, data) {
-                                            __hostGpuWriteBuffer(buf.__handle, data);
-                                        },
-                                        submit: function(cmdBufs) {
-                                            for (var i = 0; i < cmdBufs.length; i++) {
-                                                var cb = cmdBufs[i];
-                                                if (cb._canvasId && cb._pipeline && cb._vbuf) {
-                                                    var cc = cb._clearColor;
-                                                    __hostGpuDraw(cb._canvasId, cb._pipeline, cb._vbuf,
-                                                                  cb._vertexCount || 3, cc[0]+','+cc[1]+','+cc[2]+','+cc[3]);
-                                                }
-                                            }
-                                        }
-                                    },
-                                    __isGpuDevice: true
-                                });
+                                return Promise.resolve(__makeGpuDevice());
                             }
                         });
-                    }
+                    },
+                    getPreferredCanvasFormat: function() { return __hostGpuPreferredFormat(); }
                 }};
+
+                function XRGPUBinding(session, device) {
+                    this._session = session;
+                    this._device = device;
+                }
+                XRGPUBinding.prototype.getPreferredColorFormat = function() {
+                    return __hostGpuPreferredFormat();
+                };
+                XRGPUBinding.prototype.createProjectionLayer = function(opts) {
+                    return { _colorFormat: opts.colorFormat, _depthFormat: opts.depthStencilFormat || null };
+                };
+                XRGPUBinding.prototype.getViewSubImage = function(layer, view) {
+                    var eyeIdx = (view.eye === 'right') ? 1 : 0;
+                    var info = __hostXrGetViewSubImage(eyeIdx);
+                    // info = "texHandle,viewHandle,width,height"
+                    var parts = info.split(',');
+                    var texH = parseInt(parts[0]);
+                    var viewH = parseInt(parts[1]);
+                    var w = parseInt(parts[2]);
+                    var h = parseInt(parts[3]);
+                    return {
+                        colorTexture: {
+                            __handle: texH, width: w, height: h,
+                            createView: function(desc) { return { __handle: viewH }; }
+                        },
+                        getViewDescriptor: function() { return {}; },
+                        viewport: { x: 0, y: 0, width: w, height: h }
+                    };
+                };
 
                 navigator.xr = {
                     isSessionSupported: function(mode) {
                         return Promise.resolve(mode === 'immersive-vr' && typeof __hostXrRequestSession !== 'undefined');
                     },
-                    requestSession: function(mode) {
+                    requestSession: function(mode, opts) {
                         if (mode === 'immersive-vr' && typeof __hostXrRequestSession !== 'undefined') {
                             __hostXrRequestSession();
                             var session = {
                                 _ended: false,
                                 _rafCb: null,
                                 _endListeners: [],
+                                updateRenderState: function(state) {},
                                 requestReferenceSpace: function(type) {
                                     return Promise.resolve({ type: type });
                                 },
@@ -793,11 +903,22 @@ impl JsBridge {
                                     return requestAnimationFrame(function(t) {
                                         if (!session._ended && session._rafCb) {
                                             var frame = {
-                                                getViewerPose: function() {
+                                                getViewerPose: function(refSpace) {
+                                                    var mats = __hostXrGetViewerPose();
+                                                    // mats = comma-separated 64 floats: leftProj(16), leftViewInv(16), rightProj(16), rightViewInv(16)
+                                                    var vals = mats.split(',').map(Number);
                                                     return {
                                                         views: [
-                                                            { eye: 'left', projectionMatrix: new Float32Array(16), transform: { inverse: { matrix: new Float32Array(16) } } },
-                                                            { eye: 'right', projectionMatrix: new Float32Array(16), transform: { inverse: { matrix: new Float32Array(16) } } }
+                                                            {
+                                                                eye: 'left',
+                                                                projectionMatrix: new Float32Array(vals.slice(0, 16)),
+                                                                transform: { inverse: { matrix: new Float32Array(vals.slice(16, 32)) } }
+                                                            },
+                                                            {
+                                                                eye: 'right',
+                                                                projectionMatrix: new Float32Array(vals.slice(32, 48)),
+                                                                transform: { inverse: { matrix: new Float32Array(vals.slice(48, 64)) } }
+                                                            }
                                                         ]
                                                     };
                                                 }
@@ -1003,54 +1124,6 @@ impl JsBridge {
                 )?,
             )?;
 
-            // __hostGpuCreatePipeline(vs, fs, vs_entry, fs_entry, stride, attr_json) -> handle
-            let s = shared.clone();
-            globals.set(
-                "__hostGpuCreatePipeline",
-                Function::new(
-                    ctx.clone(),
-                    move |_ctx: rquickjs::Ctx<'_>,
-                          vs: u64,
-                          fs: u64,
-                          vs_entry: String,
-                          fs_entry: String,
-                          stride: u64,
-                          attr_json: String|
-                          -> u64 {
-                        let mut st = s.borrow_mut();
-                        if let Some(ref mut gpu) = st.webgpu {
-                            let attrs: Vec<(u64, u32, u32)> =
-                                serde_json_mini_parse_attrs(&attr_json);
-                            let wgpu_attrs: Vec<wgpu::VertexAttribute> = attrs
-                                .iter()
-                                .enumerate()
-                                .map(|(i, (offset, fmt_code, _))| wgpu::VertexAttribute {
-                                    format: vertex_format_from_code(*fmt_code),
-                                    offset: *offset,
-                                    shader_location: i as u32,
-                                })
-                                .collect();
-                            let layouts = vec![crate::webgpu_bridge::VertexBufferLayoutDesc {
-                                array_stride: stride,
-                                attributes: wgpu_attrs,
-                            }];
-                            let format = gpu.preferred_format();
-                            gpu.create_render_pipeline(
-                                vs,
-                                fs,
-                                &vs_entry,
-                                &fs_entry,
-                                &layouts,
-                                format,
-                                wgpu::PrimitiveTopology::TriangleList,
-                            )
-                        } else {
-                            0
-                        }
-                    },
-                )?,
-            )?;
-
             // __hostGpuCreateBuffer(size, usage) -> handle
             let s = shared.clone();
             globals.set(
@@ -1068,7 +1141,7 @@ impl JsBridge {
                 )?,
             )?;
 
-            // __hostGpuWriteBuffer(handle, data: ArrayBuffer | TypedArray | Array)
+            // __hostGpuWriteBuffer(handle, data)
             let s = shared.clone();
             globals.set(
                 "__hostGpuWriteBuffer",
@@ -1077,9 +1150,7 @@ impl JsBridge {
                     move |ctx: rquickjs::Ctx<'_>, handle: u64, data: rquickjs::Value<'_>| {
                         let st = s.borrow();
                         if let Some(ref gpu) = st.webgpu {
-                            // Try extracting as an Object first (covers TypedArray and ArrayBuffer)
                             if let Some(obj) = data.as_object() {
-                                // TypedArray path: get .buffer property (the backing ArrayBuffer)
                                 if let Ok(buf_val) = obj.get::<_, rquickjs::Value>("buffer") {
                                     if let Some(buf_obj) = buf_val.as_object() {
                                         if let Some(ab) = buf_obj.as_array_buffer() {
@@ -1090,7 +1161,6 @@ impl JsBridge {
                                         }
                                     }
                                 }
-                                // Direct ArrayBuffer path
                                 if let Some(ab) = obj.as_array_buffer() {
                                     if let Some(bytes) = ab.as_bytes() {
                                         gpu.write_buffer(handle, bytes);
@@ -1098,7 +1168,6 @@ impl JsBridge {
                                     }
                                 }
                             }
-                            // Slow fallback: plain JS array
                             if let Some(arr) = data.as_array() {
                                 let mut floats = Vec::with_capacity(arr.len());
                                 for i in 0..arr.len() {
@@ -1111,6 +1180,216 @@ impl JsBridge {
                             }
                         }
                         let _ = ctx;
+                    },
+                )?,
+            )?;
+
+            // __hostGpuCreateBindGroupLayout(entriesStr) -> handle
+            // entriesStr = "binding:visibility:type;..."
+            let s = shared.clone();
+            globals.set(
+                "__hostGpuCreateBindGroupLayout",
+                Function::new(
+                    ctx.clone(),
+                    move |_ctx: rquickjs::Ctx<'_>, entries_str: String| -> u64 {
+                        let mut st = s.borrow_mut();
+                        if let Some(ref mut gpu) = st.webgpu {
+                            let entries: Vec<wgpu::BindGroupLayoutEntry> = entries_str
+                                .split(';')
+                                .filter(|s| !s.is_empty())
+                                .map(|s| {
+                                    let parts: Vec<&str> = s.split(':').collect();
+                                    let binding: u32 = parts.first().and_then(|p| p.parse().ok()).unwrap_or(0);
+                                    let visibility: u32 = parts.get(1).and_then(|p| p.parse().ok()).unwrap_or(1);
+                                    wgpu::BindGroupLayoutEntry {
+                                        binding,
+                                        visibility: wgpu::ShaderStages::from_bits_truncate(visibility),
+                                        ty: wgpu::BindingType::Buffer {
+                                            ty: wgpu::BufferBindingType::Uniform,
+                                            has_dynamic_offset: false,
+                                            min_binding_size: None,
+                                        },
+                                        count: None,
+                                    }
+                                })
+                                .collect();
+                            gpu.create_bind_group_layout(&entries)
+                        } else {
+                            0
+                        }
+                    },
+                )?,
+            )?;
+
+            // __hostGpuCreateBindGroup(layoutHandle, bindingsStr) -> handle
+            // bindingsStr = "binding:bufferHandle;..."
+            let s = shared.clone();
+            globals.set(
+                "__hostGpuCreateBindGroup",
+                Function::new(
+                    ctx.clone(),
+                    move |_ctx: rquickjs::Ctx<'_>, layout_handle: u64, bindings_str: String| -> u64 {
+                        let mut st = s.borrow_mut();
+                        if let Some(ref mut gpu) = st.webgpu {
+                            let bindings: Vec<(u32, u64)> = bindings_str
+                                .split(';')
+                                .filter(|s| !s.is_empty())
+                                .map(|s| {
+                                    let parts: Vec<&str> = s.split(':').collect();
+                                    let binding: u32 = parts.first().and_then(|p| p.parse().ok()).unwrap_or(0);
+                                    let buf_h: u64 = parts.get(1).and_then(|p| p.parse().ok()).unwrap_or(0);
+                                    (binding, buf_h)
+                                })
+                                .collect();
+                            gpu.create_bind_group(layout_handle, &bindings)
+                        } else {
+                            0
+                        }
+                    },
+                )?,
+            )?;
+
+            // __hostGpuCreatePipelineLayout(bglHandlesStr) -> handle
+            // bglHandlesStr = "h1,h2,..."
+            let s = shared.clone();
+            globals.set(
+                "__hostGpuCreatePipelineLayout",
+                Function::new(
+                    ctx.clone(),
+                    move |_ctx: rquickjs::Ctx<'_>, handles_str: String| -> u64 {
+                        let mut st = s.borrow_mut();
+                        if let Some(ref mut gpu) = st.webgpu {
+                            let handles: Vec<u64> = handles_str
+                                .split(',')
+                                .filter(|s| !s.is_empty())
+                                .filter_map(|s| s.trim().parse().ok())
+                                .collect();
+                            gpu.create_pipeline_layout(&handles)
+                        } else {
+                            0
+                        }
+                    },
+                )?,
+            )?;
+
+            // __hostGpuCreateTexture(width, height, format, usage) -> handle
+            let s = shared.clone();
+            globals.set(
+                "__hostGpuCreateTexture",
+                Function::new(
+                    ctx.clone(),
+                    move |_ctx: rquickjs::Ctx<'_>, width: u32, height: u32, format: String, usage: u32| -> u64 {
+                        let mut st = s.borrow_mut();
+                        if let Some(ref mut gpu) = st.webgpu {
+                            let fmt = parse_texture_format(&format);
+                            let usg = wgpu::TextureUsages::from_bits_truncate(usage);
+                            gpu.create_texture(width, height, fmt, usg)
+                        } else {
+                            0
+                        }
+                    },
+                )?,
+            )?;
+
+            // __hostGpuCreateTextureView(textureHandle) -> handle
+            let s = shared.clone();
+            globals.set(
+                "__hostGpuCreateTextureView",
+                Function::new(
+                    ctx.clone(),
+                    move |_ctx: rquickjs::Ctx<'_>, tex_handle: u64| -> u64 {
+                        let mut st = s.borrow_mut();
+                        if let Some(ref mut gpu) = st.webgpu {
+                            gpu.create_texture_view(tex_handle)
+                        } else {
+                            0
+                        }
+                    },
+                )?,
+            )?;
+
+            // __hostGpuCreatePipelineExt(vs, fs, attrJson, plH, opts) -> handle
+            // opts = "vsEntry|fsEntry|stride|colorFmt|depthFmt|cullMode"
+            let s = shared.clone();
+            globals.set(
+                "__hostGpuCreatePipelineExt",
+                Function::new(
+                    ctx.clone(),
+                    move |_ctx: rquickjs::Ctx<'_>,
+                          vs: u64,
+                          fs: u64,
+                          attr_json: String,
+                          pl_handle: u64,
+                          opts: String|
+                          -> u64 {
+                        let mut st = s.borrow_mut();
+                        if let Some(ref mut gpu) = st.webgpu {
+                            let opt_parts: Vec<&str> = opts.splitn(6, '|').collect();
+                            let vs_entry = opt_parts.first().copied().unwrap_or("vs_main");
+                            let fs_entry = opt_parts.get(1).copied().unwrap_or("fs_main");
+                            let stride: u64 = opt_parts.get(2).and_then(|s| s.parse().ok()).unwrap_or(0);
+                            let color_fmt = opt_parts.get(3).copied().unwrap_or("rgba8unorm-srgb");
+                            let depth_fmt = opt_parts.get(4).copied().unwrap_or("");
+                            let cull_mode = opt_parts.get(5).copied().unwrap_or("none");
+
+                            let attrs: Vec<(u64, u32, u32)> =
+                                serde_json_mini_parse_attrs(&attr_json);
+                            let wgpu_attrs: Vec<wgpu::VertexAttribute> = attrs
+                                .iter()
+                                .enumerate()
+                                .map(|(i, (offset, fmt_code, _))| wgpu::VertexAttribute {
+                                    format: vertex_format_from_code(*fmt_code),
+                                    offset: *offset,
+                                    shader_location: i as u32,
+                                })
+                                .collect();
+                            let layouts = vec![crate::webgpu_bridge::VertexBufferLayoutDesc {
+                                array_stride: stride,
+                                attributes: wgpu_attrs,
+                            }];
+                            let cf = parse_texture_format(color_fmt);
+                            let ds = if depth_fmt.is_empty() {
+                                None
+                            } else {
+                                Some(wgpu::DepthStencilState {
+                                    format: parse_texture_format(depth_fmt),
+                                    depth_write_enabled: Some(true),
+                                    depth_compare: Some(wgpu::CompareFunction::Less),
+                                    stencil: wgpu::StencilState::default(),
+                                    bias: wgpu::DepthBiasState::default(),
+                                })
+                            };
+                            let cull = match cull_mode {
+                                "back" => Some(wgpu::Face::Back),
+                                "front" => Some(wgpu::Face::Front),
+                                _ => None,
+                            };
+                            gpu.create_render_pipeline_ext(
+                                vs, fs, vs_entry, fs_entry, &layouts, pl_handle, cf, ds, cull,
+                            )
+                        } else {
+                            0
+                        }
+                    },
+                )?,
+            )?;
+
+            // __hostGpuSubmitCommands(passesJson) - replays recorded command buffers
+            let s = shared.clone();
+            globals.set(
+                "__hostGpuSubmitCommands",
+                Function::new(
+                    ctx.clone(),
+                    move |_ctx: rquickjs::Ctx<'_>, passes_json: String| {
+                        let mut st = s.borrow_mut();
+                        if let Some(ref mut gpu) = st.webgpu {
+                            if let Ok(passes) = parse_recorded_passes(&passes_json) {
+                                let cb = crate::webgpu_bridge::RecordedCommandBuffer { passes };
+                                gpu.replay_commands(&[cb]);
+                            } else {
+                                log::warn!("Failed to parse GPU commands");
+                            }
+                        }
                     },
                 )?,
             )?;
@@ -1132,8 +1411,7 @@ impl JsBridge {
                 )?,
             )?;
 
-            // __hostGpuDraw(canvas_id, pipeline, vbuf, vertex_count, clear_packed)
-            // clear_packed encodes RGBA as a comma-separated string
+            // __hostGpuDraw (legacy canvas path)
             let s = shared.clone();
             globals.set(
                 "__hostGpuDraw",
@@ -1149,7 +1427,7 @@ impl JsBridge {
                             .split(',')
                             .filter_map(|s| s.trim().parse().ok())
                             .collect();
-                        let cr = parts.get(0).copied().unwrap_or(0.0);
+                        let cr = parts.first().copied().unwrap_or(0.0);
                         let cg = parts.get(1).copied().unwrap_or(0.0);
                         let cb = parts.get(2).copied().unwrap_or(0.0);
                         let ca = parts.get(3).copied().unwrap_or(1.0);
@@ -1170,12 +1448,62 @@ impl JsBridge {
                 })?,
             )?;
 
+            // __hostXrGetViewSubImage(eyeIndex) -> "texHandle,viewHandle,width,height"
+            let s = shared.clone();
+            globals.set(
+                "__hostXrGetViewSubImage",
+                Function::new(
+                    ctx.clone(),
+                    move |_ctx: rquickjs::Ctx<'_>, eye_index: u32| -> String {
+                        let st = s.borrow();
+                        if let Some(ref xr) = st.xr_view_data {
+                            let eye = if eye_index == 0 { &xr.left } else { &xr.right };
+                            format!("{},{},{},{}", eye.tex_handle, eye.view_handle, eye.width, eye.height)
+                        } else {
+                            "0,0,512,512".to_string()
+                        }
+                    },
+                )?,
+            )?;
+
+            // __hostXrGetViewerPose() -> comma-separated 64 floats
+            let s = shared.clone();
+            globals.set(
+                "__hostXrGetViewerPose",
+                Function::new(
+                    ctx.clone(),
+                    move |_ctx: rquickjs::Ctx<'_>| -> String {
+                        let st = s.borrow();
+                        if let Some(ref xr) = st.xr_view_data {
+                            let mut vals = Vec::with_capacity(64);
+                            for v in &xr.left.proj_matrix { vals.push(v.to_string()); }
+                            for v in &xr.left.view_inv_matrix { vals.push(v.to_string()); }
+                            for v in &xr.right.proj_matrix { vals.push(v.to_string()); }
+                            for v in &xr.right.view_inv_matrix { vals.push(v.to_string()); }
+                            vals.join(",")
+                        } else {
+                            // Identity matrices fallback
+                            let id = "1,0,0,0,0,1,0,0,0,0,1,0,0,0,0,1";
+                            format!("{id},{id},{id},{id}")
+                        }
+                    },
+                )?,
+            )?;
+
             Ok(())
         });
     }
 
     pub fn webgpu_bridge(&self) -> std::cell::Ref<'_, Option<WebGpuBridge>> {
         std::cell::Ref::map(self.shared.borrow(), |s| &s.webgpu)
+    }
+
+    pub fn webgpu_bridge_mut(&self) -> std::cell::RefMut<'_, Option<WebGpuBridge>> {
+        std::cell::RefMut::map(self.shared.borrow_mut(), |s| &mut s.webgpu)
+    }
+
+    pub fn set_xr_view_data(&self, data: Option<XrViewData>) {
+        self.shared.borrow_mut().xr_view_data = data;
     }
 
     pub fn take_xr_request(&mut self) -> bool {
@@ -1197,4 +1525,124 @@ impl Drop for JsBridge {
     fn drop(&mut self) {
         self.shared.borrow_mut().animation_callbacks.clear();
     }
+}
+
+fn parse_texture_format(s: &str) -> wgpu::TextureFormat {
+    match s {
+        "rgba8unorm" => wgpu::TextureFormat::Rgba8Unorm,
+        "rgba8unorm-srgb" => wgpu::TextureFormat::Rgba8UnormSrgb,
+        "bgra8unorm" => wgpu::TextureFormat::Bgra8Unorm,
+        "bgra8unorm-srgb" => wgpu::TextureFormat::Bgra8UnormSrgb,
+        "rgba16float" => wgpu::TextureFormat::Rgba16Float,
+        "depth24plus" => wgpu::TextureFormat::Depth24Plus,
+        "depth24plus-stencil8" => wgpu::TextureFormat::Depth24PlusStencil8,
+        "depth32float" => wgpu::TextureFormat::Depth32Float,
+        _ => {
+            log::warn!("Unknown texture format: {s}, defaulting to Rgba8UnormSrgb");
+            wgpu::TextureFormat::Rgba8UnormSrgb
+        }
+    }
+}
+
+fn parse_recorded_passes(json: &str) -> Result<Vec<crate::webgpu_bridge::RecordedRenderPass>> {
+    // Minimal JSON parser for the recorded passes format.
+    // Each pass: { colorView: N, clearColor: [r,g,b,a], depthView: N, ops: [...] }
+    // Each op: { t: "pipe"|"vp"|"bg"|"vb"|"ib"|"draw"|"dridx", ... }
+    //
+    // Use serde_json-like manual parsing to avoid adding a dependency.
+    let val: serde_json::Value = serde_json::from_str(json)
+        .map_err(|e| anyhow::anyhow!("JSON parse error: {e}"))?;
+
+    let arr = val.as_array().ok_or_else(|| anyhow::anyhow!("expected array"))?;
+    let mut passes = Vec::new();
+
+    for pass_val in arr {
+        let color_view = pass_val["colorView"].as_u64().unwrap_or(0);
+        let depth_view_val = pass_val["depthView"].as_u64().unwrap_or(0);
+        let depth_view = if depth_view_val > 0 {
+            Some(depth_view_val)
+        } else {
+            None
+        };
+
+        let cc = &pass_val["clearColor"];
+        let clear_color = [
+            cc[0].as_f64().unwrap_or(0.0),
+            cc[1].as_f64().unwrap_or(0.0),
+            cc[2].as_f64().unwrap_or(0.0),
+            cc[3].as_f64().unwrap_or(1.0),
+        ];
+
+        let mut ops = Vec::new();
+        if let Some(ops_arr) = pass_val["ops"].as_array() {
+            for op in ops_arr {
+                let t = op["t"].as_str().unwrap_or("");
+                match t {
+                    "vp" => {
+                        ops.push(crate::webgpu_bridge::PassOp::SetViewport {
+                            x: op["x"].as_f64().unwrap_or(0.0) as f32,
+                            y: op["y"].as_f64().unwrap_or(0.0) as f32,
+                            w: op["w"].as_f64().unwrap_or(0.0) as f32,
+                            h: op["h"].as_f64().unwrap_or(0.0) as f32,
+                            min_depth: op["d0"].as_f64().unwrap_or(0.0) as f32,
+                            max_depth: op["d1"].as_f64().unwrap_or(1.0) as f32,
+                        });
+                    }
+                    "pipe" => {
+                        ops.push(crate::webgpu_bridge::PassOp::SetPipeline(
+                            op["h"].as_u64().unwrap_or(0),
+                        ));
+                    }
+                    "bg" => {
+                        ops.push(crate::webgpu_bridge::PassOp::SetBindGroup {
+                            index: op["i"].as_u64().unwrap_or(0) as u32,
+                            handle: op["h"].as_u64().unwrap_or(0),
+                        });
+                    }
+                    "vb" => {
+                        ops.push(crate::webgpu_bridge::PassOp::SetVertexBuffer {
+                            slot: op["s"].as_u64().unwrap_or(0) as u32,
+                            handle: op["h"].as_u64().unwrap_or(0),
+                        });
+                    }
+                    "ib" => {
+                        let fmt = if op["f"].as_u64().unwrap_or(0) == 1 {
+                            wgpu::IndexFormat::Uint32
+                        } else {
+                            wgpu::IndexFormat::Uint16
+                        };
+                        ops.push(crate::webgpu_bridge::PassOp::SetIndexBuffer {
+                            handle: op["h"].as_u64().unwrap_or(0),
+                            format: fmt,
+                        });
+                    }
+                    "draw" => {
+                        ops.push(crate::webgpu_bridge::PassOp::Draw {
+                            vertex_count: op["n"].as_u64().unwrap_or(0) as u32,
+                        });
+                    }
+                    "dridx" => {
+                        ops.push(crate::webgpu_bridge::PassOp::DrawIndexed {
+                            index_count: op["n"].as_u64().unwrap_or(0) as u32,
+                        });
+                    }
+                    _ => {
+                        log::warn!("Unknown GPU op type: {t}");
+                    }
+                }
+            }
+        }
+
+        let canvas_id = pass_val["canvasId"].as_str().map(|s| s.to_string());
+
+        passes.push(crate::webgpu_bridge::RecordedRenderPass {
+            color_view,
+            canvas_id,
+            clear_color,
+            depth_view,
+            ops,
+        });
+    }
+
+    Ok(passes)
 }

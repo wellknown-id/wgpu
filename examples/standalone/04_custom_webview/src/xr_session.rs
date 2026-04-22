@@ -49,12 +49,13 @@ impl XrSession {
 
         let available_extensions = xr_entry.enumerate_extensions()?;
         log::info!(
-            "OpenXR available: khr_vulkan_enable2={}",
+            "OpenXR available: khr_vulkan_enable={}, khr_vulkan_enable2={}",
+            available_extensions.khr_vulkan_enable,
             available_extensions.khr_vulkan_enable2
         );
 
         let mut enabled_extensions = xr::ExtensionSet::default();
-        enabled_extensions.khr_vulkan_enable2 = true;
+        enabled_extensions.khr_vulkan_enable = true;
         #[cfg(target_os = "android")]
         {
             enabled_extensions.khr_android_create_instance = true;
@@ -75,9 +76,18 @@ impl XrSession {
         let system = xr_instance.system(xr::FormFactor::HEAD_MOUNTED_DISPLAY)?;
         let _reqs = xr_instance.graphics_requirements::<xr::Vulkan>(system)?;
 
+        let xr_phys_dev = unsafe {
+            xr_instance.vulkan_graphics_device(system, vk_instance_raw as _)?
+        };
+        log::info!(
+            "XR physical device: {:?}, wgpu physical device: {:?}",
+            xr_phys_dev,
+            vk_phys_dev_raw
+        );
+
         let binding = xr::vulkan::SessionCreateInfo {
             instance: vk_instance_raw as _,
-            physical_device: vk_phys_dev_raw as _,
+            physical_device: xr_phys_dev as _,
             device: vk_device_raw as _,
             queue_family_index,
             queue_index: 0,

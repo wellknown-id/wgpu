@@ -75,6 +75,10 @@ pub struct WebviewState {
     pub last_touch_y: Option<f32>,
     #[cfg(feature = "xr")]
     pub xr_session: Option<xr_session::XrSession>,
+    #[cfg(feature = "xr")]
+    pub xr_depth_texture: Option<wgpu::Texture>,
+    #[cfg(feature = "xr")]
+    pub xr_depth_size: (u32, u32),
 }
 
 #[derive(Default)]
@@ -383,6 +387,10 @@ impl ApplicationHandler for App {
             last_touch_y: None,
             #[cfg(feature = "xr")]
             xr_session: None,
+            #[cfg(feature = "xr")]
+            xr_depth_texture: None,
+            #[cfg(feature = "xr")]
+            xr_depth_size: (0, 0),
         });
 
         window.request_redraw();
@@ -564,7 +572,7 @@ impl ApplicationHandler for App {
                 }
 
                 // XR render loop (when session is active)
-                #[cfg(feature = "xr")]
+                #[cfg(all(feature = "xr", feature = "js"))]
                 {
                     let s = self.state.as_mut().unwrap();
                     let mut xr_rendered = false;
@@ -573,51 +581,115 @@ impl ApplicationHandler for App {
                             log::error!("XR poll error: {:?}", e);
                         }
                         if xr.state() == xr_session::XrState::Running {
+                            let (sw, sh) = xr.swapchain_size();
                             match xr.wait_frame() {
                                 Ok(Some(frame_data)) => match xr.acquire_swapchain_image() {
                                     Ok((texture, _idx)) => {
-                                        let view =
+
+                                        // Create per-eye views from the array texture
+                                        let left_view =
                                             texture.create_view(&wgpu::TextureViewDescriptor {
-                                                dimension: Some(
-                                                    wgpu::TextureViewDimension::D2Array,
-                                                ),
+                                                dimension: Some(wgpu::TextureViewDimension::D2),
+                                                base_array_layer: 0,
+                                                array_layer_count: Some(1),
                                                 ..Default::default()
                                             });
-                                        let mut encoder = s.gpu.device.create_command_encoder(
-                                            &wgpu::CommandEncoderDescriptor {
-                                                label: Some("xr encoder"),
-                                            },
-                                        );
+                                        let right_view =
+                                            texture.create_view(&wgpu::TextureViewDescriptor {
+                                                dimension: Some(wgpu::TextureViewDimension::D2),
+                                                base_array_layer: 1,
+                                                array_layer_count: Some(1),
+                                                ..Default::default()
+                                            });
+
+                                        // Create or reuse depth texture
+                                        if s.xr_depth_texture.is_none()
+                                            || s.xr_depth_size != (sw, sh)
                                         {
-                                            let _rpass = encoder.begin_render_pass(
-                                                &wgpu::RenderPassDescriptor {
-                                                    label: Some("xr clear"),
-                                                    color_attachments: &[Some(
-                                                        wgpu::RenderPassColorAttachment {
-                                                            view: &view,
-                                                            resolve_target: None,
-                                                            ops: wgpu::Operations {
-                                                                load: wgpu::LoadOp::Clear(
-                                                                    wgpu::Color {
-                                                                        r: 0.02,
-                                                                        g: 0.02,
-                                                                        b: 0.05,
-                                                                        a: 1.0,
-                                                                    },
-                                                                ),
-                                                                store: wgpu::StoreOp::Store,
-                                                            },
-                                                            depth_slice: None,
-                                                        },
-                                                    )],
-                                                    depth_stencil_attachment: None,
-                                                    timestamp_writes: None,
-                                                    occlusion_query_set: None,
-                                                    multiview_mask: None,
-                                                },
-                                            );
+                                            let dt =
+                                                s.gpu.device.create_texture(&wgpu::TextureDescriptor {
+                                                    label: Some("xr depth"),
+                                                    size: wgpu::Extent3d {
+                                                        width: sw,
+                                                        height: sh,
+                                                        depth_or_array_layers: 1,
+                                                    },
+                                                    mip_level_count: 1,
+                                                    sample_count: 1,
+                                                    dimension: wgpu::TextureDimension::D2,
+                                                    format: wgpu::TextureFormat::Depth24Plus,
+                                                    usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+                                                    view_formats: &[],
+                                                });
+                                            s.xr_depth_texture = Some(dt);
+                                            s.xr_depth_size = (sw, sh);
                                         }
-                                        s.gpu.queue.submit(std::iter::once(encoder.finish()));
+                                        let depth_view = s
+                                            .xr_depth_texture
+                                            .as_ref()
+                                            .unwrap()
+                                            .create_view(&Default::default());
+
+                                        // Register in WebGpuBridge
+                                        let (left_vh, right_vh, depth_vh) = {
+                                            let mut bridge =
+                                                s.js.webgpu_bridge_mut();
+                                            let gpu = bridge.as_mut().unwrap();
+                                            let lvh = gpu.register_texture_view(left_view);
+                                            let rvh = gpu.register_texture_view(right_view);
+                                            let dvh = gpu.register_texture_view(depth_view);
+                                            (lvh, rvh, dvh)
+                                        };
+
+                                        // Provide view data to JS
+                                        let left_eye = js_bridge::XrEyeData {
+                                            tex_handle: 0, // not needed, JS uses view handle
+                                            view_handle: left_vh,
+                                            width: sw,
+                                            height: sh,
+                                            proj_matrix: frame_data.views[0].projection_matrix,
+                                            view_inv_matrix: frame_data.views[0].view_matrix,
+                                        };
+                                        let right_eye = js_bridge::XrEyeData {
+                                            tex_handle: 0,
+                                            view_handle: right_vh,
+                                            width: sw,
+                                            height: sh,
+                                            proj_matrix: frame_data.views[1].projection_matrix,
+                                            view_inv_matrix: frame_data.views[1].view_matrix,
+                                        };
+
+                                        // Set depth view handle on both eyes
+                                        // (JS will read it from the sub-image)
+                                        let left_eye = js_bridge::XrEyeData {
+                                            tex_handle: depth_vh, // repurpose: JS depth view
+                                            ..left_eye
+                                        };
+                                        let right_eye = js_bridge::XrEyeData {
+                                            tex_handle: depth_vh,
+                                            ..right_eye
+                                        };
+
+                                        s.js.set_xr_view_data(Some(js_bridge::XrViewData {
+                                            left: left_eye,
+                                            right: right_eye,
+                                        }));
+
+                                        // Tick JS animation frame (this runs the XR render callback)
+                                        let now_ms = s.start_time.elapsed().as_secs_f64() * 1000.0;
+                                        s.js.tick(now_ms);
+
+                                        // Clean up registered views
+                                        s.js.set_xr_view_data(None);
+                                        {
+                                            let mut bridge =
+                                                s.js.webgpu_bridge_mut();
+                                            let gpu = bridge.as_mut().unwrap();
+                                            gpu.unregister_texture_view(left_vh);
+                                            gpu.unregister_texture_view(right_vh);
+                                            gpu.unregister_texture_view(depth_vh);
+                                        }
+
                                         if let Err(e) = xr.release_and_end_frame(&frame_data) {
                                             log::error!("XR end frame error: {:?}", e);
                                         }

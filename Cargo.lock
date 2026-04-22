@@ -5377,6 +5377,7 @@ dependencies = [
  "openxr",
  "pollster",
  "rquickjs",
+ "serde_json",
  "taffy",
  "wasm-bindgen",
  "web-sys",
