@@ -669,11 +669,7 @@ impl JsBridge {
                                     },
                                     queue: {
                                         writeBuffer: function(buf, offset, data) {
-                                            var arr = [];
-                                            if (data instanceof Float32Array || Array.isArray(data)) {
-                                                for (var i = 0; i < data.length; i++) arr.push(data[i]);
-                                            }
-                                            __hostGpuWriteBuffer(buf.__handle, arr);
+                                            __hostGpuWriteBuffer(buf.__handle, data);
                                         },
                                         submit: function(cmdBufs) {
                                             for (var i = 0; i < cmdBufs.length; i++) {
@@ -893,12 +889,34 @@ impl JsBridge {
                 }
             )?)?;
 
-            // __hostGpuWriteBuffer(handle, data: [f32 as comma-separated])
+            // __hostGpuWriteBuffer(handle, data: ArrayBuffer | TypedArray | Array)
             let s = shared.clone();
             globals.set("__hostGpuWriteBuffer", Function::new(ctx.clone(),
                 move |ctx: rquickjs::Ctx<'_>, handle: u64, data: rquickjs::Value<'_>| {
                     let st = s.borrow();
                     if let Some(ref gpu) = st.webgpu {
+                        // Try extracting as an Object first (covers TypedArray and ArrayBuffer)
+                        if let Some(obj) = data.as_object() {
+                            // TypedArray path: get .buffer property (the backing ArrayBuffer)
+                            if let Ok(buf_val) = obj.get::<_, rquickjs::Value>("buffer") {
+                                if let Some(buf_obj) = buf_val.as_object() {
+                                    if let Some(ab) = buf_obj.as_array_buffer() {
+                                        if let Some(bytes) = ab.as_bytes() {
+                                            gpu.write_buffer(handle, bytes);
+                                            return;
+                                        }
+                                    }
+                                }
+                            }
+                            // Direct ArrayBuffer path
+                            if let Some(ab) = obj.as_array_buffer() {
+                                if let Some(bytes) = ab.as_bytes() {
+                                    gpu.write_buffer(handle, bytes);
+                                    return;
+                                }
+                            }
+                        }
+                        // Slow fallback: plain JS array
                         if let Some(arr) = data.as_array() {
                             let mut floats = Vec::with_capacity(arr.len());
                             for i in 0..arr.len() {
@@ -940,8 +958,8 @@ impl JsBridge {
                     let ca = parts.get(3).copied().unwrap_or(1.0);
                     let mut st = s.borrow_mut();
                     if let Some(ref mut gpu) = st.webgpu {
-                        gpu.begin_render_pass(&canvas_id, cr, cg, cb, ca);
-                        gpu.render_pass_draw(pipeline, vbuf, vertex_count, [cr, cg, cb, ca]);
+                        gpu.begin_render_pass(&canvas_id, [cr, cg, cb, ca]);
+                        gpu.render_pass_draw(pipeline, vbuf, vertex_count);
                     }
                 }
             )?)?;

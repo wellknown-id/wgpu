@@ -14,11 +14,13 @@ pub struct WebGpuBridge {
     // Per-frame transient state
     active_encoder: Option<wgpu::CommandEncoder>,
     active_pass_canvas: Option<String>,
+    active_clear_color: Option<[f64; 4]>,
 }
 
 pub struct CanvasTexture {
     pub texture: wgpu::Texture,
     pub view: wgpu::TextureView,
+    pub depth_view: wgpu::TextureView,
     pub width: u32,
     pub height: u32,
     pub format: wgpu::TextureFormat,
@@ -37,6 +39,7 @@ impl WebGpuBridge {
             canvas_textures: HashMap::new(),
             active_encoder: None,
             active_pass_canvas: None,
+            active_clear_color: None,
         }
     }
 
@@ -183,11 +186,12 @@ impl WebGpuBridge {
             usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
             view_formats: &[],
         });
-        let _ = depth_tex.create_view(&Default::default());
+        let depth_view = depth_tex.create_view(&Default::default());
 
         self.canvas_textures.insert(canvas_id.to_string(), CanvasTexture {
             texture,
             view,
+            depth_view,
             width,
             height,
             format,
@@ -195,13 +199,10 @@ impl WebGpuBridge {
         });
     }
 
-    pub fn begin_render_pass(&mut self, canvas_id: &str, clear_r: f64, clear_g: f64, clear_b: f64, clear_a: f64) -> bool {
-        let canvas = match self.canvas_textures.get(canvas_id) {
-            Some(c) => c,
-            None => return false,
-        };
-
-        let _ = canvas;
+    pub fn begin_render_pass(&mut self, canvas_id: &str, clear_color: [f64; 4]) -> bool {
+        if !self.canvas_textures.contains_key(canvas_id) {
+            return false;
+        }
 
         let encoder = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
             label: Some("webgpu user encoder"),
@@ -209,6 +210,7 @@ impl WebGpuBridge {
 
         self.active_encoder = Some(encoder);
         self.active_pass_canvas = Some(canvas_id.to_string());
+        self.active_clear_color = Some(clear_color);
         true
     }
 
@@ -217,10 +219,9 @@ impl WebGpuBridge {
         pipeline_handle: Handle,
         vertex_buffer_handle: Handle,
         vertex_count: u32,
-        clear_color: [f64; 4],
     ) {
-        let canvas_id = match self.active_pass_canvas.as_ref() {
-            Some(id) => id.clone(),
+        let canvas_id = match self.active_pass_canvas.take() {
+            Some(id) => id,
             None => return,
         };
 
@@ -229,26 +230,12 @@ impl WebGpuBridge {
             None => return,
         };
 
+        let clear_color = self.active_clear_color.take().unwrap_or([0.0, 0.0, 0.0, 1.0]);
+
         let canvas = match self.canvas_textures.get(&canvas_id) {
             Some(c) => c,
             None => return,
         };
-
-        let depth_tex = self.device.create_texture(&wgpu::TextureDescriptor {
-            label: Some("webgpu pass depth"),
-            size: wgpu::Extent3d {
-                width: canvas.width,
-                height: canvas.height,
-                depth_or_array_layers: 1,
-            },
-            mip_level_count: 1,
-            sample_count: 1,
-            dimension: wgpu::TextureDimension::D2,
-            format: wgpu::TextureFormat::Depth24Plus,
-            usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
-            view_formats: &[],
-        });
-        let depth_view = depth_tex.create_view(&Default::default());
 
         let mut encoder = encoder;
         {
@@ -269,7 +256,7 @@ impl WebGpuBridge {
                     depth_slice: None,
                 })],
                 depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
-                    view: &depth_view,
+                    view: &canvas.depth_view,
                     depth_ops: Some(wgpu::Operations {
                         load: wgpu::LoadOp::Clear(1.0),
                         store: wgpu::StoreOp::Store,
@@ -293,8 +280,6 @@ impl WebGpuBridge {
         if let Some(canvas) = self.canvas_textures.get_mut(&canvas_id) {
             canvas.dirty = true;
         }
-
-        self.active_pass_canvas = None;
     }
 
     pub fn get_canvas_texture_view(&self, canvas_id: &str) -> Option<&wgpu::TextureView> {

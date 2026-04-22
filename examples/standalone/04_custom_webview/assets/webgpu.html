@@ -221,7 +221,7 @@
             var rotated = rotateX(rotateY(cubeVerts, t * 0.7), t * 0.4);
             var projected = perspective(rotated, 1.2, 500 / 400);
 
-            device.queue.writeBuffer(vertexBuffer, 0, projected);
+            device.queue.writeBuffer(vertexBuffer, 0, new Float32Array(projected));
 
             var textureView = context.getCurrentTexture().createView();
             var encoder = device.createCommandEncoder();

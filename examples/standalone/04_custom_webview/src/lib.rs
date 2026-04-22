@@ -35,7 +35,7 @@ pub mod embedded_assets {
     pub const ABOUT_HTML: &str = include_str!("../assets/about.html");
     pub const CANVAS_HTML: &str = include_str!("../assets/canvas.html");
     pub const CSS3D_HTML: &str = include_str!("../assets/css3d.html");
-    pub const WEBGL_HTML: &str = include_str!("../assets/webgl.html");
+    pub const WEBGPU_HTML: &str = include_str!("../assets/webgpu.html");
 
     pub fn get(name: &str) -> Option<&'static str> {
         match name {
@@ -44,7 +44,7 @@ pub mod embedded_assets {
             "about.html" => Some(ABOUT_HTML),
             "canvas.html" => Some(CANVAS_HTML),
             "css3d.html" => Some(CSS3D_HTML),
-            "webgl.html" => Some(WEBGL_HTML),
+            "webgpu.html" => Some(WEBGPU_HTML),
             _ => None,
         }
     }
@@ -303,7 +303,7 @@ impl ApplicationHandler for App {
         let css_sources = extract_styles(&html_source);
 
         #[cfg(feature = "js")]
-        let mut js = {
+        let js = {
             let script = html_parser::extract_script(&html_source);
             match js_bridge::JsBridge::new() {
                 Ok(mut js) => {
