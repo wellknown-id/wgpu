@@ -127,10 +127,7 @@ impl WebGpuBridge {
         h
     }
 
-    pub fn create_bind_group_layout(
-        &mut self,
-        entries: &[wgpu::BindGroupLayoutEntry],
-    ) -> Handle {
+    pub fn create_bind_group_layout(&mut self, entries: &[wgpu::BindGroupLayoutEntry]) -> Handle {
         let bgl = self
             .device
             .create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
@@ -386,16 +383,16 @@ impl WebGpuBridge {
                         stencil_ops: None,
                     })
                 } else if let Some(ref cid) = pass.canvas_id {
-                    self.canvas_textures.get(cid).map(|ct| {
-                        wgpu::RenderPassDepthStencilAttachment {
+                    self.canvas_textures
+                        .get(cid)
+                        .map(|ct| wgpu::RenderPassDepthStencilAttachment {
                             view: &ct.depth_view,
                             depth_ops: Some(wgpu::Operations {
                                 load: wgpu::LoadOp::Clear(1.0),
                                 store: wgpu::StoreOp::Store,
                             }),
                             stencil_ops: None,
-                        }
-                    })
+                        })
                 } else {
                     None
                 };

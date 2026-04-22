@@ -1205,11 +1205,15 @@ impl JsBridge {
                                 .filter(|s| !s.is_empty())
                                 .map(|s| {
                                     let parts: Vec<&str> = s.split(':').collect();
-                                    let binding: u32 = parts.first().and_then(|p| p.parse().ok()).unwrap_or(0);
-                                    let visibility: u32 = parts.get(1).and_then(|p| p.parse().ok()).unwrap_or(1);
+                                    let binding: u32 =
+                                        parts.first().and_then(|p| p.parse().ok()).unwrap_or(0);
+                                    let visibility: u32 =
+                                        parts.get(1).and_then(|p| p.parse().ok()).unwrap_or(1);
                                     wgpu::BindGroupLayoutEntry {
                                         binding,
-                                        visibility: wgpu::ShaderStages::from_bits_truncate(visibility),
+                                        visibility: wgpu::ShaderStages::from_bits_truncate(
+                                            visibility,
+                                        ),
                                         ty: wgpu::BindingType::Buffer {
                                             ty: wgpu::BufferBindingType::Uniform,
                                             has_dynamic_offset: false,
@@ -1234,7 +1238,10 @@ impl JsBridge {
                 "__hostGpuCreateBindGroup",
                 Function::new(
                     ctx.clone(),
-                    move |_ctx: rquickjs::Ctx<'_>, layout_handle: u64, bindings_str: String| -> u64 {
+                    move |_ctx: rquickjs::Ctx<'_>,
+                          layout_handle: u64,
+                          bindings_str: String|
+                          -> u64 {
                         let mut st = s.borrow_mut();
                         if let Some(ref mut gpu) = st.webgpu {
                             let bindings: Vec<(u32, u64)> = bindings_str
@@ -1242,8 +1249,10 @@ impl JsBridge {
                                 .filter(|s| !s.is_empty())
                                 .map(|s| {
                                     let parts: Vec<&str> = s.split(':').collect();
-                                    let binding: u32 = parts.first().and_then(|p| p.parse().ok()).unwrap_or(0);
-                                    let buf_h: u64 = parts.get(1).and_then(|p| p.parse().ok()).unwrap_or(0);
+                                    let binding: u32 =
+                                        parts.first().and_then(|p| p.parse().ok()).unwrap_or(0);
+                                    let buf_h: u64 =
+                                        parts.get(1).and_then(|p| p.parse().ok()).unwrap_or(0);
                                     (binding, buf_h)
                                 })
                                 .collect();
@@ -1284,7 +1293,12 @@ impl JsBridge {
                 "__hostGpuCreateTexture",
                 Function::new(
                     ctx.clone(),
-                    move |_ctx: rquickjs::Ctx<'_>, width: u32, height: u32, format: String, usage: u32| -> u64 {
+                    move |_ctx: rquickjs::Ctx<'_>,
+                          width: u32,
+                          height: u32,
+                          format: String,
+                          usage: u32|
+                          -> u64 {
                         let mut st = s.borrow_mut();
                         if let Some(ref mut gpu) = st.webgpu {
                             let fmt = parse_texture_format(&format);
@@ -1333,7 +1347,8 @@ impl JsBridge {
                             let opt_parts: Vec<&str> = opts.splitn(6, '|').collect();
                             let vs_entry = opt_parts.first().copied().unwrap_or("vs_main");
                             let fs_entry = opt_parts.get(1).copied().unwrap_or("fs_main");
-                            let stride: u64 = opt_parts.get(2).and_then(|s| s.parse().ok()).unwrap_or(0);
+                            let stride: u64 =
+                                opt_parts.get(2).and_then(|s| s.parse().ok()).unwrap_or(0);
                             let color_fmt = opt_parts.get(3).copied().unwrap_or("rgba8unorm-srgb");
                             let depth_fmt = opt_parts.get(4).copied().unwrap_or("");
                             let cull_mode = opt_parts.get(5).copied().unwrap_or("none");
@@ -1464,7 +1479,10 @@ impl JsBridge {
                         let st = s.borrow();
                         if let Some(ref xr) = st.xr_view_data {
                             let eye = if eye_index == 0 { &xr.left } else { &xr.right };
-                            format!("{},{},{},{}", eye.tex_handle, eye.view_handle, eye.width, eye.height)
+                            format!(
+                                "{},{},{},{}",
+                                eye.tex_handle, eye.view_handle, eye.width, eye.height
+                            )
                         } else {
                             "0,0,512,512".to_string()
                         }
@@ -1476,24 +1494,29 @@ impl JsBridge {
             let s = shared.clone();
             globals.set(
                 "__hostXrGetViewerPose",
-                Function::new(
-                    ctx.clone(),
-                    move |_ctx: rquickjs::Ctx<'_>| -> String {
-                        let st = s.borrow();
-                        if let Some(ref xr) = st.xr_view_data {
-                            let mut vals = Vec::with_capacity(64);
-                            for v in &xr.left.proj_matrix { vals.push(v.to_string()); }
-                            for v in &xr.left.view_inv_matrix { vals.push(v.to_string()); }
-                            for v in &xr.right.proj_matrix { vals.push(v.to_string()); }
-                            for v in &xr.right.view_inv_matrix { vals.push(v.to_string()); }
-                            vals.join(",")
-                        } else {
-                            // Identity matrices fallback
-                            let id = "1,0,0,0,0,1,0,0,0,0,1,0,0,0,0,1";
-                            format!("{id},{id},{id},{id}")
+                Function::new(ctx.clone(), move |_ctx: rquickjs::Ctx<'_>| -> String {
+                    let st = s.borrow();
+                    if let Some(ref xr) = st.xr_view_data {
+                        let mut vals = Vec::with_capacity(64);
+                        for v in &xr.left.proj_matrix {
+                            vals.push(v.to_string());
                         }
-                    },
-                )?,
+                        for v in &xr.left.view_inv_matrix {
+                            vals.push(v.to_string());
+                        }
+                        for v in &xr.right.proj_matrix {
+                            vals.push(v.to_string());
+                        }
+                        for v in &xr.right.view_inv_matrix {
+                            vals.push(v.to_string());
+                        }
+                        vals.join(",")
+                    } else {
+                        // Identity matrices fallback
+                        let id = "1,0,0,0,0,1,0,0,0,0,1,0,0,0,0,1";
+                        format!("{id},{id},{id},{id}")
+                    }
+                })?,
             )?;
 
             Ok(())
@@ -1556,10 +1579,12 @@ fn parse_recorded_passes(json: &str) -> Result<Vec<crate::webgpu_bridge::Recorde
     // Each op: { t: "pipe"|"vp"|"bg"|"vb"|"ib"|"draw"|"dridx", ... }
     //
     // Use serde_json-like manual parsing to avoid adding a dependency.
-    let val: serde_json::Value = serde_json::from_str(json)
-        .map_err(|e| anyhow::anyhow!("JSON parse error: {e}"))?;
+    let val: serde_json::Value =
+        serde_json::from_str(json).map_err(|e| anyhow::anyhow!("JSON parse error: {e}"))?;
 
-    let arr = val.as_array().ok_or_else(|| anyhow::anyhow!("expected array"))?;
+    let arr = val
+        .as_array()
+        .ok_or_else(|| anyhow::anyhow!("expected array"))?;
     let mut passes = Vec::new();
 
     for pass_val in arr {

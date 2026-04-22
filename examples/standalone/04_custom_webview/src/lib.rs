@@ -1,4 +1,6 @@
 #![allow(clippy::disallowed_types, dead_code, static_mut_refs)]
+#[cfg(target_os = "android")]
+pub mod android_handoff;
 pub mod css_engine;
 pub mod gpu;
 pub mod html_parser;
@@ -62,6 +64,7 @@ pub struct WebviewState {
     pub static_commands: Vec<DrawCommand>,
     pub ghost_commands: Vec<DrawCommand>,
     pub clear_color: [f32; 4],
+    pub current_asset: String,
     pub html_source: String,
     pub css_sources: Vec<String>,
     pub styled_base: types::StyledNode,
@@ -86,6 +89,35 @@ pub struct WebviewState {
 #[derive(Default)]
 pub struct App {
     pub state: Option<WebviewState>,
+    #[cfg(target_os = "android")]
+    pub android_app: Option<winit::platform::android::activity::AndroidApp>,
+    #[cfg(target_os = "android")]
+    pub immersive_activity: bool,
+    #[cfg(target_os = "android")]
+    pub launch_asset: Option<String>,
+    #[cfg(target_os = "android")]
+    pub auto_enter_vr: bool,
+}
+
+fn asset_name(href: &str) -> &str {
+    href.split('?')
+        .next()
+        .unwrap_or(href)
+        .split('#')
+        .next()
+        .unwrap_or(href)
+}
+
+#[cfg(any(target_os = "android", target_os = "ios"))]
+fn mobile_html_source(href: &str) -> String {
+    let asset = asset_name(href);
+    match embedded_assets::get(asset) {
+        Some(source) => source.to_string(),
+        None => {
+            log::error!("Missing embedded asset {asset}, falling back to index.html");
+            embedded_assets::INDEX_HTML.to_string()
+        }
+    }
 }
 
 impl App {
@@ -209,8 +241,9 @@ impl App {
 
     pub fn navigate(&mut self, href: &str) {
         let state = self.state.as_mut().unwrap();
+        let current_asset = asset_name(href).to_string();
         #[cfg(not(any(target_os = "android", target_os = "ios")))]
-        let html_source = match std::fs::read_to_string(&state.asset_dir.join(href)) {
+        let html_source = match std::fs::read_to_string(state.asset_dir.join(href)) {
             Ok(s) => s,
             Err(e) => {
                 eprintln!("Navigation failed: {e}");
@@ -218,13 +251,7 @@ impl App {
             }
         };
         #[cfg(any(target_os = "android", target_os = "ios"))]
-        let html_source = match embedded_assets::get(href) {
-            Some(s) => s.to_string(),
-            None => {
-                eprintln!("Navigation failed: missing embedded asset {href}");
-                return;
-            }
-        };
+        let html_source = mobile_html_source(href);
 
         let css_sources = extract_styles(&html_source);
         #[cfg(feature = "js")]
@@ -240,6 +267,7 @@ impl App {
             state.js = new_js;
         }
 
+        state.current_asset = current_asset;
         state.html_source = html_source;
         state.css_sources = css_sources;
         state.scroll_y = 0.0;
@@ -287,6 +315,14 @@ pub fn apply_text_overrides(
 
 impl ApplicationHandler for App {
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
+        if self.state.is_some() {
+            log::info!("Ignoring duplicate resumed event; keeping existing app state");
+            if let Some(state) = self.state.as_ref() {
+                state.gpu.window.request_redraw();
+            }
+            return;
+        }
+
         let window_attrs = Window::default_attributes().with_title("Custom Webview - wgpu");
         #[cfg(not(any(target_os = "android", target_os = "ios")))]
         let window_attrs = window_attrs.with_inner_size(winit::dpi::PhysicalSize::new(1280, 720));
@@ -311,17 +347,24 @@ impl ApplicationHandler for App {
         .unwrap();
 
         #[cfg(not(any(target_os = "android", target_os = "ios")))]
-        let html_source = {
+        let (initial_asset, html_source) = {
             let asset_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("assets");
             let html_file = std::env::args()
                 .nth(1)
                 .unwrap_or_else(|| "index.html".to_string());
-            std::fs::read_to_string(asset_dir.join(&html_file)).expect("failed to read HTML file")
+            let html_source = std::fs::read_to_string(asset_dir.join(&html_file))
+                .expect("failed to read HTML file");
+            (html_file, html_source)
         };
+        #[cfg(target_os = "android")]
+        let initial_asset = self
+            .launch_asset
+            .clone()
+            .unwrap_or_else(|| "index.html".to_string());
+        #[cfg(target_os = "ios")]
+        let initial_asset = "index.html".to_string();
         #[cfg(any(target_os = "android", target_os = "ios"))]
-        let html_source = embedded_assets::get("index.html")
-            .unwrap_or(embedded_assets::INDEX_HTML)
-            .to_string();
+        let html_source = mobile_html_source(&initial_asset);
 
         let css_sources = extract_styles(&html_source);
 
@@ -385,6 +428,7 @@ impl ApplicationHandler for App {
             static_commands,
             ghost_commands,
             clear_color,
+            current_asset: initial_asset,
             html_source,
             css_sources,
             styled_base,
@@ -407,6 +451,18 @@ impl ApplicationHandler for App {
             #[cfg(feature = "xr")]
             xr_depth_size: (0, 0),
         });
+
+        #[cfg(all(target_os = "android", feature = "js"))]
+        if self.immersive_activity && self.auto_enter_vr {
+            self.auto_enter_vr = false;
+            let state = self.state.as_mut().unwrap();
+            if state.current_asset == "webxr.html" {
+                log::info!("Auto-entering XR in immersive activity");
+                if let Err(e) = state.js.eval_script("enterVR();") {
+                    log::error!("failed to auto-enter XR: {:?}", e);
+                }
+            }
+        }
 
         window.request_redraw();
     }
@@ -562,11 +618,37 @@ impl ApplicationHandler for App {
                 }
             },
             WindowEvent::RedrawRequested => {
+                if self.state.is_none() {
+                    return;
+                }
+
                 // XR session lifecycle management
                 #[cfg(all(feature = "js", feature = "xr"))]
                 {
                     let s = self.state.as_mut().unwrap();
                     if s.js.take_xr_request() && s.xr_session.is_none() {
+                        #[cfg(target_os = "android")]
+                        if !self.immersive_activity {
+                            if let Some(app) = self.android_app.as_ref() {
+                                match android_handoff::launch_immersive_activity(
+                                    app,
+                                    &s.current_asset,
+                                    true,
+                                ) {
+                                    Ok(()) => {
+                                        log::info!(
+                                            "Launched immersive activity for {}",
+                                            s.current_asset
+                                        );
+                                        return;
+                                    }
+                                    Err(e) => {
+                                        log::error!("Failed to launch immersive activity: {:?}", e);
+                                    }
+                                }
+                            }
+                        }
+
                         log::info!("Creating XR session from JS request");
                         if let Some(ctx) = s.xr_context.as_ref() {
                             match xr_session::XrSession::new(
@@ -605,7 +687,6 @@ impl ApplicationHandler for App {
                             match xr.wait_frame() {
                                 Ok(Some(frame_data)) => match xr.acquire_swapchain_image() {
                                     Ok((texture, _idx)) => {
-
                                         // Create per-eye views from the array texture
                                         let left_view =
                                             texture.create_view(&wgpu::TextureViewDescriptor {
@@ -626,8 +707,8 @@ impl ApplicationHandler for App {
                                         if s.xr_depth_texture.is_none()
                                             || s.xr_depth_size != (sw, sh)
                                         {
-                                            let dt =
-                                                s.gpu.device.create_texture(&wgpu::TextureDescriptor {
+                                            let dt = s.gpu.device.create_texture(
+                                                &wgpu::TextureDescriptor {
                                                     label: Some("xr depth"),
                                                     size: wgpu::Extent3d {
                                                         width: sw,
@@ -640,7 +721,8 @@ impl ApplicationHandler for App {
                                                     format: wgpu::TextureFormat::Depth24Plus,
                                                     usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
                                                     view_formats: &[],
-                                                });
+                                                },
+                                            );
                                             s.xr_depth_texture = Some(dt);
                                             s.xr_depth_size = (sw, sh);
                                         }
@@ -652,8 +734,7 @@ impl ApplicationHandler for App {
 
                                         // Register in WebGpuBridge
                                         let (left_vh, right_vh, depth_vh) = {
-                                            let mut bridge =
-                                                s.js.webgpu_bridge_mut();
+                                            let mut bridge = s.js.webgpu_bridge_mut();
                                             let gpu = bridge.as_mut().unwrap();
                                             let lvh = gpu.register_texture_view(left_view);
                                             let rvh = gpu.register_texture_view(right_view);
@@ -702,14 +783,15 @@ impl ApplicationHandler for App {
                                         // Clean up registered views
                                         s.js.set_xr_view_data(None);
                                         {
-                                            let mut bridge =
-                                                s.js.webgpu_bridge_mut();
+                                            let mut bridge = s.js.webgpu_bridge_mut();
                                             let gpu = bridge.as_mut().unwrap();
                                             gpu.unregister_texture_view(left_vh);
                                             gpu.unregister_texture_view(right_vh);
                                             gpu.unregister_texture_view(depth_vh);
                                         }
 
+                                        let _ =
+                                            s.gpu.device.poll(wgpu::PollType::wait_indefinitely());
                                         if let Err(e) = xr.release_and_end_frame(&frame_data) {
                                             log::error!("XR end frame error: {:?}", e);
                                         }
@@ -717,6 +799,14 @@ impl ApplicationHandler for App {
                                     }
                                     Err(e) => {
                                         log::error!("XR acquire error: {:?}", e);
+                                        if let Err(end_err) = xr.end_frame_without_layers(
+                                            frame_data.predicted_display_time,
+                                        ) {
+                                            log::error!(
+                                                "XR end frame after acquire failure error: {:?}",
+                                                end_err
+                                            );
+                                        }
                                     }
                                 },
                                 Ok(None) => {}
@@ -834,11 +924,22 @@ pub fn android_main(app: winit::platform::android::activity::AndroidApp) {
 
     log::info!("android_main: starting");
 
+    let launch = crate::android_handoff::read_launch_options(&app).unwrap_or_else(|e| {
+        log::error!("Failed to query Android launch options: {:?}", e);
+        crate::android_handoff::LaunchOptions::default()
+    });
+
     loop {
         match EventLoop::builder().with_android_app(app.clone()).build() {
             Ok(event_loop) => {
                 event_loop.set_control_flow(ControlFlow::Poll);
-                let mut application = App::default();
+                let mut application = App {
+                    state: None,
+                    android_app: Some(app.clone()),
+                    immersive_activity: launch.immersive_activity,
+                    launch_asset: launch.launch_asset.clone(),
+                    auto_enter_vr: launch.auto_enter_vr,
+                };
                 let _ = event_loop.run_app(&mut application);
                 break;
             }

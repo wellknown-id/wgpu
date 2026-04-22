@@ -12,6 +12,20 @@ use winit::{event_loop::OwnedDisplayHandle, window::Window};
 
 use crate::types::DrawCommand;
 
+#[cfg(feature = "xr")]
+fn parse_vulkan_extension_list(extension_list: &str) -> Vec<&'static std::ffi::CStr> {
+    extension_list
+        .split_whitespace()
+        .filter_map(|name| match std::ffi::CString::new(name) {
+            Ok(cstr) => Some(Box::leak(cstr.into_boxed_c_str()) as &'static std::ffi::CStr),
+            Err(e) => {
+                log::warn!("Ignoring invalid Vulkan extension name '{name}': {e}");
+                None
+            }
+        })
+        .collect()
+}
+
 #[repr(C)]
 #[derive(Clone, Copy, Pod, Zeroable)]
 struct LineInstance {
@@ -563,7 +577,7 @@ impl GpuState {
         let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_with_display_handle(
             Box::new(display),
         ));
-        
+
         let mut target_adapter = None;
         #[cfg(feature = "xr")]
         if let Some(xr_ctx) = xr_context {
@@ -573,7 +587,8 @@ impl GpuState {
                     .await
                     .into_iter()
                     .find(|a| {
-                        crate::xr_session::extract_vulkan_physical_device(a).unwrap_or(0) == target_pd
+                        crate::xr_session::extract_vulkan_physical_device(a).unwrap_or(0)
+                            == target_pd
                     });
             }
         }
@@ -586,9 +601,89 @@ impl GpuState {
                 .await?
         };
 
-        let (device, queue) = adapter
-            .request_device(&wgpu::DeviceDescriptor::default())
-            .await?;
+        let device_desc = wgpu::DeviceDescriptor::default();
+        let (device, queue) = {
+            #[cfg(feature = "xr")]
+            {
+                if let Some(xr_ctx) = xr_context {
+                    if let Ok(exts) = xr_ctx
+                        .instance
+                        .vulkan_legacy_device_extensions(xr_ctx.system)
+                    {
+                        let xr_device_extensions = parse_vulkan_extension_list(&exts);
+                        if !xr_device_extensions.is_empty() {
+                            use wgpu::hal;
+
+                            let xr_device_extensions_count = xr_device_extensions.len();
+                            if let Some(hal_adapter) =
+                                unsafe { adapter.as_hal::<hal::api::Vulkan>() }
+                            {
+                                let callback_exts = xr_device_extensions.clone();
+                                let open_result = unsafe {
+                                    hal_adapter.open_with_callback(
+                                        device_desc.required_features,
+                                        &device_desc.required_limits,
+                                        &device_desc.memory_hints,
+                                        Some(Box::new(move |args| {
+                                            for &xr_ext in &callback_exts {
+                                                if !args.extensions.contains(&xr_ext) {
+                                                    args.extensions.push(xr_ext);
+                                                }
+                                            }
+                                        })),
+                                    )
+                                };
+
+                                match open_result {
+                                    Ok(hal_device) => {
+                                        log::info!(
+                                            "Creating Vulkan device with {xr_device_extensions_count} XR-required extension(s)"
+                                        );
+                                        if let Ok(pair) = unsafe {
+                                            adapter.create_device_from_hal::<hal::api::Vulkan>(
+                                                hal_device,
+                                                &device_desc,
+                                            )
+                                        } {
+                                            pair
+                                        } else {
+                                            log::warn!(
+                                                "create_device_from_hal failed; falling back to request_device"
+                                            );
+                                            adapter.request_device(&device_desc).await?
+                                        }
+                                    }
+                                    Err(e) => {
+                                        log::warn!(
+                                            "open_with_callback failed ({e:?}); falling back to request_device"
+                                        );
+                                        adapter.request_device(&device_desc).await?
+                                    }
+                                }
+                            } else {
+                                log::warn!(
+                                    "Vulkan HAL adapter unavailable; falling back to request_device"
+                                );
+                                adapter.request_device(&device_desc).await?
+                            }
+                        } else {
+                            adapter.request_device(&device_desc).await?
+                        }
+                    } else {
+                        log::warn!(
+                            "Failed to query XR-required Vulkan device extensions; falling back to request_device"
+                        );
+                        adapter.request_device(&device_desc).await?
+                    }
+                } else {
+                    adapter.request_device(&device_desc).await?
+                }
+            }
+            #[cfg(not(feature = "xr"))]
+            {
+                adapter.request_device(&device_desc).await?
+            }
+        };
         let device = Arc::new(device);
         let queue = Arc::new(queue);
 

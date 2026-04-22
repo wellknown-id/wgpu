@@ -12,6 +12,8 @@ pub enum XrState {
 pub struct XrEyeView {
     pub projection_matrix: [f32; 16],
     pub view_matrix: [f32; 16],
+    pub fov: xr::Fovf,
+    pub pose: xr::Posef,
 }
 
 pub struct XrFrameData {
@@ -70,7 +72,8 @@ impl XrContext {
     pub fn vulkan_graphics_device(&self, wgpu_instance: &wgpu::Instance) -> Result<u64> {
         let vk_instance_raw = extract_vulkan_instance(wgpu_instance)?;
         let xr_phys_dev = unsafe {
-            self.instance.vulkan_graphics_device(self.system, vk_instance_raw as _)?
+            self.instance
+                .vulkan_graphics_device(self.system, vk_instance_raw as _)?
         };
         Ok(xr_phys_dev as _)
     }
@@ -120,9 +123,9 @@ impl XrSession {
             extract_vulkan_handles(wgpu_instance, adapter, device)?;
 
         let xr_phys_dev = unsafe {
-            ctx.instance.vulkan_graphics_device(ctx.system, vk_instance_raw as _)?
+            ctx.instance
+                .vulkan_graphics_device(ctx.system, vk_instance_raw as _)?
         };
-
 
         log::info!(
             "XR physical device: {:?}, wgpu physical device: {:?}",
@@ -138,8 +141,10 @@ impl XrSession {
             queue_index: 0,
         };
 
-        let (session, frame_waiter, frame_stream) =
-            unsafe { ctx.instance.create_session::<xr::Vulkan>(ctx.system, &binding)? };
+        let (session, frame_waiter, frame_stream) = unsafe {
+            ctx.instance
+                .create_session::<xr::Vulkan>(ctx.system, &binding)?
+        };
 
         let view_configs = ctx.instance.enumerate_view_configuration_views(
             ctx.system,
@@ -237,12 +242,38 @@ impl XrSession {
             frame_state.predicted_display_time,
             &self.reference_space,
         )?;
+        if views.len() < 2 {
+            log::warn!(
+                "XR locate_views returned {} view(s); expected stereo. Skipping frame.",
+                views.len()
+            );
+            self.frame_stream.end(
+                frame_state.predicted_display_time,
+                xr::EnvironmentBlendMode::OPAQUE,
+                &[],
+            )?;
+            return Ok(None);
+        }
+
+        for view in views.iter().take(2) {
+            if !is_valid_pose(&view.pose) {
+                log::warn!("XR locate_views returned an invalid view pose; skipping frame.");
+                self.frame_stream.end(
+                    frame_state.predicted_display_time,
+                    xr::EnvironmentBlendMode::OPAQUE,
+                    &[],
+                )?;
+                return Ok(None);
+            }
+        }
 
         let eye_views: Vec<XrEyeView> = views
             .iter()
             .map(|view| XrEyeView {
                 projection_matrix: fov_to_projection_matrix(&view.fov, 0.01, 100.0),
                 view_matrix: pose_to_view_matrix(&view.pose),
+                fov: view.fov,
+                pose: view.pose,
             })
             .collect();
 
@@ -259,7 +290,23 @@ impl XrSession {
         Ok((&self.swapchain_images[index as usize], index))
     }
 
+    pub fn end_frame_without_layers(&mut self, predicted_display_time: xr::Time) -> Result<()> {
+        self.frame_stream.end(
+            predicted_display_time,
+            xr::EnvironmentBlendMode::OPAQUE,
+            &[],
+        )?;
+        Ok(())
+    }
+
     pub fn release_and_end_frame(&mut self, frame_data: &XrFrameData) -> Result<()> {
+        if frame_data.views.len() < 2 {
+            return Err(anyhow::anyhow!(
+                "XR frame data has {} view(s), expected at least 2",
+                frame_data.views.len()
+            ));
+        }
+
         self.swapchain.release_image()?;
 
         let rect = xr::Rect2Di {
@@ -282,20 +329,24 @@ impl XrSession {
 
         let left_view = &frame_data.views[0];
         let right_view = &frame_data.views[1];
-
-        let left_fov = projection_matrix_to_fov(&left_view.projection_matrix);
-        let right_fov = projection_matrix_to_fov(&right_view.projection_matrix);
-        let left_pose = view_matrix_to_pose(&left_view.view_matrix);
-        let right_pose = view_matrix_to_pose(&right_view.view_matrix);
+        if !is_valid_pose(&left_view.pose) || !is_valid_pose(&right_view.pose) {
+            log::warn!("XR frame contains invalid projection pose; ending frame without layers.");
+            self.frame_stream.end(
+                frame_data.predicted_display_time,
+                xr::EnvironmentBlendMode::OPAQUE,
+                &[],
+            )?;
+            return Ok(());
+        }
 
         let projection_views = [
             xr::CompositionLayerProjectionView::new()
-                .pose(left_pose)
-                .fov(left_fov)
+                .pose(left_view.pose)
+                .fov(left_view.fov)
                 .sub_image(sub_image_left),
             xr::CompositionLayerProjectionView::new()
-                .pose(right_pose)
-                .fov(right_fov)
+                .pose(right_view.pose)
+                .fov(right_view.fov)
                 .sub_image(sub_image_right),
         ];
 
@@ -422,8 +473,8 @@ fn fov_to_projection_matrix(fov: &xr::Fovf, near: f32, far: f32) -> [f32; 16] {
     let m = [
         2.0 / w,            0.0,                0.0,                             0.0,
         0.0,                2.0 / h,            0.0,                             0.0,
-        (right + left) / w, (up + down) / h,    -(far + near) / (far - near),   -1.0,
-        0.0,                0.0,                -2.0 * far * near / (far - near), 0.0,
+        (right + left) / w, (up + down) / h,    -far / (far - near),            -1.0,
+        0.0,                0.0,                -(far * near) / (far - near),    0.0,
     ];
     m
 }
@@ -470,61 +521,19 @@ fn pose_to_view_matrix(pose: &xr::Posef) -> [f32; 16] {
     m
 }
 
-fn projection_matrix_to_fov(m: &[f32; 16]) -> xr::Fovf {
-    let w = 2.0 / m[0];
-    let h = 2.0 / m[5];
-    let rpl = m[8] * w;
-    let upd = m[9] * h;
-
-    let right = (w + rpl) / 2.0;
-    let left = right - w;
-    let up = (h + upd) / 2.0;
-    let down = up - h;
-
-    xr::Fovf {
-        angle_left: left.atan(),
-        angle_right: right.atan(),
-        angle_up: up.atan(),
-        angle_down: down.atan(),
+fn is_valid_pose(pose: &xr::Posef) -> bool {
+    let q = &pose.orientation;
+    let p = &pose.position;
+    let finite = q.x.is_finite()
+        && q.y.is_finite()
+        && q.z.is_finite()
+        && q.w.is_finite()
+        && p.x.is_finite()
+        && p.y.is_finite()
+        && p.z.is_finite();
+    if !finite {
+        return false;
     }
-}
-
-fn view_matrix_to_pose(m: &[f32; 16]) -> xr::Posef {
-    let r00 = m[0];
-    let r10 = m[1];
-    let r20 = m[2];
-    let r01 = m[4];
-    let r11 = m[5];
-    let r21 = m[6];
-    let r02 = m[8];
-    let r12 = m[9];
-    let r22 = m[10];
-
-    let trace = r00 + r11 + r22;
-    let (w, x, y, z) = if trace > 0.0 {
-        let s = 0.5 / (trace + 1.0).sqrt();
-        (0.25 / s, (r21 - r12) * s, (r02 - r20) * s, (r10 - r01) * s)
-    } else if r00 > r11 && r00 > r22 {
-        let s = 2.0 * (1.0 + r00 - r11 - r22).sqrt();
-        ((r21 - r12) / s, 0.25 * s, (r01 + r10) / s, (r02 + r20) / s)
-    } else if r11 > r22 {
-        let s = 2.0 * (1.0 + r11 - r00 - r22).sqrt();
-        ((r02 - r20) / s, (r01 + r10) / s, 0.25 * s, (r12 + r21) / s)
-    } else {
-        let s = 2.0 * (1.0 + r22 - r00 - r11).sqrt();
-        ((r10 - r01) / s, (r02 + r20) / s, (r12 + r21) / s, 0.25 * s)
-    };
-
-    let tx = -(r00 * m[12] + r10 * m[13] + r20 * m[14]);
-    let ty = -(r01 * m[12] + r11 * m[13] + r21 * m[14]);
-    let tz = -(r02 * m[12] + r12 * m[13] + r22 * m[14]);
-
-    xr::Posef {
-        orientation: xr::Quaternionf { x, y, z, w },
-        position: xr::Vector3f {
-            x: tx,
-            y: ty,
-            z: tz,
-        },
-    }
+    let norm_sq = q.x * q.x + q.y * q.y + q.z * q.z + q.w * q.w;
+    norm_sq > 1e-6
 }

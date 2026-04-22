@@ -5372,6 +5372,7 @@ dependencies = [
  "cosmic-text",
  "env_logger",
  "html5ever",
+ "jni",
  "log",
  "markup5ever_rcdom",
  "openxr",
