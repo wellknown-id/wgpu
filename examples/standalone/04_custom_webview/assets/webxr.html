@@ -120,11 +120,12 @@ var device = null;
 var pipeline = null;
 var vbuf = null;
 var ibuf = null;
-var uniformBuf = null;
-var bindGroup = null;
+var uniformBufs = [null, null];
+var bindGroups = [null, null];
 var xrBinding = null;
 var xrLayer = null;
 var indexCount = 0;
+var bgl = null;
 
 function log(msg) {
   console.log('[XR] ' + msg);
@@ -183,81 +184,77 @@ function mat4Translate(x, y, z) {
 // --- GPU init ---
 
 function initGpu(colorFormat) {
-  return navigator.gpu.requestAdapter({ xrCompatible: true }).then(function(adapter) {
-    return adapter.requestDevice();
-  }).then(function(dev) {
-    device = dev;
+  var module = device.createShaderModule({ code: SHADER });
 
-    var module = device.createShaderModule({ code: SHADER });
+  var verts = new Float32Array([
+    -0.3,-0.3, 0.3,  1.0,0.2,0.3,
+     0.3,-0.3, 0.3,  1.0,0.6,0.0,
+     0.3, 0.3, 0.3,  0.2,1.0,0.5,
+    -0.3, 0.3, 0.3,  0.5,0.2,1.0,
+    -0.3,-0.3,-0.3,  0.0,0.5,1.0,
+     0.3,-0.3,-0.3,  0.5,1.0,0.0,
+     0.3, 0.3,-0.3,  1.0,1.0,0.2,
+    -0.3, 0.3,-0.3,  1.0,0.2,1.0
+  ]);
 
-    // Cube vertices: position (vec3) + color (vec3)
-    var verts = new Float32Array([
-      -0.3,-0.3, 0.3,  1.0,0.2,0.3,
-       0.3,-0.3, 0.3,  1.0,0.6,0.0,
-       0.3, 0.3, 0.3,  0.2,1.0,0.5,
-      -0.3, 0.3, 0.3,  0.5,0.2,1.0,
-      -0.3,-0.3,-0.3,  0.0,0.5,1.0,
-       0.3,-0.3,-0.3,  0.5,1.0,0.0,
-       0.3, 0.3,-0.3,  1.0,1.0,0.2,
-      -0.3, 0.3,-0.3,  1.0,0.2,1.0
-    ]);
+  var indices = new Uint16Array([
+    0,1,2, 0,2,3,
+    4,6,5, 4,7,6,
+    3,2,6, 3,6,7,
+    0,5,1, 0,4,5,
+    1,5,6, 1,6,2,
+    0,3,7, 0,7,4
+  ]);
+  indexCount = indices.length;
 
-    var indices = new Uint16Array([
-      0,1,2, 0,2,3,
-      4,6,5, 4,7,6,
-      3,2,6, 3,6,7,
-      0,5,1, 0,4,5,
-      1,5,6, 1,6,2,
-      0,3,7, 0,7,4
-    ]);
-    indexCount = indices.length;
+  vbuf = device.createBuffer({ size: verts.byteLength, usage: GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST });
+  device.queue.writeBuffer(vbuf, 0, verts);
 
-    vbuf = device.createBuffer({ size: verts.byteLength, usage: GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST });
-    device.queue.writeBuffer(vbuf, 0, verts);
+  ibuf = device.createBuffer({ size: indices.byteLength, usage: GPUBufferUsage.INDEX | GPUBufferUsage.COPY_DST });
+  device.queue.writeBuffer(ibuf, 0, indices);
 
-    ibuf = device.createBuffer({ size: indices.byteLength, usage: GPUBufferUsage.INDEX | GPUBufferUsage.COPY_DST });
-    device.queue.writeBuffer(ibuf, 0, indices);
-
-    uniformBuf = device.createBuffer({ size: 64, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
-
-    var bgl = device.createBindGroupLayout({
-      entries: [{ binding: 0, visibility: GPUShaderStage.VERTEX, buffer: { type: 'uniform' } }]
-    });
-
-    bindGroup = device.createBindGroup({
-      layout: bgl,
-      entries: [{ binding: 0, resource: { buffer: uniformBuf } }]
-    });
-
-    pipeline = device.createRenderPipeline({
-      layout: device.createPipelineLayout({ bindGroupLayouts: [bgl] }),
-      vertex: {
-        module: module, entryPoint: 'vs',
-        buffers: [{
-          arrayStride: 24,
-          attributes: [
-            { shaderLocation: 0, offset: 0, format: 'float32x3' },
-            { shaderLocation: 1, offset: 12, format: 'float32x3' }
-          ]
-        }]
-      },
-      fragment: {
-        module: module, entryPoint: 'fs',
-        targets: [{ format: colorFormat }]
-      },
-      depthStencil: {
-        format: 'depth24plus',
-        depthWriteEnabled: true,
-        depthCompare: 'less'
-      },
-      primitive: { topology: 'triangle-list', cullMode: 'back' }
-    });
-
-    log('GPU initialized');
+  bgl = device.createBindGroupLayout({
+    entries: [{ binding: 0, visibility: GPUShaderStage.VERTEX, buffer: { type: 'uniform' } }]
   });
+
+  for (var eye = 0; eye < 2; eye++) {
+    uniformBufs[eye] = device.createBuffer({ size: 64, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
+    bindGroups[eye] = device.createBindGroup({
+      layout: bgl,
+      entries: [{ binding: 0, resource: { buffer: uniformBufs[eye] } }]
+    });
+  }
+
+  pipeline = device.createRenderPipeline({
+    layout: device.createPipelineLayout({ bindGroupLayouts: [bgl] }),
+    vertex: {
+      module: module, entryPoint: 'vs',
+      buffers: [{
+        arrayStride: 24,
+        attributes: [
+          { shaderLocation: 0, offset: 0, format: 'float32x3' },
+          { shaderLocation: 1, offset: 12, format: 'float32x3' }
+        ]
+      }]
+    },
+    fragment: {
+      module: module, entryPoint: 'fs',
+      targets: [{ format: colorFormat }]
+    },
+    depthStencil: {
+      format: 'depth24plus',
+      depthWriteEnabled: true,
+      depthCompare: 'less'
+    },
+    primitive: { topology: 'triangle-list', cullMode: 'back' }
+  });
+
+  console.log('[XR] Pipeline created with format: ' + colorFormat);
 }
 
-// --- XR frame loop ---
+var depthTex = null;
+var depthTexW = 0;
+var depthTexH = 0;
 
 function onXrFrame(time, frame) {
   xrSession.requestAnimationFrame(onXrFrame);
@@ -272,23 +269,29 @@ function onXrFrame(time, frame) {
     var subImage = xrBinding.getViewSubImage(xrLayer, view);
 
     var colorView = subImage.colorTexture.createView(subImage.getViewDescriptor());
+    var tw = subImage.colorTexture.width;
+    var th = subImage.colorTexture.height;
 
-    // Create a per-eye depth texture matching the sub-image size
+    if (!depthTex || depthTexW !== tw || depthTexH !== th) {
+      if (depthTex) depthTex.destroy();
+      depthTex = device.createTexture({
+        size: [tw, th],
+        format: 'depth24plus',
+        usage: GPUTextureUsage.RENDER_ATTACHMENT
+      });
+      depthTexW = tw;
+      depthTexH = th;
+    }
+
     var vp = subImage.viewport;
-    var depthTex = device.createTexture({
-      size: [subImage.colorTexture.width, subImage.colorTexture.height],
-      format: 'depth24plus',
-      usage: GPUTextureUsage.RENDER_ATTACHMENT
-    });
 
-    // Build MVP
     var model = mat4Multiply(
       mat4Translate(0, 0, -2),
       mat4Multiply(mat4RotateY(time * 0.001), mat4RotateX(time * 0.0007))
     );
     var mv = mat4Multiply(view.transform.inverse.matrix, model);
     var mvp = mat4Multiply(view.projectionMatrix, mv);
-    device.queue.writeBuffer(uniformBuf, 0, mvp);
+    device.queue.writeBuffer(uniformBufs[i], 0, mvp);
 
     var pass = encoder.beginRenderPass({
       colorAttachments: [{
@@ -307,13 +310,11 @@ function onXrFrame(time, frame) {
 
     pass.setViewport(vp.x, vp.y, vp.width, vp.height, 0.0, 1.0);
     pass.setPipeline(pipeline);
-    pass.setBindGroup(0, bindGroup);
+    pass.setBindGroup(0, bindGroups[i]);
     pass.setVertexBuffer(0, vbuf);
     pass.setIndexBuffer(ibuf, 'uint16');
     pass.drawIndexed(indexCount);
     pass.end();
-
-    depthTex.destroy();
   }
 
   device.queue.submit([encoder.finish()]);
@@ -347,12 +348,26 @@ function enterVR() {
     requiredFeatures: ['webgpu']
   }).then(function(session) {
     xrSession = session;
+
+    session.addEventListener('end', function() {
+      log('Session ended');
+      xrSession = null;
+      btn.textContent = 'Enter VR';
+      btn.onclick = enterVR;
+      btn.disabled = false;
+    });
+
     log('Session created, initializing GPU...');
 
-    return initGpu(navigator.gpu.getPreferredCanvasFormat ? navigator.gpu.getPreferredCanvasFormat() : 'rgba8unorm').then(function() {
-      xrBinding = new XRGPUBinding(session, device);
+    return navigator.gpu.requestAdapter({ xrCompatible: true }).then(function(adapter) {
+      return adapter.requestDevice();
+    }).then(function(dev) {
+      device = dev;
 
+      xrBinding = new XRGPUBinding(session, device);
       var colorFormat = xrBinding.getPreferredColorFormat();
+      console.log('[XR] Preferred color format: ' + colorFormat);
+
       xrLayer = xrBinding.createProjectionLayer({
         colorFormat: colorFormat,
         depthStencilFormat: 'depth24plus'
@@ -360,6 +375,9 @@ function enterVR() {
 
       session.updateRenderState({ layers: [xrLayer] });
 
+      // Now init the pipeline with the CORRECT format
+      return initGpu(colorFormat);
+    }).then(function() {
       return session.requestReferenceSpace('local');
     }).then(function(refSpace) {
       xrRefSpace = refSpace;
@@ -372,14 +390,6 @@ function enterVR() {
   }).then(null, function(e) {
     log('Failed: ' + e.message);
     console.log('[XR] Error:', e);
-    btn.disabled = false;
-  });
-
-  xrSession && xrSession.addEventListener('end', function() {
-    log('Session ended');
-    xrSession = null;
-    btn.textContent = 'Enter VR';
-    btn.onclick = enterVR;
     btn.disabled = false;
   });
 }
