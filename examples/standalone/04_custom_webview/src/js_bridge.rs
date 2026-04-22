@@ -140,7 +140,7 @@ impl JsBridge {
             console.set(
                 "log",
                 Function::new(ctx.clone(), |_ctx: rquickjs::Ctx<'_>, msg: String| {
-                    println!("[JS] {msg}");
+                    log::info!("[JS] {}", msg);
                 })?,
             )?;
             globals.set("console", console)?;
