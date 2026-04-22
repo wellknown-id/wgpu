@@ -555,13 +555,36 @@ pub struct GpuState {
 }
 
 impl GpuState {
-    pub async fn new(display: OwnedDisplayHandle, window: Arc<Window>) -> Result<Self> {
+    pub async fn new(
+        display: OwnedDisplayHandle,
+        window: Arc<Window>,
+        #[cfg(feature = "xr")] xr_context: Option<&crate::xr_session::XrContext>,
+    ) -> Result<Self> {
         let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_with_display_handle(
             Box::new(display),
         ));
-        let adapter = instance
-            .request_adapter(&wgpu::RequestAdapterOptions::default())
-            .await?;
+        
+        let mut target_adapter = None;
+        #[cfg(feature = "xr")]
+        if let Some(xr_ctx) = xr_context {
+            if let Ok(target_pd) = xr_ctx.vulkan_graphics_device(&instance) {
+                target_adapter = instance
+                    .enumerate_adapters(wgpu::Backends::VULKAN)
+                    .await
+                    .into_iter()
+                    .find(|a| {
+                        crate::xr_session::extract_vulkan_physical_device(a).unwrap_or(0) == target_pd
+                    });
+            }
+        }
+
+        let adapter = if let Some(a) = target_adapter {
+            a
+        } else {
+            instance
+                .request_adapter(&wgpu::RequestAdapterOptions::default())
+                .await?
+        };
 
         let (device, queue) = adapter
             .request_device(&wgpu::DeviceDescriptor::default())

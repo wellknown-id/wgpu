@@ -74,6 +74,8 @@ pub struct WebviewState {
     pub ghost_pos: Option<(f32, f32)>,
     pub last_touch_y: Option<f32>,
     #[cfg(feature = "xr")]
+    pub xr_context: Option<xr_session::XrContext>,
+    #[cfg(feature = "xr")]
     pub xr_session: Option<xr_session::XrSession>,
     #[cfg(feature = "xr")]
     pub xr_depth_texture: Option<wgpu::Texture>,
@@ -291,9 +293,20 @@ impl ApplicationHandler for App {
 
         let window = Arc::new(event_loop.create_window(window_attrs).unwrap());
 
+        #[cfg(feature = "xr")]
+        let xr_context = match crate::xr_session::XrContext::new() {
+            Ok(ctx) => Some(ctx),
+            Err(e) => {
+                log::error!("Failed to initialize OpenXR context: {:?}", e);
+                None
+            }
+        };
+
         let mut gpu = pollster::block_on(GpuState::new(
             event_loop.owned_display_handle(),
             window.clone(),
+            #[cfg(feature = "xr")]
+            xr_context.as_ref(),
         ))
         .unwrap();
 
@@ -385,6 +398,8 @@ impl ApplicationHandler for App {
             text_cache,
             ghost_pos: None,
             last_touch_y: None,
+            #[cfg(feature = "xr")]
+            xr_context,
             #[cfg(feature = "xr")]
             xr_session: None,
             #[cfg(feature = "xr")]
@@ -553,16 +568,21 @@ impl ApplicationHandler for App {
                     let s = self.state.as_mut().unwrap();
                     if s.js.take_xr_request() && s.xr_session.is_none() {
                         log::info!("Creating XR session from JS request");
-                        match xr_session::XrSession::new(
-                            &s.gpu.instance,
-                            &s.gpu.adapter,
-                            &s.gpu.device,
-                        ) {
-                            Ok(session) => {
-                                s.xr_session = Some(session);
-                                log::info!("XR session created");
+                        if let Some(ctx) = s.xr_context.as_ref() {
+                            match xr_session::XrSession::new(
+                                ctx,
+                                &s.gpu.instance,
+                                &s.gpu.adapter,
+                                &s.gpu.device,
+                            ) {
+                                Ok(session) => {
+                                    s.xr_session = Some(session);
+                                    log::info!("XR session created");
+                                }
+                                Err(e) => log::error!("Failed to create XR session: {:?}", e),
                             }
-                            Err(e) => log::error!("Failed to create XR session: {:?}", e),
+                        } else {
+                            log::error!("Cannot create XR session without XR context");
                         }
                     }
                     if s.js.take_xr_end_request() {

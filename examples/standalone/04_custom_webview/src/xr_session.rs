@@ -20,28 +20,13 @@ pub struct XrFrameData {
     pub should_render: bool,
 }
 
-pub struct XrSession {
-    instance: xr::Instance,
-    session: xr::Session<xr::Vulkan>,
-    frame_waiter: xr::FrameWaiter,
-    frame_stream: xr::FrameStream<xr::Vulkan>,
-    swapchain: xr::Swapchain<xr::Vulkan>,
-    swapchain_images: Vec<wgpu::Texture>,
-    reference_space: xr::Space,
-    state: XrState,
-    swapchain_width: u32,
-    swapchain_height: u32,
+pub struct XrContext {
+    pub instance: xr::Instance,
+    pub system: xr::SystemId,
 }
 
-impl XrSession {
-    pub fn new(
-        wgpu_instance: &wgpu::Instance,
-        adapter: &wgpu::Adapter,
-        device: &wgpu::Device,
-    ) -> Result<Self> {
-        let (vk_instance_raw, vk_phys_dev_raw, vk_device_raw, queue_family_index) =
-            extract_vulkan_handles(wgpu_instance, adapter, device)?;
-
+impl XrContext {
+    pub fn new() -> Result<Self> {
         let xr_entry = unsafe { xr::Entry::load()? };
 
         #[cfg(target_os = "android")]
@@ -76,9 +61,69 @@ impl XrSession {
         let system = xr_instance.system(xr::FormFactor::HEAD_MOUNTED_DISPLAY)?;
         let _reqs = xr_instance.graphics_requirements::<xr::Vulkan>(system)?;
 
+        Ok(Self {
+            instance: xr_instance,
+            system,
+        })
+    }
+
+    pub fn vulkan_graphics_device(&self, wgpu_instance: &wgpu::Instance) -> Result<u64> {
+        let vk_instance_raw = extract_vulkan_instance(wgpu_instance)?;
         let xr_phys_dev = unsafe {
-            xr_instance.vulkan_graphics_device(system, vk_instance_raw as _)?
+            self.instance.vulkan_graphics_device(self.system, vk_instance_raw as _)?
         };
+        Ok(xr_phys_dev as _)
+    }
+}
+
+pub fn extract_vulkan_instance(instance: &wgpu::Instance) -> Result<u64> {
+    use wgpu::hal;
+    unsafe {
+        instance
+            .as_hal::<hal::api::Vulkan>()
+            .map(|inst| inst.shared_instance().raw_instance().handle().as_raw())
+            .ok_or_else(|| anyhow::anyhow!("not a Vulkan instance"))
+    }
+}
+
+pub fn extract_vulkan_physical_device(adapter: &wgpu::Adapter) -> Result<u64> {
+    use wgpu::hal;
+    unsafe {
+        adapter
+            .as_hal::<hal::api::Vulkan>()
+            .map(|a| a.raw_physical_device().as_raw())
+            .ok_or_else(|| anyhow::anyhow!("not a Vulkan adapter"))
+    }
+}
+
+pub struct XrSession {
+    instance: xr::Instance,
+    session: xr::Session<xr::Vulkan>,
+    frame_waiter: xr::FrameWaiter,
+    frame_stream: xr::FrameStream<xr::Vulkan>,
+    swapchain: xr::Swapchain<xr::Vulkan>,
+    swapchain_images: Vec<wgpu::Texture>,
+    reference_space: xr::Space,
+    state: XrState,
+    swapchain_width: u32,
+    swapchain_height: u32,
+}
+
+impl XrSession {
+    pub fn new(
+        ctx: &XrContext,
+        wgpu_instance: &wgpu::Instance,
+        adapter: &wgpu::Adapter,
+        device: &wgpu::Device,
+    ) -> Result<Self> {
+        let (vk_instance_raw, vk_phys_dev_raw, vk_device_raw, queue_family_index) =
+            extract_vulkan_handles(wgpu_instance, adapter, device)?;
+
+        let xr_phys_dev = unsafe {
+            ctx.instance.vulkan_graphics_device(ctx.system, vk_instance_raw as _)?
+        };
+
+
         log::info!(
             "XR physical device: {:?}, wgpu physical device: {:?}",
             xr_phys_dev,
@@ -94,10 +139,10 @@ impl XrSession {
         };
 
         let (session, frame_waiter, frame_stream) =
-            unsafe { xr_instance.create_session::<xr::Vulkan>(system, &binding)? };
+            unsafe { ctx.instance.create_session::<xr::Vulkan>(ctx.system, &binding)? };
 
-        let view_configs = xr_instance.enumerate_view_configuration_views(
-            system,
+        let view_configs = ctx.instance.enumerate_view_configuration_views(
+            ctx.system,
             xr::ViewConfigurationType::PRIMARY_STEREO,
         )?;
         let width = view_configs[0].recommended_image_rect_width;
@@ -124,7 +169,7 @@ impl XrSession {
             session.create_reference_space(xr::ReferenceSpaceType::LOCAL, xr::Posef::IDENTITY)?;
 
         Ok(Self {
-            instance: xr_instance,
+            instance: ctx.instance.clone(),
             session,
             frame_waiter,
             frame_stream,
