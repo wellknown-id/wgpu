@@ -257,6 +257,7 @@ var depthTexW = 0;
 var depthTexH = 0;
 
 function onXrFrame(time, frame) {
+  console.log('[XR] onXrFrame running');
   xrSession.requestAnimationFrame(onXrFrame);
 
   var pose = frame.getViewerPose(xrRefSpace);
@@ -395,6 +396,7 @@ function enterVR() {
 }
 
 function exitVR() {
+  log('exitVR called');
   if (xrSession) {
     xrSession.end();
   }
