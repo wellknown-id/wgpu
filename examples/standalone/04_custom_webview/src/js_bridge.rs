@@ -90,6 +90,7 @@ pub struct SharedState {
     pub canvas_ops: HashMap<String, Vec<CanvasDrawOp>>,
     pub pointer_captures: HashMap<i32, String>,
     pub pointer_down_targets: HashMap<i32, String>,
+    pub pointer_hover_targets: HashMap<i32, Vec<String>>,
     pub element_rects: HashMap<String, crate::types::LayoutRect>,
     pub scroll_y: f32,
     pub animation_callbacks: Vec<rquickjs::Persistent<rquickjs::Function<'static>>>,
@@ -111,6 +112,7 @@ impl JsBridge {
             canvas_ops: HashMap::new(),
             pointer_captures: HashMap::new(),
             pointer_down_targets: HashMap::new(),
+            pointer_hover_targets: HashMap::new(),
             element_rects: HashMap::new(),
             scroll_y: 0.0,
             animation_callbacks: Vec::new(),
@@ -434,6 +436,8 @@ impl JsBridge {
                     var pType = pm[1] || 'mouse';
                     var pressure = parseFloat(pm[2]) || 0;
                     var isPrimary = pm[3] === '1';
+                    var buttons = parseInt(pm[4]) || 0;
+                    var button = parseInt(pm[5]) || 0;
                     var ids = idsStr ? idsStr.split(',') : [];
                     var stopped = false;
                     var targetElem = __elementCache[targetId] || {id: targetId};
@@ -448,8 +452,8 @@ impl JsBridge {
                         pointerType: pType,
                         pressure: pressure,
                         isPrimary: isPrimary,
-                        button: 0,
-                        buttons: eventType === 'pointerup' ? 0 : 1,
+                        button: button,
+                        buttons: buttons,
                         target: targetElem,
                         currentTarget: null,
                         ctrlKey: false,
@@ -1030,6 +1034,8 @@ impl JsBridge {
         pointer_type: &str,
         pressure: f32,
         is_primary: bool,
+        buttons: i32,
+        button: i32,
     ) -> bool {
         let doc_y = client_y + scroll_y;
         let (ids, target_id) = {
@@ -1043,14 +1049,76 @@ impl JsBridge {
                 (vec![], String::new())
             }
         };
+
+        if event_type == "pointermove" {
+            let old_ids = self
+                .shared
+                .borrow()
+                .pointer_hover_targets
+                .get(&pointer_id)
+                .cloned()
+                .unwrap_or_default();
+            if old_ids != ids {
+                let leave_meta = format!(
+                    "{}|{}|{}|{}|{}|{}",
+                    pointer_id,
+                    pointer_type,
+                    pressure,
+                    if is_primary { "1" } else { "0" },
+                    buttons,
+                    button
+                );
+                for old_id in &old_ids {
+                    if !ids.contains(old_id) {
+                        let _ = self.context.with(|ctx| -> Result<bool> {
+                            let f: Function<'_> =
+                                ctx.globals().get("__dispatchPointerEvent")?;
+                            let result: bool = f.call((
+                                "pointerleave".to_string(),
+                                old_id.clone(),
+                                old_id.clone(),
+                                client_x as f64,
+                                client_y as f64,
+                                leave_meta.clone(),
+                            ))?;
+                            Ok(result)
+                        });
+                    }
+                }
+                for new_id in &ids {
+                    if !old_ids.contains(new_id) {
+                        let _ = self.context.with(|ctx| -> Result<bool> {
+                            let f: Function<'_> =
+                                ctx.globals().get("__dispatchPointerEvent")?;
+                            let result: bool = f.call((
+                                "pointerenter".to_string(),
+                                new_id.clone(),
+                                new_id.clone(),
+                                client_x as f64,
+                                client_y as f64,
+                                leave_meta.clone(),
+                            ))?;
+                            Ok(result)
+                        });
+                    }
+                }
+                self.shared
+                    .borrow_mut()
+                    .pointer_hover_targets
+                    .insert(pointer_id, ids.clone());
+            }
+        }
+
         let ids_str = ids.join(",");
         let etype = event_type.to_string();
         let ptr_meta = format!(
-            "{}|{}|{}|{}",
+            "{}|{}|{}|{}|{}|{}",
             pointer_id,
             pointer_type,
             pressure,
-            if is_primary { "1" } else { "0" }
+            if is_primary { "1" } else { "0" },
+            buttons,
+            button
         );
         let prevented = self.context.with(|ctx| -> Result<bool> {
             let f: Function<'_> = ctx.globals().get("__dispatchPointerEvent")?;
@@ -1078,6 +1146,8 @@ impl JsBridge {
         pointer_type: &str,
         pressure: f32,
         is_primary: bool,
+        buttons: i32,
+        button: i32,
     ) -> bool {
         let doc_y = client_y + scroll_y;
         let target = crate::renderer::hit_test(layout, client_x, doc_y)
@@ -1098,6 +1168,8 @@ impl JsBridge {
             pointer_type,
             pressure,
             is_primary,
+            buttons,
+            button,
         )
     }
 
@@ -1111,6 +1183,8 @@ impl JsBridge {
         pointer_type: &str,
         pressure: f32,
         is_primary: bool,
+        buttons: i32,
+        button: i32,
     ) -> bool {
         self.fire_pointer_event(
             "pointermove",
@@ -1122,6 +1196,8 @@ impl JsBridge {
             pointer_type,
             pressure,
             is_primary,
+            buttons,
+            button,
         )
     }
 
@@ -1135,6 +1211,8 @@ impl JsBridge {
         pointer_type: &str,
         pressure: f32,
         is_primary: bool,
+        buttons: i32,
+        button: i32,
     ) -> bool {
         let doc_y = client_y + scroll_y;
         let prevented = self.fire_pointer_event(
@@ -1147,6 +1225,8 @@ impl JsBridge {
             pointer_type,
             pressure,
             is_primary,
+            buttons,
+            button,
         );
 
         let had_capture = self
@@ -1181,6 +1261,8 @@ impl JsBridge {
                     pointer_type,
                     pressure,
                     is_primary,
+                    buttons,
+                    button,
                 );
             }
         }
@@ -1189,6 +1271,31 @@ impl JsBridge {
             .pointer_down_targets
             .remove(&pointer_id);
         prevented
+    }
+
+    pub fn dispatch_pointer_leave(&mut self, pointer_id: i32) {
+        let old_ids = self
+            .shared
+            .borrow_mut()
+            .pointer_hover_targets
+            .remove(&pointer_id)
+            .unwrap_or_default();
+        let meta = format!("{}|mouse|0|1|0|0", pointer_id);
+        for id in &old_ids {
+            let _ = self.context.with(|ctx| -> Result<bool> {
+                let f: Function<'_> = ctx.globals().get("__dispatchPointerEvent")?;
+                let result: bool = f.call((
+                    "pointerleave".to_string(),
+                    id.clone(),
+                    id.clone(),
+                    0.0f64,
+                    0.0f64,
+                    meta.clone(),
+                ))?;
+                Ok(result)
+            });
+        }
+        self.drain_jobs();
     }
 
     pub fn is_dirty(&self) -> bool {

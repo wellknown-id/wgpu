@@ -98,16 +98,16 @@
   </div>
   <div class="arena" id="arena">
     <div class="cursor" id="ptr1">
-      <div class="cursor-box" id="ptr1-box" style="width: 40px; height: 40px; background: rgba(233, 69, 96, 0.3); border: 2px solid #e94560;"></div>
+      <div class="cursor-box" id="ptr1-box" style="width: 40px; height: 40px; background-color: rgba(0,0,0,0); border-width: 2px; border-color: #e94560;"></div>
     </div>
     <div class="cursor" id="ptr2">
-      <div class="cursor-box" id="ptr2-box" style="width: 40px; height: 40px; background: rgba(83, 216, 251, 0.3); border: 2px solid #53d8fb;"></div>
+      <div class="cursor-box" id="ptr2-box" style="width: 40px; height: 40px; background-color: rgba(0,0,0,0); border-width: 2px; border-color: #53d8fb;"></div>
     </div>
     <div class="cursor" id="ptr3">
-      <div class="cursor-box" id="ptr3-box" style="width: 40px; height: 40px; background: rgba(240, 192, 64, 0.3); border: 2px solid #f0c040;"></div>
+      <div class="cursor-box" id="ptr3-box" style="width: 40px; height: 40px; background-color: rgba(0,0,0,0); border-width: 2px; border-color: #f0c040;"></div>
     </div>
     <div class="cursor" id="ptr4">
-      <div class="cursor-box" id="ptr4-box" style="width: 40px; height: 40px; background: rgba(107, 235, 107, 0.3); border: 2px solid #6beb6b;"></div>
+      <div class="cursor-box" id="ptr4-box" style="width: 40px; height: 40px; background-color: rgba(0,0,0,0); border-width: 2px; border-color: #6beb6b;"></div>
     </div>
   </div>
   <div class="log-area">
@@ -140,37 +140,46 @@
       log.textContent = logLines.join(' | ');
     }
 
-    function updatePointer(e, state) {
+    var COLORS = ['#e94560', '#53d8fb', '#f0c040', '#6beb6b'];
+
+    function updatePointer(e, eventState) {
       var id = e.pointerId;
       if (id < 1 || id > 4) return;
 
       var label = document.getElementById('ptr' + id + '-label');
+      var box = document.getElementById('ptr' + id + '-box');
       var cursor = document.getElementById('ptr' + id);
       var arenaRect = arena.getBoundingClientRect();
       var relX = e.clientX - arenaRect.x;
       var relY = e.clientY - arenaRect.y;
+      var color = COLORS[(id - 1) % COLORS.length];
+      var down = e.buttons > 0;
+
+      var displayState = down ? 'DOWN (btn=' + e.buttons + ')' : eventState;
 
       var info = 'Pointer ' + id + ': ' + e.pointerType +
         ' [' + Math.round(e.clientX) + ',' + Math.round(e.clientY) + ']' +
         ' p=' + (e.pressure || 0).toFixed(2) +
         ' btn=' + e.buttons +
         (e.isPrimary ? ' PRIMARY' : '') +
-        ' ' + state;
+        ' ' + displayState;
 
       label.textContent = info;
 
-      if (state === 'up') {
-        cursor.style.display = 'none';
+      cursor.style.display = 'block';
+      cursor.style.left = (relX - 20) + 'px';
+      cursor.style.top = (relY - 20) + 'px';
+
+      if (down) {
+        box.style.backgroundColor = color;
       } else {
-        cursor.style.display = 'block';
-        cursor.style.left = (relX - 20) + 'px';
-        cursor.style.top = (relY - 20) + 'px';
+        box.style.backgroundColor = 'rgba(0,0,0,0)';
       }
     }
 
     arena.addEventListener('pointerdown', function(e) {
       e.preventDefault();
-      updatePointer(e, 'DOWN');
+      updatePointer(e, 'down');
       addLog('down:' + e.pointerId + ' ' + e.pointerType);
     });
 
@@ -183,6 +192,21 @@
       e.preventDefault();
       updatePointer(e, 'up');
       addLog('up:' + e.pointerId);
+      if (e.pointerType === 'touch') {
+        var cursor = document.getElementById('ptr' + e.pointerId);
+        if (cursor) cursor.style.display = 'none';
+      }
+    });
+
+    arena.addEventListener('pointerleave', function(e) {
+      var id = e.pointerId;
+      if (id >= 1 && id <= 4) {
+        var cursor = document.getElementById('ptr' + id);
+        if (cursor) cursor.style.display = 'none';
+        var label = document.getElementById('ptr' + id + '-label');
+        if (label) label.textContent = 'Pointer ' + id + ': --';
+        addLog('leave:' + id);
+      }
     });
   </script>
 </body>

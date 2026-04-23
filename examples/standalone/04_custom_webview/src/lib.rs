@@ -76,7 +76,7 @@ pub struct WebviewState {
     pub view_size: winit::dpi::PhysicalSize<u32>,
     pub view_scale_factor: f64,
     pub scroll_y: f32,
-    pub mouse_down: bool,
+    pub mouse_buttons: i32,
     pub text_cache: TextMeasureCache,
     pub ghost_pos: Option<(f32, f32)>,
     pub last_touch_y: Option<f32>,
@@ -560,19 +560,11 @@ impl App {
     }
 
     #[cfg(feature = "js")]
-    fn tick_dom(&mut self, include_pointer_drag: bool) {
+    fn tick_dom(&mut self) {
         {
             let s = self.state.as_mut().unwrap();
             let now_ms = s.start_time.elapsed().as_secs_f64() * 1000.0;
             s.js.tick(now_ms);
-        }
-        if include_pointer_drag {
-            let dragging = self.state.as_ref().map(|s| s.mouse_down).unwrap_or(false);
-            if dragging {
-                let (mx, my) = unsafe { CURSOR_POS };
-                let s = self.state.as_mut().unwrap();
-                s.js.dispatch_pointer_move(&s.layout, mx, my, s.scroll_y, 1, "mouse", 1.0, true);
-            }
         }
         if self.state.as_ref().unwrap().js.is_dirty() {
             self.rebuild_layout();
@@ -809,7 +801,7 @@ impl ApplicationHandler for App {
             view_size,
             view_scale_factor,
             scroll_y: 0.0,
-            mouse_down: false,
+            mouse_buttons: 0,
             text_cache,
             ghost_pos: None,
             last_touch_y: None,
@@ -877,47 +869,58 @@ impl ApplicationHandler for App {
                 self.state.as_ref().unwrap().gpu.window.request_redraw();
             }
             WindowEvent::MouseInput {
-                state: winit::event::ElementState::Pressed,
-                button: winit::event::MouseButton::Left,
+                state: btn_state,
+                button: btn,
                 ..
             } => {
+                let (button_index, button_bit) = match btn {
+                    winit::event::MouseButton::Left => (0, 1),
+                    winit::event::MouseButton::Right => (2, 2),
+                    winit::event::MouseButton::Middle => (1, 4),
+                    _ => (0, 1),
+                };
                 let (mx, my) = unsafe { CURSOR_POS };
-                let s = self.state.as_mut().unwrap();
-                s.mouse_down = true;
-                let hit = renderer::hit_test(&s.layout, mx, my + s.scroll_y);
-                if let Some(ref hit) = hit {
-                    if let Some(ref href) = hit.href {
-                        let href = href.clone();
-                        self.navigate(&href);
-                        return;
+                match btn_state {
+                    winit::event::ElementState::Pressed => {
+                        let s = self.state.as_mut().unwrap();
+                        s.mouse_buttons |= button_bit;
+                        if button_index == 0 {
+                            let hit = renderer::hit_test(&s.layout, mx, my + s.scroll_y);
+                            if let Some(ref hit) = hit {
+                                if let Some(ref href) = hit.href {
+                                    let href = href.clone();
+                                    self.navigate(&href);
+                                    return;
+                                }
+                            }
+                        }
+                        #[cfg(feature = "js")]
+                        {
+                            let s = self.state.as_mut().unwrap();
+                            s.js.dispatch_pointer_down(
+                                &s.layout, mx, my, s.scroll_y, 1, "mouse", 1.0, true,
+                                s.mouse_buttons, button_index,
+                            );
+                            if s.js.is_dirty() {
+                                self.rebuild_layout();
+                                self.state.as_ref().unwrap().gpu.window.request_redraw();
+                            }
+                        }
                     }
-                }
-                #[cfg(feature = "js")]
-                {
-                    let s = self.state.as_mut().unwrap();
-                    s.js.dispatch_pointer_down(
-                        &s.layout, mx, my, s.scroll_y, 1, "mouse", 1.0, true,
-                    );
-                    if s.js.is_dirty() {
-                        self.rebuild_layout();
-                        self.state.as_ref().unwrap().gpu.window.request_redraw();
-                    }
-                }
-            }
-            WindowEvent::MouseInput {
-                state: winit::event::ElementState::Released,
-                button: winit::event::MouseButton::Left,
-                ..
-            } => {
-                self.state.as_mut().unwrap().mouse_down = false;
-                #[cfg(feature = "js")]
-                {
-                    let s = self.state.as_mut().unwrap();
-                    let (mx, my) = unsafe { CURSOR_POS };
-                    s.js.dispatch_pointer_up(&s.layout, mx, my, s.scroll_y, 1, "mouse", 1.0, true);
-                    if s.js.is_dirty() {
-                        self.rebuild_layout();
-                        self.state.as_ref().unwrap().gpu.window.request_redraw();
+                    winit::event::ElementState::Released => {
+                        let s = self.state.as_mut().unwrap();
+                        s.mouse_buttons &= !button_bit;
+                        #[cfg(feature = "js")]
+                        {
+                            s.js.dispatch_pointer_up(
+                                &s.layout, mx, my, s.scroll_y, 1, "mouse", 0.0, true,
+                                s.mouse_buttons, button_index,
+                            );
+                            if s.js.is_dirty() {
+                                self.rebuild_layout();
+                                self.state.as_ref().unwrap().gpu.window.request_redraw();
+                            }
+                        }
                     }
                 }
             }
@@ -943,7 +946,7 @@ impl ApplicationHandler for App {
                 match touch.phase {
                     winit::event::TouchPhase::Started => {
                         let s = self.state.as_mut().unwrap();
-                        s.mouse_down = true;
+                        s.mouse_buttons = 1;
                         s.last_touch_y = Some(my);
                         s.touch_default_prevented = false;
 
@@ -962,7 +965,7 @@ impl ApplicationHandler for App {
                             let pid = touch.id as i32 + 1;
                             let is_primary = pid == 1;
                             let prevented = s.js.dispatch_pointer_down(
-                                &s.layout, mx, my, s.scroll_y, pid, "touch", 1.0, is_primary,
+                                &s.layout, mx, my, s.scroll_y, pid, "touch", 1.0, is_primary, 1, 0,
                             );
                             if prevented {
                                 s.touch_default_prevented = true;
@@ -980,7 +983,7 @@ impl ApplicationHandler for App {
                             let pid = touch.id as i32 + 1;
                             let is_primary = pid == 1;
                             let p = s.js.dispatch_pointer_move(
-                                &s.layout, mx, my, s.scroll_y, pid, "touch", 1.0, is_primary,
+                                &s.layout, mx, my, s.scroll_y, pid, "touch", 1.0, is_primary, 1, 0,
                             ) || s.touch_default_prevented;
                             if s.js.is_dirty() {
                                 self.rebuild_layout();
@@ -1008,7 +1011,7 @@ impl ApplicationHandler for App {
                     }
                     winit::event::TouchPhase::Ended | winit::event::TouchPhase::Cancelled => {
                         let s = self.state.as_mut().unwrap();
-                        s.mouse_down = false;
+                        s.mouse_buttons = 0;
                         s.last_touch_y = None;
                         #[cfg(feature = "js")]
                         {
@@ -1016,7 +1019,7 @@ impl ApplicationHandler for App {
                             let pid = touch.id as i32 + 1;
                             let is_primary = pid == 1;
                             s.js.dispatch_pointer_up(
-                                &s.layout, mx, my, s.scroll_y, pid, "touch", 1.0, is_primary,
+                                &s.layout, mx, my, s.scroll_y, pid, "touch", 0.0, is_primary, 0, 0,
                             );
                             s.ghost_pos = None;
                             if s.js.is_dirty() {
@@ -1033,12 +1036,34 @@ impl ApplicationHandler for App {
                     .as_ref()
                     .map(|s| s.view_scale_factor as f32)
                     .unwrap_or(1.0);
+                let (mx, my) = (position.x as f32 / scale, position.y as f32 / scale);
                 unsafe {
-                    CURSOR_POS = (position.x as f32 / scale, position.y as f32 / scale);
+                    CURSOR_POS = (mx, my);
                 }
-                if self.state.as_ref().map(|s| s.mouse_down).unwrap_or(false) {
-                    self.state.as_ref().unwrap().gpu.window.request_redraw();
+                #[cfg(feature = "js")]
+                {
+                    let s = self.state.as_mut().unwrap();
+                    let buttons = s.mouse_buttons;
+                    let pressure = if buttons > 0 { 1.0 } else { 0.0 };
+                    s.js.dispatch_pointer_move(
+                        &s.layout, mx, my, s.scroll_y, 1, "mouse", pressure, true, buttons, 0,
+                    );
+                    if s.js.is_dirty() {
+                        self.rebuild_layout();
+                    }
                 }
+                self.state.as_ref().unwrap().gpu.window.request_redraw();
+            }
+            WindowEvent::CursorLeft { .. } => {
+                #[cfg(feature = "js")]
+                {
+                    let s = self.state.as_mut().unwrap();
+                    s.js.dispatch_pointer_leave(1);
+                    if s.js.is_dirty() {
+                        self.rebuild_layout();
+                    }
+                }
+                self.state.as_ref().unwrap().gpu.window.request_redraw();
             }
             WindowEvent::RedrawRequested => {
                 if self.state.is_none() {
@@ -1269,6 +1294,8 @@ impl ApplicationHandler for App {
                                                 CURSOR_POS = (mx, my);
                                             }
                                             s.xr_right_pointer_pos = Some((mx, my));
+                                            let btns = if right_select { 1 } else { 0 };
+                                            let pressure = if right_select { 1.0 } else { 0.0 };
                                             s.js.dispatch_pointer_move(
                                                 &s.layout,
                                                 mx,
@@ -1276,8 +1303,10 @@ impl ApplicationHandler for App {
                                                 s.scroll_y,
                                                 1,
                                                 "xr-controller",
-                                                1.0,
+                                                pressure,
                                                 true,
+                                                btns,
+                                                0,
                                             );
                                         } else if !right_select {
                                             s.xr_right_pointer_pos = None;
@@ -1300,6 +1329,8 @@ impl ApplicationHandler for App {
                                                         "xr-controller",
                                                         1.0,
                                                         true,
+                                                        1,
+                                                        0,
                                                     );
                                                 }
                                             }
@@ -1313,8 +1344,10 @@ impl ApplicationHandler for App {
                                                     s.scroll_y,
                                                     1,
                                                     "xr-controller",
-                                                    1.0,
+                                                    0.0,
                                                     true,
+                                                    0,
+                                                    0,
                                                 );
                                             }
                                         }
@@ -1339,6 +1372,8 @@ impl ApplicationHandler for App {
                                             )
                                         }) {
                                             s.xr_left_pointer_pos = Some((mx, my));
+                                            let btns = if left_select { 1 } else { 0 };
+                                            let pressure = if left_select { 1.0 } else { 0.0 };
                                             s.js.dispatch_pointer_move(
                                                 &s.layout,
                                                 mx,
@@ -1346,8 +1381,10 @@ impl ApplicationHandler for App {
                                                 s.scroll_y,
                                                 2,
                                                 "xr-controller",
-                                                1.0,
+                                                pressure,
                                                 false,
+                                                btns,
+                                                0,
                                             );
                                         } else if !left_select {
                                             s.xr_left_pointer_pos = None;
@@ -1370,6 +1407,8 @@ impl ApplicationHandler for App {
                                                         "xr-controller",
                                                         1.0,
                                                         false,
+                                                        1,
+                                                        0,
                                                     );
                                                 }
                                             }
@@ -1383,8 +1422,10 @@ impl ApplicationHandler for App {
                                                     s.scroll_y,
                                                     2,
                                                     "xr-controller",
-                                                    1.0,
+                                                    0.0,
                                                     false,
+                                                    0,
+                                                    0,
                                                 );
                                             }
                                         }
@@ -1716,7 +1757,7 @@ impl ApplicationHandler for App {
                 // Normal 2D panel rendering
                 #[cfg(feature = "js")]
                 {
-                    self.tick_dom(true);
+                    self.tick_dom();
                 }
                 let s = self.state.as_mut().unwrap();
 
