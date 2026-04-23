@@ -147,7 +147,7 @@ const XR_PANEL_RENDER_HEIGHT: u32 = 1728;
 #[cfg(feature = "xr")]
 const XR_SCROLL_SPEED: f32 = 14.0;
 #[cfg(all(feature = "xr", target_os = "android"))]
-const XR_POINTER_YAW_BIAS_DEGREES: f32 = 4.0;
+const XR_POINTER_YAW_BIAS_DEGREES: f32 = 5.0;
 #[cfg(all(feature = "xr", target_os = "android"))]
 const XR_POINTER_PITCH_BIAS_DEGREES: f32 = 0.0;
 
