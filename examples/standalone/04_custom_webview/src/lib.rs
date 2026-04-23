@@ -1063,7 +1063,7 @@ impl ApplicationHandler for App {
                                                     border_radius: 8.0,
                                                     element_id: None,
                                                     transform: types::mat4_identity(),
-                                                    is_fixed: false,
+                                                    is_fixed: true,
                                                 });
                                                 overlay_commands.push(DrawCommand::Border {
                                                     rect: types::LayoutRect {
@@ -1077,7 +1077,7 @@ impl ApplicationHandler for App {
                                                     radius: 8.0,
                                                     element_id: None,
                                                     transform: types::mat4_identity(),
-                                                    is_fixed: false,
+                                                    is_fixed: true,
                                                 });
                                             }
 
