@@ -589,6 +589,33 @@ fn fs_panel(in: VsOutput) -> @location(0) vec4<f32> {
 }
 "#;
 
+#[cfg(feature = "xr")]
+const XR_MIPMAP_SHADER: &str = r#"
+struct VertexOutput {
+    @builtin(position) position: vec4<f32>,
+    @location(0) tex_coords: vec2<f32>,
+};
+
+@vertex
+fn vs_main(@builtin(vertex_index) vertex_index: u32) -> VertexOutput {
+    var out: VertexOutput;
+    let x = i32(vertex_index) / 2;
+    let y = i32(vertex_index) & 1;
+    let tc = vec2<f32>(f32(x) * 2.0, f32(y) * 2.0);
+    out.position = vec4<f32>(tc.x * 2.0 - 1.0, 1.0 - tc.y * 2.0, 0.0, 1.0);
+    out.tex_coords = tc;
+    return out;
+}
+
+@group(0) @binding(0) var src_tex: texture_2d<f32>;
+@group(0) @binding(1) var src_sampler: sampler;
+
+@fragment
+fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
+    return textureSample(src_tex, src_sampler, in.tex_coords);
+}
+"#;
+
 pub struct GpuState {
     pub window: Arc<Window>,
     pub instance: wgpu::Instance,
@@ -622,6 +649,12 @@ pub struct GpuState {
     xr_panel_bgl: wgpu::BindGroupLayout,
     #[cfg(feature = "xr")]
     xr_panel_vertex_buffer: wgpu::Buffer,
+    #[cfg(feature = "xr")]
+    xr_mipmap_pipeline: wgpu::RenderPipeline,
+    #[cfg(feature = "xr")]
+    xr_mipmap_bgl: wgpu::BindGroupLayout,
+    #[cfg(feature = "xr")]
+    xr_mipmap_sampler: wgpu::Sampler,
 
     atlas: GlyphAtlas,
     pub font_system: FontSystem,
@@ -634,10 +667,12 @@ pub struct GpuState {
 pub struct OffscreenRenderTarget {
     pub texture: wgpu::Texture,
     pub view: wgpu::TextureView,
+    pub sample_view: wgpu::TextureView,
     depth_texture: wgpu::Texture,
     pub depth_view: wgpu::TextureView,
     pub size: winit::dpi::PhysicalSize<u32>,
     pub format: wgpu::TextureFormat,
+    pub mip_level_count: u32,
 }
 
 impl GpuState {
@@ -1143,6 +1178,8 @@ impl GpuState {
         let texrect_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
             mag_filter: wgpu::FilterMode::Linear,
             min_filter: wgpu::FilterMode::Linear,
+            mipmap_filter: wgpu::MipmapFilterMode::Linear,
+            anisotropy_clamp: 8,
             ..Default::default()
         });
         let texrect_pl = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
@@ -1275,6 +1312,53 @@ impl GpuState {
             cache: None,
         });
         #[cfg(feature = "xr")]
+        let xr_mipmap_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("xr mipmap shader"),
+            source: wgpu::ShaderSource::Wgsl(Cow::Borrowed(XR_MIPMAP_SHADER)),
+        });
+        #[cfg(feature = "xr")]
+        let xr_mipmap_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("xr mipmap pipeline"),
+            layout: None,
+            vertex: wgpu::VertexState {
+                module: &xr_mipmap_shader,
+                entry_point: Some("vs_main"),
+                compilation_options: Default::default(),
+                buffers: &[],
+            },
+            fragment: Some(wgpu::FragmentState {
+                module: &xr_mipmap_shader,
+                entry_point: Some("fs_main"),
+                compilation_options: Default::default(),
+                targets: &[Some(wgpu::ColorTargetState {
+                    format: render_format,
+                    blend: None,
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
+            }),
+            primitive: wgpu::PrimitiveState {
+                topology: wgpu::PrimitiveTopology::TriangleList,
+                ..Default::default()
+            },
+            depth_stencil: None,
+            multisample: Default::default(),
+            multiview_mask: None,
+            cache: None,
+        });
+        #[cfg(feature = "xr")]
+        let xr_mipmap_bgl = xr_mipmap_pipeline.get_bind_group_layout(0);
+        #[cfg(feature = "xr")]
+        let xr_mipmap_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
+            label: Some("xr mipmap sampler"),
+            address_mode_u: wgpu::AddressMode::ClampToEdge,
+            address_mode_v: wgpu::AddressMode::ClampToEdge,
+            address_mode_w: wgpu::AddressMode::ClampToEdge,
+            mag_filter: wgpu::FilterMode::Linear,
+            min_filter: wgpu::FilterMode::Linear,
+            mipmap_filter: wgpu::MipmapFilterMode::Nearest,
+            ..Default::default()
+        });
+        #[cfg(feature = "xr")]
         let xr_panel_vertex_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("xr panel verts"),
             contents: bytemuck::cast_slice(&[
@@ -1356,6 +1440,12 @@ impl GpuState {
             xr_panel_bgl,
             #[cfg(feature = "xr")]
             xr_panel_vertex_buffer,
+            #[cfg(feature = "xr")]
+            xr_mipmap_pipeline,
+            #[cfg(feature = "xr")]
+            xr_mipmap_bgl,
+            #[cfg(feature = "xr")]
+            xr_mipmap_sampler,
             atlas,
             font_system,
             swash_cache,
@@ -1394,6 +1484,7 @@ impl GpuState {
 
     pub fn create_render_target(&self, width: u32, height: u32) -> OffscreenRenderTarget {
         let size = winit::dpi::PhysicalSize::new(width.max(1), height.max(1));
+        let mip_level_count = size.width.max(size.height).ilog2() + 1;
         let texture = self.device.create_texture(&wgpu::TextureDescriptor {
             label: Some("offscreen render target"),
             size: wgpu::Extent3d {
@@ -1401,14 +1492,23 @@ impl GpuState {
                 height: size.height,
                 depth_or_array_layers: 1,
             },
-            mip_level_count: 1,
+            mip_level_count,
             sample_count: 1,
             dimension: wgpu::TextureDimension::D2,
             format: self.render_format,
             usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
             view_formats: &[],
         });
-        let view = texture.create_view(&Default::default());
+        let view = texture.create_view(&wgpu::TextureViewDescriptor {
+            label: Some("offscreen render target mip0"),
+            base_mip_level: 0,
+            mip_level_count: Some(1),
+            ..Default::default()
+        });
+        let sample_view = texture.create_view(&wgpu::TextureViewDescriptor {
+            label: Some("offscreen render target sampled"),
+            ..Default::default()
+        });
         let depth_texture = self.device.create_texture(&wgpu::TextureDescriptor {
             label: Some("offscreen depth target"),
             size: wgpu::Extent3d {
@@ -1427,10 +1527,12 @@ impl GpuState {
         OffscreenRenderTarget {
             texture,
             view,
+            sample_view,
             depth_texture,
             depth_view,
             size,
             format: self.render_format,
+            mip_level_count,
         }
     }
 
@@ -1492,9 +1594,11 @@ impl GpuState {
             scroll_y,
             webgpu_canvases,
         );
+        #[cfg(feature = "xr")]
+        self.generate_mipmaps(&target.texture, target.format, target.mip_level_count);
     }
 
-    fn render_to_view(
+    pub fn render_to_view(
         &mut self,
         view: &wgpu::TextureView,
         depth_view: &wgpu::TextureView,
@@ -1652,6 +1756,75 @@ impl GpuState {
                 rpass.set_vertex_buffer(1, instance_buf.slice(..));
                 rpass.draw(0..6, 0..1);
             }
+        }
+
+        self.queue.submit(std::iter::once(encoder.finish()));
+    }
+
+    #[cfg(feature = "xr")]
+    fn generate_mipmaps(
+        &self,
+        texture: &wgpu::Texture,
+        format: wgpu::TextureFormat,
+        mip_level_count: u32,
+    ) {
+        if mip_level_count <= 1 {
+            return;
+        }
+
+        let views = (0..mip_level_count)
+            .map(|mip| {
+                texture.create_view(&wgpu::TextureViewDescriptor {
+                    label: Some("xr panel mip"),
+                    format: Some(format),
+                    base_mip_level: mip,
+                    mip_level_count: Some(1),
+                    ..Default::default()
+                })
+            })
+            .collect::<Vec<_>>();
+
+        let mut encoder = self
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("xr mipmap encoder"),
+            });
+
+        for target_mip in 1..mip_level_count as usize {
+            let bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("xr mipmap bg"),
+                layout: &self.xr_mipmap_bgl,
+                entries: &[
+                    wgpu::BindGroupEntry {
+                        binding: 0,
+                        resource: wgpu::BindingResource::TextureView(&views[target_mip - 1]),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 1,
+                        resource: wgpu::BindingResource::Sampler(&self.xr_mipmap_sampler),
+                    },
+                ],
+            });
+
+            let mut rpass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("xr mipmap pass"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: &views[target_mip],
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
+                        store: wgpu::StoreOp::Store,
+                    },
+                    depth_slice: None,
+                })],
+                depth_stencil_attachment: None,
+                timestamp_writes: None,
+                occlusion_query_set: None,
+                multiview_mask: None,
+            });
+            rpass.set_pipeline(&self.xr_mipmap_pipeline);
+            rpass.set_bind_group(0, Some(&bind_group), &[]);
+            rpass.draw(0..3, 0..1);
         }
 
         self.queue.submit(std::iter::once(encoder.finish()));

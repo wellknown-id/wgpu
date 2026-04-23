@@ -191,11 +191,118 @@ fn xr_panel_pose() -> xr::Posef {
 }
 
 #[cfg(feature = "xr")]
+fn xr_panel_alt_pose() -> xr::Posef {
+    xr::Posef {
+        orientation: xr::Quaternionf::IDENTITY,
+        position: xr::Vector3f {
+            x: 0.08,
+            y: 0.0,
+            z: -XR_PANEL_DISTANCE,
+        },
+    }
+}
+
+#[cfg(all(feature = "xr", target_os = "android"))]
+fn push_xr_debug_marker(
+    commands: &mut Vec<DrawCommand>,
+    view_size: winit::dpi::PhysicalSize<u32>,
+    color: [f32; 4],
+    align_right: bool,
+) {
+    let width = view_size.width as f32;
+    let height = view_size.height as f32;
+    let inset = 14.0;
+    let badge = 72.0;
+    let badge_x = if align_right {
+        width - inset - badge
+    } else {
+        inset
+    };
+
+    commands.push(DrawCommand::Border {
+        rect: types::LayoutRect {
+            x: inset,
+            y: inset,
+            w: (width - inset * 2.0).max(1.0),
+            h: (height - inset * 2.0).max(1.0),
+        },
+        color,
+        width: 10.0,
+        radius: 20.0,
+        element_id: None,
+        transform: types::mat4_identity(),
+        is_fixed: true,
+    });
+    commands.push(DrawCommand::Rect {
+        rect: types::LayoutRect {
+            x: badge_x,
+            y: inset,
+            w: badge,
+            h: badge,
+        },
+        color,
+        border_radius: 18.0,
+        element_id: None,
+        transform: types::mat4_identity(),
+        is_fixed: true,
+    });
+}
+
+#[cfg(all(feature = "xr", target_os = "android"))]
+fn clear_xr_projection_views(
+    gpu: &GpuState,
+    left_view: &wgpu::TextureView,
+    right_view: &wgpu::TextureView,
+    clear_color: [f32; 4],
+) {
+    let mut encoder = gpu
+        .device
+        .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some("xr blank projection encoder"),
+        });
+    for view in [left_view, right_view] {
+        let _ = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+            label: Some("xr blank projection pass"),
+            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                view,
+                resolve_target: None,
+                ops: wgpu::Operations {
+                    load: wgpu::LoadOp::Clear(wgpu::Color {
+                        r: clear_color[0] as f64,
+                        g: clear_color[1] as f64,
+                        b: clear_color[2] as f64,
+                        a: clear_color[3] as f64,
+                    }),
+                    store: wgpu::StoreOp::Store,
+                },
+                depth_slice: None,
+            })],
+            depth_stencil_attachment: None,
+            timestamp_writes: None,
+            occlusion_query_set: None,
+            multiview_mask: None,
+        });
+    }
+    gpu.queue.submit(std::iter::once(encoder.finish()));
+}
+
+#[cfg(feature = "xr")]
 fn xr_panel_model_matrix(target_size: winit::dpi::PhysicalSize<u32>) -> [f32; 16] {
+    xr_panel_model_matrix_at(target_size, 0.0, 0.0, -XR_PANEL_DISTANCE, 1.0)
+}
+
+#[cfg(feature = "xr")]
+fn xr_panel_model_matrix_at(
+    target_size: winit::dpi::PhysicalSize<u32>,
+    x: f32,
+    y: f32,
+    z: f32,
+    scale_factor: f32,
+) -> [f32; 16] {
     let mut scale = types::mat4_identity();
-    scale[0] = XR_PANEL_WIDTH;
-    scale[5] = xr_panel_height(target_size);
-    let translate = types::mat4_translate(&types::mat4_identity(), 0.0, 0.0, -XR_PANEL_DISTANCE);
+    scale[0] = XR_PANEL_WIDTH * scale_factor;
+    scale[5] = xr_panel_height(target_size) * scale_factor;
+    let translate = types::mat4_translate(&types::mat4_identity(), x, y, z);
     types::mat4_mul(&translate, &scale)
 }
 
@@ -205,6 +312,20 @@ fn xr_panel_mvp(
     target_size: winit::dpi::PhysicalSize<u32>,
 ) -> [f32; 16] {
     let model = xr_panel_model_matrix(target_size);
+    let view_model = types::mat4_mul(&view.view_matrix, &model);
+    types::mat4_mul(&view.projection_matrix, &view_model)
+}
+
+#[cfg(feature = "xr")]
+fn xr_panel_mvp_at(
+    view: &crate::xr_session::XrEyeView,
+    target_size: winit::dpi::PhysicalSize<u32>,
+    x: f32,
+    y: f32,
+    z: f32,
+    scale_factor: f32,
+) -> [f32; 16] {
+    let model = xr_panel_model_matrix_at(target_size, x, y, z, scale_factor);
     let view_model = types::mat4_mul(&view.view_matrix, &model);
     types::mat4_mul(&view.projection_matrix, &view_model)
 }
@@ -1175,31 +1296,38 @@ impl ApplicationHandler for App {
 
                                         #[cfg(target_os = "android")]
                                         {
-                                            let (pw, ph) = xr.panel_swapchain_size();
-                                            if s.xr_depth_texture.is_none()
-                                                || s.xr_depth_size != (sw, sh)
-                                            {
-                                                let dt =
-                                                    s.gpu
-                                                        .device
-                                                        .create_texture(&wgpu::TextureDescriptor {
-                                                        label: Some("xr depth"),
-                                                        size: wgpu::Extent3d {
-                                                            width: sw,
-                                                            height: sh,
-                                                            depth_or_array_layers: 1,
-                                                        },
-                                                        mip_level_count: 1,
-                                                        sample_count: 1,
-                                                        dimension: wgpu::TextureDimension::D2,
-                                                        format: wgpu::TextureFormat::Depth24Plus,
-                                                        usage:
-                                                            wgpu::TextureUsages::RENDER_ATTACHMENT,
-                                                        view_formats: &[],
-                                                    });
-                                                s.xr_depth_texture = Some(dt);
-                                                s.xr_depth_size = (sw, sh);
+                                            let recreate_target = s
+                                                .xr_panel_target
+                                                .as_ref()
+                                                .map(|target| target.size != s.view_size)
+                                                .unwrap_or(true);
+                                            if recreate_target {
+                                                s.xr_panel_target =
+                                                    Some(s.gpu.create_render_target(
+                                                        s.view_size.width,
+                                                        s.view_size.height,
+                                                    ));
                                             }
+                                            let panel_target = s.xr_panel_target.as_ref().unwrap();
+                                            let mut projection_overlay_commands =
+                                                overlay_commands.clone();
+                                            push_xr_debug_marker(
+                                                &mut projection_overlay_commands,
+                                                s.view_size,
+                                                [0.95, 0.2, 0.2, 0.95],
+                                                false,
+                                            );
+                                            s.gpu.render_to_target(
+                                                panel_target,
+                                                s.view_scale_factor as f32,
+                                                &s.static_commands,
+                                                &projection_overlay_commands,
+                                                s.clear_color,
+                                                s.scroll_y,
+                                                &canvases,
+                                            );
+
+                                            let (pw, ph) = xr.panel_swapchain_size();
                                             if s.xr_panel_depth_texture.is_none()
                                                 || s.xr_panel_depth_size != (pw, ph)
                                             {
@@ -1227,9 +1355,7 @@ impl ApplicationHandler for App {
 
                                             match xr.acquire_swapchain_texture() {
                                                 Ok((eye_texture, _eye_idx)) => {
-                                                    match xr.acquire_panel_swapchain_texture() {
-                                                        Ok((panel_texture, _panel_idx)) => {
-                                                            let left_view = eye_texture.create_view(
+                                                    let left_view = eye_texture.create_view(
                                                         &wgpu::TextureViewDescriptor {
                                                             dimension: Some(
                                                                 wgpu::TextureViewDimension::D2,
@@ -1239,7 +1365,7 @@ impl ApplicationHandler for App {
                                                             ..Default::default()
                                                         },
                                                     );
-                                                            let right_view = eye_texture.create_view(
+                                                    let right_view = eye_texture.create_view(
                                                         &wgpu::TextureViewDescriptor {
                                                             dimension: Some(
                                                                 wgpu::TextureViewDimension::D2,
@@ -1249,14 +1375,48 @@ impl ApplicationHandler for App {
                                                             ..Default::default()
                                                         },
                                                     );
-                                                            let panel_view = panel_texture.create_view(
-                                                        &wgpu::TextureViewDescriptor {
-                                                            dimension: Some(
-                                                                wgpu::TextureViewDimension::D2,
-                                                            ),
-                                                            ..Default::default()
-                                                        },
+                                                    s.gpu.render_xr_panel_views(
+                                                        &left_view,
+                                                        &right_view,
+                                                        &panel_target.sample_view,
+                                                        [0.0, 0.0, 0.0, 1.0],
+                                                        xr_panel_mvp_at(
+                                                            &frame_data.views[0],
+                                                            panel_target.size,
+                                                            -1.35,
+                                                            -0.8,
+                                                            -2.2,
+                                                            0.16,
+                                                        ),
+                                                        xr_panel_mvp_at(
+                                                            &frame_data.views[1],
+                                                            panel_target.size,
+                                                            -1.35,
+                                                            -0.8,
+                                                            -2.2,
+                                                            0.16,
+                                                        ),
                                                     );
+
+                                                    match xr.acquire_panel_swapchain_texture() {
+                                                        Ok((panel_texture, _panel_idx)) => {
+                                                            let mut quad_overlay_commands =
+                                                                overlay_commands.clone();
+                                                            push_xr_debug_marker(
+                                                                &mut quad_overlay_commands,
+                                                                s.view_size,
+                                                                [0.2, 0.95, 0.25, 0.95],
+                                                                true,
+                                                            );
+                                                            let panel_view = panel_texture
+                                                                .create_view(
+                                                                    &wgpu::TextureViewDescriptor {
+                                                                        dimension: Some(
+                                                                            wgpu::TextureViewDimension::D2,
+                                                                        ),
+                                                                        ..Default::default()
+                                                                    },
+                                                                );
                                                             let panel_depth_view = s
                                                                 .xr_panel_depth_texture
                                                                 .as_ref()
@@ -1271,24 +1431,10 @@ impl ApplicationHandler for App {
                                                                 xr_panel_render_scale_factor(),
                                                                 true,
                                                                 &s.static_commands,
-                                                                &overlay_commands,
+                                                                &quad_overlay_commands,
                                                                 s.clear_color,
                                                                 s.scroll_y,
                                                                 &canvases,
-                                                            );
-                                                            s.gpu.render_xr_panel_views(
-                                                                &left_view,
-                                                                &right_view,
-                                                                &panel_view,
-                                                                [0.01, 0.015, 0.025, 1.0],
-                                                                xr_panel_mvp(
-                                                                    &frame_data.views[0],
-                                                                    s.view_size,
-                                                                ),
-                                                                xr_panel_mvp(
-                                                                    &frame_data.views[1],
-                                                                    s.view_size,
-                                                                ),
                                                             );
                                                             let _ = s
                                                                 .gpu
@@ -1298,15 +1444,16 @@ impl ApplicationHandler for App {
                                                                 .release_both_and_end_frame(
                                                                     &frame_data,
                                                                     xr_panel_pose(),
+                                                                    xr_panel_alt_pose(),
                                                                     xr_panel_layer_size(
                                                                         s.view_size,
                                                                     ),
                                                                 )
                                                             {
                                                                 log::error!(
-                                                            "XR panel end frame error: {:?}",
-                                                            e
-                                                        );
+                                                                    "XR panel end frame error: {:?}",
+                                                                    e
+                                                                );
                                                             }
                                                         }
                                                         Err(e) => {

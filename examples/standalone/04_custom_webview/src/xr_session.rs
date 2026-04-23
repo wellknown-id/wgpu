@@ -106,10 +106,20 @@ pub struct XrSession {
     frame_stream: xr::FrameStream<xr::Vulkan>,
     swapchain: xr::Swapchain<xr::Vulkan>,
     swapchain_images: Vec<wgpu::Texture>,
+    #[cfg(target_os = "android")]
+    panel_swapchain: xr::Swapchain<xr::Vulkan>,
+    #[cfg(target_os = "android")]
+    panel_swapchain_images: Vec<wgpu::Texture>,
     reference_space: xr::Space,
+    #[cfg(target_os = "android")]
+    view_space: xr::Space,
     state: XrState,
     swapchain_width: u32,
     swapchain_height: u32,
+    #[cfg(target_os = "android")]
+    panel_swapchain_width: u32,
+    #[cfg(target_os = "android")]
+    panel_swapchain_height: u32,
     action_set: xr::ActionSet,
     select_action: xr::Action<bool>,
     exit_action: xr::Action<bool>,
@@ -125,6 +135,7 @@ impl XrSession {
         wgpu_instance: &wgpu::Instance,
         adapter: &wgpu::Adapter,
         device: &wgpu::Device,
+        #[cfg(target_os = "android")] panel_swapchain_size: (u32, u32),
     ) -> Result<Self> {
         let (vk_instance_raw, vk_phys_dev_raw, vk_device_raw, queue_family_index) =
             extract_vulkan_handles(wgpu_instance, adapter, device)?;
@@ -175,10 +186,37 @@ impl XrSession {
         })?;
 
         let xr_images = swapchain.enumerate_images()?;
-        let swapchain_images = wrap_xr_images_as_wgpu(device, &xr_images, width, height);
+        let swapchain_images = wrap_xr_images_as_wgpu(device, &xr_images, width, height, 2);
+        #[cfg(target_os = "android")]
+        let (panel_swapchain_width, panel_swapchain_height) = panel_swapchain_size;
+        #[cfg(target_os = "android")]
+        let panel_swapchain = session.create_swapchain(&xr::SwapchainCreateInfo {
+            create_flags: xr::SwapchainCreateFlags::EMPTY,
+            usage_flags: xr::SwapchainUsageFlags::COLOR_ATTACHMENT,
+            format: ash::vk::Format::R8G8B8A8_SRGB.as_raw() as u32,
+            sample_count: 1,
+            width: panel_swapchain_width,
+            height: panel_swapchain_height,
+            face_count: 1,
+            array_size: 1,
+            mip_count: 1,
+        })?;
+        #[cfg(target_os = "android")]
+        let panel_xr_images = panel_swapchain.enumerate_images()?;
+        #[cfg(target_os = "android")]
+        let panel_swapchain_images = wrap_xr_images_as_wgpu(
+            device,
+            &panel_xr_images,
+            panel_swapchain_width,
+            panel_swapchain_height,
+            1,
+        );
 
         let reference_space =
             session.create_reference_space(xr::ReferenceSpaceType::LOCAL, xr::Posef::IDENTITY)?;
+        #[cfg(target_os = "android")]
+        let view_space =
+            session.create_reference_space(xr::ReferenceSpaceType::VIEW, xr::Posef::IDENTITY)?;
 
         let action_set = ctx.instance.create_action_set("input", "Input", 0)?;
         let select_action = action_set.create_action::<bool>("select", "Select", &[])?;
@@ -276,10 +314,20 @@ impl XrSession {
             frame_stream,
             swapchain,
             swapchain_images,
+            #[cfg(target_os = "android")]
+            panel_swapchain,
+            #[cfg(target_os = "android")]
+            panel_swapchain_images,
             reference_space,
+            #[cfg(target_os = "android")]
+            view_space,
             state: XrState::Idle,
             swapchain_width: width,
             swapchain_height: height,
+            #[cfg(target_os = "android")]
+            panel_swapchain_width,
+            #[cfg(target_os = "android")]
+            panel_swapchain_height,
             action_set,
             select_action,
             exit_action,
@@ -296,6 +344,11 @@ impl XrSession {
 
     pub fn swapchain_size(&self) -> (u32, u32) {
         (self.swapchain_width, self.swapchain_height)
+    }
+
+    #[cfg(target_os = "android")]
+    pub fn panel_swapchain_size(&self) -> (u32, u32) {
+        (self.panel_swapchain_width, self.panel_swapchain_height)
     }
 
     pub fn poll_events(&mut self) -> Result<()> {
@@ -391,6 +444,27 @@ impl XrSession {
         let index = self.swapchain.acquire_image()?;
         self.swapchain.wait_image(xr::Duration::INFINITE)?;
         Ok((&self.swapchain_images[index as usize], index))
+    }
+
+    #[cfg(target_os = "android")]
+    pub fn acquire_swapchain_texture(&mut self) -> Result<(wgpu::Texture, u32)> {
+        let index = self.swapchain.acquire_image()?;
+        self.swapchain.wait_image(xr::Duration::INFINITE)?;
+        Ok((self.swapchain_images[index as usize].clone(), index))
+    }
+
+    #[cfg(target_os = "android")]
+    pub fn acquire_panel_swapchain_image(&mut self) -> Result<(&wgpu::Texture, u32)> {
+        let index = self.panel_swapchain.acquire_image()?;
+        self.panel_swapchain.wait_image(xr::Duration::INFINITE)?;
+        Ok((&self.panel_swapchain_images[index as usize], index))
+    }
+
+    #[cfg(target_os = "android")]
+    pub fn acquire_panel_swapchain_texture(&mut self) -> Result<(wgpu::Texture, u32)> {
+        let index = self.panel_swapchain.acquire_image()?;
+        self.panel_swapchain.wait_image(xr::Duration::INFINITE)?;
+        Ok((self.panel_swapchain_images[index as usize].clone(), index))
     }
 
     pub fn end_frame_without_layers(&mut self, predicted_display_time: xr::Time) -> Result<()> {
@@ -503,6 +577,153 @@ impl XrSession {
 
         Ok(())
     }
+
+    #[cfg(target_os = "android")]
+    pub fn release_panel_and_end_frame(
+        &mut self,
+        predicted_display_time: xr::Time,
+        panel_pose: xr::Posef,
+        panel_size: xr::Extent2Df,
+    ) -> Result<()> {
+        self.panel_swapchain.release_image()?;
+
+        let quad = xr::CompositionLayerQuad::new()
+            .layer_flags(xr::CompositionLayerFlags::BLEND_TEXTURE_SOURCE_ALPHA)
+            .space(&self.view_space)
+            .eye_visibility(xr::EyeVisibility::BOTH)
+            .sub_image(
+                xr::SwapchainSubImage::new()
+                    .swapchain(&self.panel_swapchain)
+                    .image_array_index(0)
+                    .image_rect(xr::Rect2Di {
+                        offset: xr::Offset2Di { x: 0, y: 0 },
+                        extent: xr::Extent2Di {
+                            width: self.panel_swapchain_width as i32,
+                            height: self.panel_swapchain_height as i32,
+                        },
+                    }),
+            )
+            .pose(panel_pose)
+            .size(panel_size);
+
+        self.frame_stream.end(
+            predicted_display_time,
+            xr::EnvironmentBlendMode::OPAQUE,
+            &[&quad],
+        )?;
+
+        Ok(())
+    }
+
+    #[cfg(target_os = "android")]
+    pub fn release_both_and_end_frame(
+        &mut self,
+        frame_data: &XrFrameData,
+        panel_pose: xr::Posef,
+        alt_panel_pose: xr::Posef,
+        panel_size: xr::Extent2Df,
+    ) -> Result<()> {
+        if frame_data.views.len() < 2 {
+            return Err(anyhow::anyhow!(
+                "XR frame data has {} view(s), expected at least 2",
+                frame_data.views.len()
+            ));
+        }
+
+        self.panel_swapchain.release_image()?;
+        self.swapchain.release_image()?;
+
+        let rect = xr::Rect2Di {
+            offset: xr::Offset2Di { x: 0, y: 0 },
+            extent: xr::Extent2Di {
+                width: self.swapchain_width as i32,
+                height: self.swapchain_height as i32,
+            },
+        };
+
+        let sub_image_left = xr::SwapchainSubImage::new()
+            .swapchain(&self.swapchain)
+            .image_array_index(0)
+            .image_rect(rect);
+
+        let sub_image_right = xr::SwapchainSubImage::new()
+            .swapchain(&self.swapchain)
+            .image_array_index(1)
+            .image_rect(rect);
+
+        let left_view = &frame_data.views[0];
+        let right_view = &frame_data.views[1];
+        if !is_valid_pose(&left_view.pose) || !is_valid_pose(&right_view.pose) {
+            log::warn!("XR frame contains invalid projection pose; ending frame without layers.");
+            self.frame_stream.end(
+                frame_data.predicted_display_time,
+                xr::EnvironmentBlendMode::OPAQUE,
+                &[],
+            )?;
+            return Ok(());
+        }
+
+        let projection_views = [
+            xr::CompositionLayerProjectionView::new()
+                .pose(left_view.pose)
+                .fov(left_view.fov)
+                .sub_image(sub_image_left),
+            xr::CompositionLayerProjectionView::new()
+                .pose(right_view.pose)
+                .fov(right_view.fov)
+                .sub_image(sub_image_right),
+        ];
+
+        let projection = xr::CompositionLayerProjection::new()
+            .space(&self.reference_space)
+            .views(&projection_views);
+
+        let quad = xr::CompositionLayerQuad::new()
+            .layer_flags(xr::CompositionLayerFlags::BLEND_TEXTURE_SOURCE_ALPHA)
+            .space(&self.view_space)
+            .eye_visibility(xr::EyeVisibility::BOTH)
+            .sub_image(
+                xr::SwapchainSubImage::new()
+                    .swapchain(&self.panel_swapchain)
+                    .image_array_index(0)
+                    .image_rect(xr::Rect2Di {
+                        offset: xr::Offset2Di { x: 0, y: 0 },
+                        extent: xr::Extent2Di {
+                            width: self.panel_swapchain_width as i32,
+                            height: self.panel_swapchain_height as i32,
+                        },
+                    }),
+            )
+            .pose(panel_pose)
+            .size(panel_size);
+
+        let alt_quad = xr::CompositionLayerQuad::new()
+            .layer_flags(xr::CompositionLayerFlags::BLEND_TEXTURE_SOURCE_ALPHA)
+            .space(&self.view_space)
+            .eye_visibility(xr::EyeVisibility::BOTH)
+            .sub_image(
+                xr::SwapchainSubImage::new()
+                    .swapchain(&self.panel_swapchain)
+                    .image_array_index(0)
+                    .image_rect(xr::Rect2Di {
+                        offset: xr::Offset2Di { x: 0, y: 0 },
+                        extent: xr::Extent2Di {
+                            width: self.panel_swapchain_width as i32,
+                            height: self.panel_swapchain_height as i32,
+                        },
+                    }),
+            )
+            .pose(alt_panel_pose)
+            .size(panel_size);
+
+        self.frame_stream.end(
+            frame_data.predicted_display_time,
+            xr::EnvironmentBlendMode::OPAQUE,
+            &[&projection, &quad, &alt_quad],
+        )?;
+
+        Ok(())
+    }
 }
 
 fn wrap_xr_images_as_wgpu(
@@ -510,6 +731,7 @@ fn wrap_xr_images_as_wgpu(
     xr_images: &[u64],
     width: u32,
     height: u32,
+    array_layers: u32,
 ) -> Vec<wgpu::Texture> {
     use wgpu::hal;
 
@@ -528,7 +750,7 @@ fn wrap_xr_images_as_wgpu(
                         size: wgpu::Extent3d {
                             width,
                             height,
-                            depth_or_array_layers: 2,
+                            depth_or_array_layers: array_layers,
                         },
                         mip_level_count: 1,
                         sample_count: 1,
@@ -550,7 +772,7 @@ fn wrap_xr_images_as_wgpu(
                         size: wgpu::Extent3d {
                             width,
                             height,
-                            depth_or_array_layers: 2,
+                            depth_or_array_layers: array_layers,
                         },
                         mip_level_count: 1,
                         sample_count: 1,
