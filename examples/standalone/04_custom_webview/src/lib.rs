@@ -135,7 +135,7 @@ fn mobile_html_source(href: &str) -> String {
 #[cfg(feature = "xr")]
 const XR_PANEL_DISTANCE: f32 = 1.4;
 #[cfg(feature = "xr")]
-const XR_PANEL_WIDTH: f32 = 1.0;
+const XR_PANEL_WIDTH: f32 = 2.0;
 #[cfg(feature = "xr")]
 const XR_PANEL_LOGICAL_WIDTH: u32 = 1920;
 #[cfg(feature = "xr")]
@@ -147,7 +147,7 @@ const XR_PANEL_RENDER_HEIGHT: u32 = 1728;
 #[cfg(feature = "xr")]
 const XR_SCROLL_SPEED: f32 = 14.0;
 #[cfg(all(feature = "xr", target_os = "android"))]
-const XR_PANEL_POINTER_BIAS_X: f32 = 0.10;
+const XR_PANEL_POINTER_BIAS_X: f32 = 0.00;
 #[cfg(all(feature = "xr", target_os = "android"))]
 const XR_PANEL_POINTER_BIAS_Y: f32 = 0.00;
 
