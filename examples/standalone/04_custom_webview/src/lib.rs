@@ -135,7 +135,7 @@ fn mobile_html_source(href: &str) -> String {
 #[cfg(feature = "xr")]
 const XR_PANEL_DISTANCE: f32 = 1.4;
 #[cfg(feature = "xr")]
-const XR_PANEL_WIDTH: f32 = 1.45;
+const XR_PANEL_WIDTH: f32 = 1.0;
 #[cfg(feature = "xr")]
 const XR_PANEL_LOGICAL_WIDTH: u32 = 1920;
 #[cfg(feature = "xr")]
@@ -146,6 +146,10 @@ const XR_PANEL_RENDER_WIDTH: u32 = 3072;
 const XR_PANEL_RENDER_HEIGHT: u32 = 1728;
 #[cfg(feature = "xr")]
 const XR_SCROLL_SPEED: f32 = 14.0;
+#[cfg(all(feature = "xr", target_os = "android"))]
+const XR_PANEL_POINTER_BIAS_X: f32 = 0.10;
+#[cfg(all(feature = "xr", target_os = "android"))]
+const XR_PANEL_POINTER_BIAS_Y: f32 = 0.00;
 
 #[cfg(feature = "xr")]
 fn xr_panel_view_size() -> winit::dpi::PhysicalSize<u32> {
@@ -180,57 +184,11 @@ fn xr_panel_local_pose() -> xr::Posef {
     xr::Posef {
         orientation: xr::Quaternionf::IDENTITY,
         position: xr::Vector3f {
-            x: 0.04,
-            y: -0.03,
+            x: 0.0,
+            y: 0.0,
             z: -XR_PANEL_DISTANCE,
         },
     }
-}
-
-#[cfg(all(feature = "xr", target_os = "android"))]
-fn push_xr_debug_marker(
-    commands: &mut Vec<DrawCommand>,
-    view_size: winit::dpi::PhysicalSize<u32>,
-    color: [f32; 4],
-    align_right: bool,
-) {
-    let width = view_size.width as f32;
-    let height = view_size.height as f32;
-    let inset = 14.0;
-    let badge = 72.0;
-    let badge_x = if align_right {
-        width - inset - badge
-    } else {
-        inset
-    };
-
-    commands.push(DrawCommand::Border {
-        rect: types::LayoutRect {
-            x: inset,
-            y: inset,
-            w: (width - inset * 2.0).max(1.0),
-            h: (height - inset * 2.0).max(1.0),
-        },
-        color,
-        width: 10.0,
-        radius: 20.0,
-        element_id: None,
-        transform: types::mat4_identity(),
-        is_fixed: true,
-    });
-    commands.push(DrawCommand::Rect {
-        rect: types::LayoutRect {
-            x: badge_x,
-            y: inset,
-            w: badge,
-            h: badge,
-        },
-        color,
-        border_radius: 18.0,
-        element_id: None,
-        transform: types::mat4_identity(),
-        is_fixed: true,
-    });
 }
 
 #[cfg(all(feature = "xr", target_os = "android"))]
@@ -485,8 +443,13 @@ fn xr_panel_pointer(
     if t <= 0.0 {
         return None;
     }
-    let hit_x = origin[0] + dir[0] * t;
-    let hit_y = origin[1] + dir[1] * t;
+    #[cfg(target_os = "android")]
+    let (hit_x, hit_y) = (
+        origin[0] + dir[0] * t - XR_PANEL_POINTER_BIAS_X * XR_PANEL_WIDTH,
+        origin[1] + dir[1] * t - XR_PANEL_POINTER_BIAS_Y * xr_panel_height(target_size),
+    );
+    #[cfg(not(target_os = "android"))]
+    let (hit_x, hit_y) = (origin[0] + dir[0] * t, origin[1] + dir[1] * t);
     let panel_half_width = XR_PANEL_WIDTH * 0.5;
     let panel_half_height = xr_panel_height(target_size) * 0.5;
     if hit_x.abs() > panel_half_width || hit_y.abs() > panel_half_height {
@@ -1497,14 +1460,6 @@ impl ApplicationHandler for App {
 
                                                     match xr.acquire_panel_swapchain_texture() {
                                                         Ok((panel_texture, _panel_idx)) => {
-                                                            let mut quad_overlay_commands =
-                                                                overlay_commands.clone();
-                                                            push_xr_debug_marker(
-                                                                &mut quad_overlay_commands,
-                                                                s.view_size,
-                                                                [0.2, 0.95, 0.25, 0.95],
-                                                                true,
-                                                            );
                                                             let panel_view = panel_texture
                                                                 .create_view(
                                                                     &wgpu::TextureViewDescriptor {
@@ -1528,7 +1483,7 @@ impl ApplicationHandler for App {
                                                                 xr_panel_render_scale_factor(),
                                                                 true,
                                                                 &s.static_commands,
-                                                                &quad_overlay_commands,
+                                                                &overlay_commands,
                                                                 s.clear_color,
                                                                 s.scroll_y,
                                                                 &canvases,
