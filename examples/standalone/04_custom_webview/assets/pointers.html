@@ -1,0 +1,189 @@
+<!DOCTYPE html>
+<html>
+<head>
+<style>
+  body {
+    background: #1a1a2e;
+    color: #e0e0e0;
+    font-size: 16px;
+    padding: 0;
+    margin: 0;
+  }
+  .header {
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    background: #16213e;
+    padding: 20px;
+    height: 64px;
+  }
+  .header h1 {
+    color: #e94560;
+    font-size: 28px;
+  }
+  .nav {
+    display: flex;
+    padding: 12px;
+    background: #0f3460;
+    gap: 16px;
+  }
+  .link {
+    color: #e94560;
+    font-size: 14px;
+    padding: 8px;
+  }
+  .info {
+    display: flex;
+    justify-content: center;
+    padding: 12px;
+    background: #16213e;
+  }
+  .info p {
+    color: #a7c5eb;
+    font-size: 13px;
+  }
+  .arena {
+    background: #0d1b2a;
+    padding: 0;
+    margin: 0;
+    height: 480px;
+  }
+  .cursor {
+    position: absolute;
+    display: none;
+  }
+  .cursor-box {
+    background: rgba(233, 69, 96, 0.25);
+    border-radius: 0;
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    padding: 0;
+    margin: 0;
+  }
+  .cursor-label {
+    color: #a7c5eb;
+    font-size: 11px;
+    padding: 4px;
+    background: rgba(15, 52, 96, 0.85);
+    border-radius: 4px;
+  }
+  .log-area {
+    padding: 16px;
+    background: #16213e;
+  }
+  .log-area h2 {
+    color: #e94560;
+    font-size: 18px;
+  }
+  #event-log {
+    color: #53d8fb;
+    font-size: 12px;
+    padding: 8px;
+    background: #0d1b2a;
+    border-radius: 4px;
+    height: 120px;
+  }
+</style>
+</head>
+<body>
+  <div class="header">
+    <h1>Pointer Test</h1>
+  </div>
+  <div class="nav">
+    <a href="index.html"><div class="link">Home</div></a>
+  </div>
+  <div class="info">
+    <p>Touch, click, or point controllers at this area. Each pointer shows its state.</p>
+  </div>
+  <div class="arena" id="arena">
+    <div class="cursor" id="ptr1">
+      <div class="cursor-box" id="ptr1-box" style="width: 40px; height: 40px; background: rgba(233, 69, 96, 0.3); border: 2px solid #e94560;"></div>
+    </div>
+    <div class="cursor" id="ptr2">
+      <div class="cursor-box" id="ptr2-box" style="width: 40px; height: 40px; background: rgba(83, 216, 251, 0.3); border: 2px solid #53d8fb;"></div>
+    </div>
+    <div class="cursor" id="ptr3">
+      <div class="cursor-box" id="ptr3-box" style="width: 40px; height: 40px; background: rgba(240, 192, 64, 0.3); border: 2px solid #f0c040;"></div>
+    </div>
+    <div class="cursor" id="ptr4">
+      <div class="cursor-box" id="ptr4-box" style="width: 40px; height: 40px; background: rgba(107, 235, 107, 0.3); border: 2px solid #6beb6b;"></div>
+    </div>
+  </div>
+  <div class="log-area">
+    <h2>Pointer State</h2>
+    <div id="ptr1-label">
+      <p style="color: #e94560; font-size: 12px;">Pointer 1: --</p>
+    </div>
+    <div id="ptr2-label">
+      <p style="color: #53d8fb; font-size: 12px;">Pointer 2: --</p>
+    </div>
+    <div id="ptr3-label">
+      <p style="color: #f0c040; font-size: 12px;">Pointer 3: --</p>
+    </div>
+    <div id="ptr4-label">
+      <p style="color: #6beb6b; font-size: 12px;">Pointer 4: --</p>
+    </div>
+  </div>
+  <div class="log-area">
+    <h2>Event Log</h2>
+    <div id="event-log">Waiting for pointer events...</div>
+  </div>
+  <script>
+    var arena = document.getElementById('arena');
+    var log = document.getElementById('event-log');
+    var logLines = [];
+
+    function addLog(msg) {
+      logLines.push(msg);
+      if (logLines.length > 8) logLines.shift();
+      log.textContent = logLines.join(' | ');
+    }
+
+    function updatePointer(e, state) {
+      var id = e.pointerId;
+      if (id < 1 || id > 4) return;
+
+      var label = document.getElementById('ptr' + id + '-label');
+      var cursor = document.getElementById('ptr' + id);
+      var arenaRect = arena.getBoundingClientRect();
+      var relX = e.clientX - arenaRect.x;
+      var relY = e.clientY - arenaRect.y;
+
+      var info = 'Pointer ' + id + ': ' + e.pointerType +
+        ' [' + Math.round(e.clientX) + ',' + Math.round(e.clientY) + ']' +
+        ' p=' + (e.pressure || 0).toFixed(2) +
+        ' btn=' + e.buttons +
+        (e.isPrimary ? ' PRIMARY' : '') +
+        ' ' + state;
+
+      label.textContent = info;
+
+      if (state === 'up') {
+        cursor.style.display = 'none';
+      } else {
+        cursor.style.display = 'block';
+        cursor.style.left = (relX - 20) + 'px';
+        cursor.style.top = (relY - 20) + 'px';
+      }
+    }
+
+    arena.addEventListener('pointerdown', function(e) {
+      e.preventDefault();
+      updatePointer(e, 'DOWN');
+      addLog('down:' + e.pointerId + ' ' + e.pointerType);
+    });
+
+    arena.addEventListener('pointermove', function(e) {
+      e.preventDefault();
+      updatePointer(e, 'move');
+    });
+
+    arena.addEventListener('pointerup', function(e) {
+      e.preventDefault();
+      updatePointer(e, 'up');
+      addLog('up:' + e.pointerId);
+    });
+  </script>
+</body>
+</html>

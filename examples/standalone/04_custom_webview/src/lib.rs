@@ -41,6 +41,7 @@ pub mod embedded_assets {
     pub const CSS3D_HTML: &str = include_str!("../assets/css3d.html");
     pub const WEBGPU_HTML: &str = include_str!("../assets/webgpu.html");
     pub const WEBXR_HTML: &str = include_str!("../assets/webxr.html");
+    pub const POINTERS_HTML: &str = include_str!("../assets/pointers.html");
 
     pub fn get(name: &str) -> Option<&'static str> {
         match name {
@@ -51,6 +52,7 @@ pub mod embedded_assets {
             "css3d.html" => Some(CSS3D_HTML),
             "webgpu.html" => Some(WEBGPU_HTML),
             "webxr.html" => Some(WEBXR_HTML),
+            "pointers.html" => Some(POINTERS_HTML),
             _ => None,
         }
     }
@@ -78,6 +80,7 @@ pub struct WebviewState {
     pub text_cache: TextMeasureCache,
     pub ghost_pos: Option<(f32, f32)>,
     pub last_touch_y: Option<f32>,
+    pub touch_default_prevented: bool,
     #[cfg(feature = "xr")]
     pub xr_context: Option<xr_session::XrContext>,
     #[cfg(feature = "xr")]
@@ -97,9 +100,13 @@ pub struct WebviewState {
     #[cfg(feature = "xr")]
     pub page_xr_active: bool,
     #[cfg(feature = "xr")]
-    pub xr_select_down: bool,
+    pub xr_right_select_down: bool,
     #[cfg(feature = "xr")]
-    pub xr_pointer_pos: Option<(f32, f32)>,
+    pub xr_left_select_down: bool,
+    #[cfg(feature = "xr")]
+    pub xr_right_pointer_pos: Option<(f32, f32)>,
+    #[cfg(feature = "xr")]
+    pub xr_left_pointer_pos: Option<(f32, f32)>,
     #[cfg(feature = "xr")]
     pub xr_exit_down: bool,
 }
@@ -564,7 +571,7 @@ impl App {
             if dragging {
                 let (mx, my) = unsafe { CURSOR_POS };
                 let s = self.state.as_mut().unwrap();
-                s.js.dispatch_pointer_move(&s.layout, mx, my, s.scroll_y);
+                s.js.dispatch_pointer_move(&s.layout, mx, my, s.scroll_y, 1, "mouse", 1.0, true);
             }
         }
         if self.state.as_ref().unwrap().js.is_dirty() {
@@ -806,6 +813,7 @@ impl ApplicationHandler for App {
             text_cache,
             ghost_pos: None,
             last_touch_y: None,
+            touch_default_prevented: false,
             #[cfg(feature = "xr")]
             xr_context,
             #[cfg(feature = "xr")]
@@ -825,9 +833,13 @@ impl ApplicationHandler for App {
             #[cfg(feature = "xr")]
             page_xr_active: false,
             #[cfg(feature = "xr")]
-            xr_select_down: false,
+            xr_right_select_down: false,
             #[cfg(feature = "xr")]
-            xr_pointer_pos: None,
+            xr_left_select_down: false,
+            #[cfg(feature = "xr")]
+            xr_right_pointer_pos: None,
+            #[cfg(feature = "xr")]
+            xr_left_pointer_pos: None,
             #[cfg(feature = "xr")]
             xr_exit_down: false,
         });
@@ -883,7 +895,9 @@ impl ApplicationHandler for App {
                 #[cfg(feature = "js")]
                 {
                     let s = self.state.as_mut().unwrap();
-                    s.js.dispatch_pointer_down(&s.layout, mx, my, s.scroll_y);
+                    s.js.dispatch_pointer_down(
+                        &s.layout, mx, my, s.scroll_y, 1, "mouse", 1.0, true,
+                    );
                     if s.js.is_dirty() {
                         self.rebuild_layout();
                         self.state.as_ref().unwrap().gpu.window.request_redraw();
@@ -900,7 +914,7 @@ impl ApplicationHandler for App {
                 {
                     let s = self.state.as_mut().unwrap();
                     let (mx, my) = unsafe { CURSOR_POS };
-                    s.js.dispatch_pointer_up(&s.layout, mx, my, s.scroll_y);
+                    s.js.dispatch_pointer_up(&s.layout, mx, my, s.scroll_y, 1, "mouse", 1.0, true);
                     if s.js.is_dirty() {
                         self.rebuild_layout();
                         self.state.as_ref().unwrap().gpu.window.request_redraw();
@@ -931,6 +945,7 @@ impl ApplicationHandler for App {
                         let s = self.state.as_mut().unwrap();
                         s.mouse_down = true;
                         s.last_touch_y = Some(my);
+                        s.touch_default_prevented = false;
 
                         let hit = renderer::hit_test(&s.layout, mx, my + s.scroll_y);
                         if let Some(ref hit) = hit {
@@ -944,7 +959,14 @@ impl ApplicationHandler for App {
                         #[cfg(feature = "js")]
                         {
                             let s = self.state.as_mut().unwrap();
-                            s.js.dispatch_pointer_down(&s.layout, mx, my, s.scroll_y);
+                            let pid = touch.id as i32 + 1;
+                            let is_primary = pid == 1;
+                            let prevented = s.js.dispatch_pointer_down(
+                                &s.layout, mx, my, s.scroll_y, pid, "touch", 1.0, is_primary,
+                            );
+                            if prevented {
+                                s.touch_default_prevented = true;
+                            }
                             if s.js.is_dirty() {
                                 self.rebuild_layout();
                             }
@@ -952,8 +974,28 @@ impl ApplicationHandler for App {
                         self.state.as_ref().unwrap().gpu.window.request_redraw();
                     }
                     winit::event::TouchPhase::Moved => {
+                        #[cfg(feature = "js")]
+                        let mut prevented = false;
+                        #[cfg(feature = "js")]
+                        {
+                            let s = self.state.as_mut().unwrap();
+                            let pid = touch.id as i32 + 1;
+                            let is_primary = pid == 1;
+                            prevented = s.js.dispatch_pointer_move(
+                                &s.layout, mx, my, s.scroll_y, pid, "touch", 1.0, is_primary,
+                            ) || s.touch_default_prevented;
+                            if s.js.is_dirty() {
+                                self.rebuild_layout();
+                            }
+                        }
+
                         let s = self.state.as_mut().unwrap();
-                        if s.ghost_commands.is_empty() {
+                        #[cfg(feature = "js")]
+                        let skip_scroll = prevented;
+                        #[cfg(not(feature = "js"))]
+                        let skip_scroll = false;
+
+                        if !skip_scroll && s.ghost_commands.is_empty() {
                             if let Some(last_y) = s.last_touch_y {
                                 let dy = last_y - my;
                                 let max_scroll = Self::max_scroll(s);
@@ -963,15 +1005,6 @@ impl ApplicationHandler for App {
                             }
                         }
                         s.last_touch_y = Some(my);
-
-                        #[cfg(feature = "js")]
-                        {
-                            let s = self.state.as_mut().unwrap();
-                            s.js.dispatch_pointer_move(&s.layout, mx, my, s.scroll_y);
-                            if s.js.is_dirty() {
-                                self.rebuild_layout();
-                            }
-                        }
                         self.state.as_ref().unwrap().gpu.window.request_redraw();
                     }
                     winit::event::TouchPhase::Ended | winit::event::TouchPhase::Cancelled => {
@@ -981,7 +1014,11 @@ impl ApplicationHandler for App {
                         #[cfg(feature = "js")]
                         {
                             let s = self.state.as_mut().unwrap();
-                            s.js.dispatch_pointer_up(&s.layout, mx, my, s.scroll_y);
+                            let pid = touch.id as i32 + 1;
+                            let is_primary = pid == 1;
+                            s.js.dispatch_pointer_up(
+                                &s.layout, mx, my, s.scroll_y, pid, "touch", 1.0, is_primary,
+                            );
                             s.ghost_pos = None;
                             if s.js.is_dirty() {
                                 self.rebuild_layout();
@@ -1026,8 +1063,10 @@ impl ApplicationHandler for App {
                     }
                     if s.js.take_xr_end_request() {
                         s.page_xr_active = false;
-                        s.xr_select_down = false;
-                        s.xr_pointer_pos = None;
+                        s.xr_right_select_down = false;
+                        s.xr_left_select_down = false;
+                        s.xr_right_pointer_pos = None;
+                        s.xr_left_pointer_pos = None;
                         s.xr_exit_down = false;
                         #[cfg(not(target_os = "android"))]
                         {
@@ -1197,7 +1236,9 @@ impl ApplicationHandler for App {
                                         if let Err(e) = xr.sync_input() {
                                             log::error!("XR input sync error: {:?}", e);
                                         }
-                                        let select_down = xr.select_pressed().unwrap_or(false);
+                                        let right_select =
+                                            xr.right_select_pressed().unwrap_or(false);
+                                        let left_select = xr.left_select_pressed().unwrap_or(false);
                                         let scroll_axis = xr.scroll_axis().unwrap_or(0.0);
                                         if scroll_axis != 0.0 {
                                             let max_scroll = Self::max_scroll(s);
@@ -1206,19 +1247,18 @@ impl ApplicationHandler for App {
                                                 .clamp(0.0, max_scroll);
                                             s.js.set_scroll_y(s.scroll_y);
                                         }
-                                        let pointer_pose = match xr
-                                            .pointer_pose(frame_data.predicted_display_time)
+
+                                        // Right hand (pointerId=1, primary)
+                                        let right_pose = match xr
+                                            .right_pointer_pose(frame_data.predicted_display_time)
                                         {
-                                            Ok(pose) => pose,
+                                            Ok(p) => p,
                                             Err(e) => {
-                                                log::error!(
-                                                    "XR pointer pose lookup error: {:?}",
-                                                    e
-                                                );
+                                                log::error!("XR right pose error: {:?}", e);
                                                 None
                                             }
                                         };
-                                        if let Some((mx, my)) = pointer_pose.and_then(|pose| {
+                                        if let Some((mx, my)) = right_pose.and_then(|pose| {
                                             xr_panel_pointer(
                                                 &pose,
                                                 &xr_panel_local_pose(),
@@ -1229,15 +1269,22 @@ impl ApplicationHandler for App {
                                             unsafe {
                                                 CURSOR_POS = (mx, my);
                                             }
-                                            s.xr_pointer_pos = Some((mx, my));
+                                            s.xr_right_pointer_pos = Some((mx, my));
                                             s.js.dispatch_pointer_move(
-                                                &s.layout, mx, my, s.scroll_y,
+                                                &s.layout,
+                                                mx,
+                                                my,
+                                                s.scroll_y,
+                                                1,
+                                                "xr-controller",
+                                                1.0,
+                                                true,
                                             );
-                                        } else if !select_down {
-                                            s.xr_pointer_pos = None;
+                                        } else if !right_select {
+                                            s.xr_right_pointer_pos = None;
                                         }
-                                        if !s.xr_select_down && select_down {
-                                            if let Some((mx, my)) = s.xr_pointer_pos {
+                                        if !s.xr_right_select_down && right_select {
+                                            if let Some((mx, my)) = s.xr_right_pointer_pos {
                                                 let y = my + s.scroll_y;
                                                 let hit = renderer::hit_test(&s.layout, mx, y);
                                                 if let Some(href) =
@@ -1246,19 +1293,103 @@ impl ApplicationHandler for App {
                                                     xr_navigation = Some(href);
                                                 } else {
                                                     s.js.dispatch_pointer_down(
-                                                        &s.layout, mx, my, s.scroll_y,
+                                                        &s.layout,
+                                                        mx,
+                                                        my,
+                                                        s.scroll_y,
+                                                        1,
+                                                        "xr-controller",
+                                                        1.0,
+                                                        true,
                                                     );
                                                 }
                                             }
                                         }
-                                        if s.xr_select_down && !select_down {
-                                            if let Some((mx, my)) = s.xr_pointer_pos {
+                                        if s.xr_right_select_down && !right_select {
+                                            if let Some((mx, my)) = s.xr_right_pointer_pos {
                                                 s.js.dispatch_pointer_up(
-                                                    &s.layout, mx, my, s.scroll_y,
+                                                    &s.layout,
+                                                    mx,
+                                                    my,
+                                                    s.scroll_y,
+                                                    1,
+                                                    "xr-controller",
+                                                    1.0,
+                                                    true,
                                                 );
                                             }
                                         }
-                                        s.xr_select_down = select_down;
+                                        s.xr_right_select_down = right_select;
+
+                                        // Left hand (pointerId=2)
+                                        let left_pose = match xr
+                                            .left_pointer_pose(frame_data.predicted_display_time)
+                                        {
+                                            Ok(p) => p,
+                                            Err(e) => {
+                                                log::error!("XR left pose error: {:?}", e);
+                                                None
+                                            }
+                                        };
+                                        if let Some((mx, my)) = left_pose.and_then(|pose| {
+                                            xr_panel_pointer(
+                                                &pose,
+                                                &xr_panel_local_pose(),
+                                                s.view_size,
+                                                s.view_scale_factor,
+                                            )
+                                        }) {
+                                            s.xr_left_pointer_pos = Some((mx, my));
+                                            s.js.dispatch_pointer_move(
+                                                &s.layout,
+                                                mx,
+                                                my,
+                                                s.scroll_y,
+                                                2,
+                                                "xr-controller",
+                                                1.0,
+                                                false,
+                                            );
+                                        } else if !left_select {
+                                            s.xr_left_pointer_pos = None;
+                                        }
+                                        if !s.xr_left_select_down && left_select {
+                                            if let Some((mx, my)) = s.xr_left_pointer_pos {
+                                                let y = my + s.scroll_y;
+                                                let hit = renderer::hit_test(&s.layout, mx, y);
+                                                if let Some(href) =
+                                                    hit.and_then(|hit| hit.href.clone())
+                                                {
+                                                    xr_navigation = Some(href);
+                                                } else {
+                                                    s.js.dispatch_pointer_down(
+                                                        &s.layout,
+                                                        mx,
+                                                        my,
+                                                        s.scroll_y,
+                                                        2,
+                                                        "xr-controller",
+                                                        1.0,
+                                                        false,
+                                                    );
+                                                }
+                                            }
+                                        }
+                                        if s.xr_left_select_down && !left_select {
+                                            if let Some((mx, my)) = s.xr_left_pointer_pos {
+                                                s.js.dispatch_pointer_up(
+                                                    &s.layout,
+                                                    mx,
+                                                    my,
+                                                    s.scroll_y,
+                                                    2,
+                                                    "xr-controller",
+                                                    1.0,
+                                                    false,
+                                                );
+                                            }
+                                        }
+                                        s.xr_left_select_down = left_select;
                                         s.xr_exit_down = false;
 
                                         let now_ms = s.start_time.elapsed().as_secs_f64() * 1000.0;
@@ -1268,7 +1399,15 @@ impl ApplicationHandler for App {
                                         }
 
                                         let mut overlay_commands = s.ghost_commands.clone();
-                                        if let Some((mx, my)) = s.xr_pointer_pos {
+                                        for (mx, my, color) in [
+                                            s.xr_right_pointer_pos
+                                                .map(|(x, y)| (x, y, [1.0f32, 1.0, 1.0, 0.9])),
+                                            s.xr_left_pointer_pos
+                                                .map(|(x, y)| (x, y, [0.5f32, 0.8, 1.0, 0.9])),
+                                        ]
+                                        .into_iter()
+                                        .flatten()
+                                        {
                                             overlay_commands.push(DrawCommand::Rect {
                                                 rect: types::LayoutRect {
                                                     x: mx - 8.0,
@@ -1276,7 +1415,7 @@ impl ApplicationHandler for App {
                                                     w: 16.0,
                                                     h: 16.0,
                                                 },
-                                                color: [1.0, 1.0, 1.0, 0.2],
+                                                color: [color[0], color[1], color[2], 0.2],
                                                 border_radius: 8.0,
                                                 element_id: None,
                                                 transform: types::mat4_identity(),
@@ -1289,7 +1428,7 @@ impl ApplicationHandler for App {
                                                     w: 16.0,
                                                     h: 16.0,
                                                 },
-                                                color: [1.0, 1.0, 1.0, 0.9],
+                                                color,
                                                 width: 2.0,
                                                 radius: 8.0,
                                                 element_id: None,
@@ -1556,8 +1695,10 @@ impl ApplicationHandler for App {
                         if xr.state() == xr_session::XrState::Stopping {
                             let s = self.state.as_mut().unwrap();
                             s.page_xr_active = false;
-                            s.xr_select_down = false;
-                            s.xr_pointer_pos = None;
+                            s.xr_right_select_down = false;
+                            s.xr_left_select_down = false;
+                            s.xr_right_pointer_pos = None;
+                            s.xr_left_pointer_pos = None;
                             s.xr_exit_down = false;
                             log::info!("XR session stopped");
                         } else {

@@ -119,7 +119,8 @@ pub struct XrSession {
     #[cfg(target_os = "android")]
     panel_swapchain_height: u32,
     action_set: xr::ActionSet,
-    select_action: xr::Action<bool>,
+    right_select_action: xr::Action<bool>,
+    left_select_action: xr::Action<bool>,
     exit_action: xr::Action<bool>,
     right_thumbstick_action: xr::Action<xr::Vector2f>,
     left_thumbstick_action: xr::Action<xr::Vector2f>,
@@ -214,7 +215,10 @@ impl XrSession {
             session.create_reference_space(xr::ReferenceSpaceType::LOCAL, xr::Posef::IDENTITY)?;
 
         let action_set = ctx.instance.create_action_set("input", "Input", 0)?;
-        let select_action = action_set.create_action::<bool>("select", "Select", &[])?;
+        let right_select_action =
+            action_set.create_action::<bool>("right_select", "Right Select", &[])?;
+        let left_select_action =
+            action_set.create_action::<bool>("left_select", "Left Select", &[])?;
         let exit_action = action_set.create_action::<bool>("exit", "Exit", &[])?;
         let right_thumbstick_action = action_set.create_action::<xr::Vector2f>(
             "right_thumbstick",
@@ -242,8 +246,8 @@ impl XrSession {
             ctx.instance
                 .string_to_path("/interaction_profiles/khr/simple_controller")?,
             &[
-                xr::Binding::new(&select_action, left_select),
-                xr::Binding::new(&select_action, right_select),
+                xr::Binding::new(&left_select_action, left_select),
+                xr::Binding::new(&right_select_action, right_select),
                 xr::Binding::new(
                     &left_aim_action,
                     ctx.instance
@@ -282,8 +286,8 @@ impl XrSession {
                 if let Err(error) = ctx.instance.suggest_interaction_profile_bindings(
                     profile,
                     &[
-                        xr::Binding::new(&select_action, left_x),
-                        xr::Binding::new(&select_action, right_a),
+                        xr::Binding::new(&left_select_action, left_x),
+                        xr::Binding::new(&right_select_action, right_a),
                         xr::Binding::new(&exit_action, left_exit),
                         xr::Binding::new(&exit_action, right_exit),
                         xr::Binding::new(&left_thumbstick_action, left_thumbstick),
@@ -322,7 +326,8 @@ impl XrSession {
             #[cfg(target_os = "android")]
             panel_swapchain_height,
             action_set,
-            select_action,
+            right_select_action,
+            left_select_action,
             exit_action,
             right_thumbstick_action,
             left_thumbstick_action,
@@ -474,9 +479,22 @@ impl XrSession {
         Ok(())
     }
 
+    pub fn right_select_pressed(&self) -> Result<bool> {
+        let s = self
+            .right_select_action
+            .state(&self.session, xr::Path::NULL)?;
+        Ok(s.is_active && s.current_state)
+    }
+
+    pub fn left_select_pressed(&self) -> Result<bool> {
+        let s = self
+            .left_select_action
+            .state(&self.session, xr::Path::NULL)?;
+        Ok(s.is_active && s.current_state)
+    }
+
     pub fn select_pressed(&self) -> Result<bool> {
-        let select_state = self.select_action.state(&self.session, xr::Path::NULL)?;
-        Ok(select_state.is_active && select_state.current_state)
+        Ok(self.right_select_pressed()? || self.left_select_pressed()?)
     }
 
     pub fn exit_pressed(&self) -> Result<bool> {
@@ -484,17 +502,42 @@ impl XrSession {
         Ok(exit_state.is_active && exit_state.current_state)
     }
 
-    pub fn pointer_pose(&self, predicted_display_time: xr::Time) -> Result<Option<xr::Posef>> {
-        for space in [&self.right_aim_space, &self.left_aim_space] {
-            let location = space.locate(&self.reference_space, predicted_display_time)?;
-            let flags = location.location_flags;
-            if flags.contains(xr::SpaceLocationFlags::POSITION_VALID)
-                && flags.contains(xr::SpaceLocationFlags::ORIENTATION_VALID)
-            {
-                return Ok(Some(location.pose));
-            }
+    pub fn right_pointer_pose(
+        &self,
+        predicted_display_time: xr::Time,
+    ) -> Result<Option<xr::Posef>> {
+        let location = self
+            .right_aim_space
+            .locate(&self.reference_space, predicted_display_time)?;
+        let flags = location.location_flags;
+        if flags.contains(xr::SpaceLocationFlags::POSITION_VALID)
+            && flags.contains(xr::SpaceLocationFlags::ORIENTATION_VALID)
+        {
+            Ok(Some(location.pose))
+        } else {
+            Ok(None)
         }
-        Ok(None)
+    }
+
+    pub fn left_pointer_pose(&self, predicted_display_time: xr::Time) -> Result<Option<xr::Posef>> {
+        let location = self
+            .left_aim_space
+            .locate(&self.reference_space, predicted_display_time)?;
+        let flags = location.location_flags;
+        if flags.contains(xr::SpaceLocationFlags::POSITION_VALID)
+            && flags.contains(xr::SpaceLocationFlags::ORIENTATION_VALID)
+        {
+            Ok(Some(location.pose))
+        } else {
+            Ok(None)
+        }
+    }
+
+    pub fn pointer_pose(&self, predicted_display_time: xr::Time) -> Result<Option<xr::Posef>> {
+        if let Some(pose) = self.right_pointer_pose(predicted_display_time)? {
+            return Ok(Some(pose));
+        }
+        self.left_pointer_pose(predicted_display_time)
     }
 
     pub fn scroll_axis(&self) -> Result<f32> {

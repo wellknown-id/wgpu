@@ -88,8 +88,8 @@ pub struct SharedState {
     pub text_overrides: HashMap<String, String>,
     pub style_overrides: HashMap<String, HashMap<String, String>>,
     pub canvas_ops: HashMap<String, Vec<CanvasDrawOp>>,
-    pub pointer_capture: Option<String>,
-    pub pointer_down_target: Option<String>,
+    pub pointer_captures: HashMap<i32, String>,
+    pub pointer_down_targets: HashMap<i32, String>,
     pub element_rects: HashMap<String, crate::types::LayoutRect>,
     pub scroll_y: f32,
     pub animation_callbacks: Vec<rquickjs::Persistent<rquickjs::Function<'static>>>,
@@ -109,8 +109,8 @@ impl JsBridge {
             text_overrides: HashMap::new(),
             style_overrides: HashMap::new(),
             canvas_ops: HashMap::new(),
-            pointer_capture: None,
-            pointer_down_target: None,
+            pointer_captures: HashMap::new(),
+            pointer_down_targets: HashMap::new(),
             element_rects: HashMap::new(),
             scroll_y: 0.0,
             animation_callbacks: Vec::new(),
@@ -361,8 +361,11 @@ impl JsBridge {
                 "__hostSetPointerCapture",
                 Function::new(
                     ctx.clone(),
-                    move |_ctx: rquickjs::Ctx<'_>, id: String| {
-                        shared_clone.borrow_mut().pointer_capture = Some(id);
+                    move |_ctx: rquickjs::Ctx<'_>, id: String, pointer_id: i32| {
+                        shared_clone
+                            .borrow_mut()
+                            .pointer_captures
+                            .insert(pointer_id, id);
                     },
                 )?,
             )?;
@@ -372,8 +375,11 @@ impl JsBridge {
                 "__hostReleasePointerCapture",
                 Function::new(
                     ctx.clone(),
-                    move |_ctx: rquickjs::Ctx<'_>| {
-                        shared_clone.borrow_mut().pointer_capture = None;
+                    move |_ctx: rquickjs::Ctx<'_>, pointer_id: i32| {
+                        shared_clone
+                            .borrow_mut()
+                            .pointer_captures
+                            .remove(&pointer_id);
                     },
                 )?,
             )?;
@@ -422,7 +428,12 @@ impl JsBridge {
                     __hostRequestAnimationFrame(cb);
                 };
 
-                function __dispatchPointerEvent(eventType, idsStr, targetId, x, y) {
+                function __dispatchPointerEvent(eventType, idsStr, targetId, x, y, ptrMeta) {
+                    var pm = ptrMeta.split('|');
+                    var pId = parseInt(pm[0]) || 1;
+                    var pType = pm[1] || 'mouse';
+                    var pressure = parseFloat(pm[2]) || 0;
+                    var isPrimary = pm[3] === '1';
                     var ids = idsStr ? idsStr.split(',') : [];
                     var stopped = false;
                     var targetElem = __elementCache[targetId] || {id: targetId};
@@ -433,8 +444,10 @@ impl JsBridge {
                         clientY: y,
                         offsetX: x - rect.x,
                         offsetY: y - rect.y,
-                        pointerId: 1,
-                        pointerType: 'mouse',
+                        pointerId: pId,
+                        pointerType: pType,
+                        pressure: pressure,
+                        isPrimary: isPrimary,
                         button: 0,
                         buttons: eventType === 'pointerup' ? 0 : 1,
                         target: targetElem,
@@ -444,7 +457,8 @@ impl JsBridge {
                         altKey: false,
                         metaKey: false,
                         stopPropagation: function() { stopped = true; },
-                        preventDefault: function() {}
+                        preventDefault: function() { evt.defaultPrevented = true; },
+                        defaultPrevented: false
                     };
                     for (var i = 0; i < ids.length && !stopped; i++) {
                         evt.currentTarget = __elementCache[ids[i]] || {id: ids[i]};
@@ -466,6 +480,7 @@ impl JsBridge {
                             gcbs[i](evt);
                         }
                     }
+                    return evt.defaultPrevented;
                 }
 
                 function __parseColor(str) {
@@ -509,10 +524,10 @@ impl JsBridge {
                             __hostAddEventListener(event + ':' + id, cb);
                         },
                         setPointerCapture: function(pointerId) {
-                            __hostSetPointerCapture(id);
+                            __hostSetPointerCapture(id, pointerId);
                         },
                         releasePointerCapture: function(pointerId) {
-                            __hostReleasePointerCapture();
+                            __hostReleasePointerCapture(pointerId);
                         },
                         getBoundingClientRect: function() {
                             var s = __hostGetBoundingRect(id);
@@ -1011,11 +1026,15 @@ impl JsBridge {
         client_x: f32,
         client_y: f32,
         scroll_y: f32,
-    ) {
+        pointer_id: i32,
+        pointer_type: &str,
+        pressure: f32,
+        is_primary: bool,
+    ) -> bool {
         let doc_y = client_y + scroll_y;
         let (ids, target_id) = {
             let s = self.shared.borrow();
-            if let Some(ref cap) = s.pointer_capture {
+            if let Some(cap) = s.pointer_captures.get(&pointer_id) {
                 (vec![cap.clone()], cap.clone())
             } else if let Some(hit) = crate::renderer::hit_test(layout, client_x, doc_y) {
                 let target = hit.id_chain.first().cloned().unwrap_or_default();
@@ -1026,12 +1045,27 @@ impl JsBridge {
         };
         let ids_str = ids.join(",");
         let etype = event_type.to_string();
-        let _ = self.context.with(|ctx| -> Result<()> {
+        let ptr_meta = format!(
+            "{}|{}|{}|{}",
+            pointer_id,
+            pointer_type,
+            pressure,
+            if is_primary { "1" } else { "0" }
+        );
+        let prevented = self.context.with(|ctx| -> Result<bool> {
             let f: Function<'_> = ctx.globals().get("__dispatchPointerEvent")?;
-            f.call::<_, ()>((etype, ids_str, target_id, client_x as f64, client_y as f64))?;
-            Ok(())
+            let result: bool = f.call((
+                etype,
+                ids_str,
+                target_id,
+                client_x as f64,
+                client_y as f64,
+                ptr_meta,
+            ))?;
+            Ok(result)
         });
         self.drain_jobs();
+        prevented.unwrap_or(false)
     }
 
     pub fn dispatch_pointer_down(
@@ -1040,12 +1074,31 @@ impl JsBridge {
         client_x: f32,
         client_y: f32,
         scroll_y: f32,
-    ) {
+        pointer_id: i32,
+        pointer_type: &str,
+        pressure: f32,
+        is_primary: bool,
+    ) -> bool {
         let doc_y = client_y + scroll_y;
         let target = crate::renderer::hit_test(layout, client_x, doc_y)
             .and_then(|h| h.id_chain.first().cloned());
-        self.shared.borrow_mut().pointer_down_target = target;
-        self.fire_pointer_event("pointerdown", layout, client_x, client_y, scroll_y);
+        if let Some(t) = target {
+            self.shared
+                .borrow_mut()
+                .pointer_down_targets
+                .insert(pointer_id, t);
+        }
+        self.fire_pointer_event(
+            "pointerdown",
+            layout,
+            client_x,
+            client_y,
+            scroll_y,
+            pointer_id,
+            pointer_type,
+            pressure,
+            is_primary,
+        )
     }
 
     pub fn dispatch_pointer_move(
@@ -1054,8 +1107,22 @@ impl JsBridge {
         client_x: f32,
         client_y: f32,
         scroll_y: f32,
-    ) {
-        self.fire_pointer_event("pointermove", layout, client_x, client_y, scroll_y);
+        pointer_id: i32,
+        pointer_type: &str,
+        pressure: f32,
+        is_primary: bool,
+    ) -> bool {
+        self.fire_pointer_event(
+            "pointermove",
+            layout,
+            client_x,
+            client_y,
+            scroll_y,
+            pointer_id,
+            pointer_type,
+            pressure,
+            is_primary,
+        )
     }
 
     pub fn dispatch_pointer_up(
@@ -1064,13 +1131,37 @@ impl JsBridge {
         client_x: f32,
         client_y: f32,
         scroll_y: f32,
-    ) {
+        pointer_id: i32,
+        pointer_type: &str,
+        pressure: f32,
+        is_primary: bool,
+    ) -> bool {
         let doc_y = client_y + scroll_y;
-        self.fire_pointer_event("pointerup", layout, client_x, client_y, scroll_y);
+        self.fire_pointer_event(
+            "pointerup",
+            layout,
+            client_x,
+            client_y,
+            scroll_y,
+            pointer_id,
+            pointer_type,
+            pressure,
+            is_primary,
+        );
 
-        let had_capture = self.shared.borrow_mut().pointer_capture.take().is_some();
+        let had_capture = self
+            .shared
+            .borrow_mut()
+            .pointer_captures
+            .remove(&pointer_id)
+            .is_some();
 
-        let down_target = self.shared.borrow().pointer_down_target.clone();
+        let down_target = self
+            .shared
+            .borrow()
+            .pointer_down_targets
+            .get(&pointer_id)
+            .cloned();
         let up_target = if had_capture {
             None
         } else {
@@ -1080,10 +1171,23 @@ impl JsBridge {
 
         if let (Some(ref dt), Some(ref ut)) = (&down_target, &up_target) {
             if dt == ut {
-                self.fire_pointer_event("click", layout, client_x, client_y, scroll_y);
+                self.fire_pointer_event(
+                    "click",
+                    layout,
+                    client_x,
+                    client_y,
+                    scroll_y,
+                    pointer_id,
+                    pointer_type,
+                    pressure,
+                    is_primary,
+                );
             }
         }
-        self.shared.borrow_mut().pointer_down_target = None;
+        self.shared
+            .borrow_mut()
+            .pointer_down_targets
+            .remove(&pointer_id);
     }
 
     pub fn is_dirty(&self) -> bool {
@@ -1098,8 +1202,8 @@ impl JsBridge {
         self.shared.borrow().canvas_ops.clone()
     }
 
-    pub fn pointer_capture(&self) -> Option<String> {
-        self.shared.borrow().pointer_capture.clone()
+    pub fn has_any_pointer_capture(&self) -> bool {
+        !self.shared.borrow().pointer_captures.is_empty()
     }
 
     pub fn update_element_rects(&self, rects: HashMap<String, crate::types::LayoutRect>) {
