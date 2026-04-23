@@ -111,8 +111,6 @@ pub struct XrSession {
     #[cfg(target_os = "android")]
     panel_swapchain_images: Vec<wgpu::Texture>,
     reference_space: xr::Space,
-    #[cfg(target_os = "android")]
-    view_space: xr::Space,
     state: XrState,
     swapchain_width: u32,
     swapchain_height: u32,
@@ -214,9 +212,6 @@ impl XrSession {
 
         let reference_space =
             session.create_reference_space(xr::ReferenceSpaceType::LOCAL, xr::Posef::IDENTITY)?;
-        #[cfg(target_os = "android")]
-        let view_space =
-            session.create_reference_space(xr::ReferenceSpaceType::VIEW, xr::Posef::IDENTITY)?;
 
         let action_set = ctx.instance.create_action_set("input", "Input", 0)?;
         let select_action = action_set.create_action::<bool>("select", "Select", &[])?;
@@ -319,8 +314,6 @@ impl XrSession {
             #[cfg(target_os = "android")]
             panel_swapchain_images,
             reference_space,
-            #[cfg(target_os = "android")]
-            view_space,
             state: XrState::Idle,
             swapchain_width: width,
             swapchain_height: height,
@@ -589,7 +582,7 @@ impl XrSession {
 
         let quad = xr::CompositionLayerQuad::new()
             .layer_flags(xr::CompositionLayerFlags::BLEND_TEXTURE_SOURCE_ALPHA)
-            .space(&self.view_space)
+            .space(&self.reference_space)
             .eye_visibility(xr::EyeVisibility::BOTH)
             .sub_image(
                 xr::SwapchainSubImage::new()
@@ -620,7 +613,6 @@ impl XrSession {
         &mut self,
         frame_data: &XrFrameData,
         panel_pose: xr::Posef,
-        alt_panel_pose: xr::Posef,
         panel_size: xr::Extent2Df,
     ) -> Result<()> {
         if frame_data.views.len() < 2 {
@@ -680,7 +672,7 @@ impl XrSession {
 
         let quad = xr::CompositionLayerQuad::new()
             .layer_flags(xr::CompositionLayerFlags::BLEND_TEXTURE_SOURCE_ALPHA)
-            .space(&self.view_space)
+            .space(&self.reference_space)
             .eye_visibility(xr::EyeVisibility::BOTH)
             .sub_image(
                 xr::SwapchainSubImage::new()
@@ -697,29 +689,10 @@ impl XrSession {
             .pose(panel_pose)
             .size(panel_size);
 
-        let alt_quad = xr::CompositionLayerQuad::new()
-            .layer_flags(xr::CompositionLayerFlags::BLEND_TEXTURE_SOURCE_ALPHA)
-            .space(&self.view_space)
-            .eye_visibility(xr::EyeVisibility::BOTH)
-            .sub_image(
-                xr::SwapchainSubImage::new()
-                    .swapchain(&self.panel_swapchain)
-                    .image_array_index(0)
-                    .image_rect(xr::Rect2Di {
-                        offset: xr::Offset2Di { x: 0, y: 0 },
-                        extent: xr::Extent2Di {
-                            width: self.panel_swapchain_width as i32,
-                            height: self.panel_swapchain_height as i32,
-                        },
-                    }),
-            )
-            .pose(alt_panel_pose)
-            .size(panel_size);
-
         self.frame_stream.end(
             frame_data.predicted_display_time,
             xr::EnvironmentBlendMode::OPAQUE,
-            &[&projection, &quad, &alt_quad],
+            &[&projection, &quad],
         )?;
 
         Ok(())

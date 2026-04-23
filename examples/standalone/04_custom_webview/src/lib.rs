@@ -92,6 +92,8 @@ pub struct WebviewState {
     pub xr_panel_depth_texture: Option<wgpu::Texture>,
     #[cfg(feature = "xr")]
     pub xr_panel_depth_size: (u32, u32),
+    #[cfg(all(feature = "xr", target_os = "android"))]
+    pub xr_world_panel_pose: Option<xr::Posef>,
     #[cfg(feature = "xr")]
     pub xr_panel_target: Option<gpu::OffscreenRenderTarget>,
     #[cfg(feature = "xr")]
@@ -174,24 +176,7 @@ fn xr_panel_layer_size(target_size: winit::dpi::PhysicalSize<u32>) -> xr::Extent
 }
 
 #[cfg(feature = "xr")]
-fn xr_panel_pose() -> xr::Posef {
-    xr::Posef {
-        orientation: xr::Quaternionf {
-            x: 0.0,
-            y: 1.0,
-            z: 0.0,
-            w: 0.0,
-        },
-        position: xr::Vector3f {
-            x: 0.0,
-            y: 0.0,
-            z: -XR_PANEL_DISTANCE,
-        },
-    }
-}
-
-#[cfg(feature = "xr")]
-fn xr_panel_alt_pose() -> xr::Posef {
+fn xr_panel_local_pose() -> xr::Posef {
     xr::Posef {
         orientation: xr::Quaternionf::IDENTITY,
         position: xr::Vector3f {
@@ -351,17 +336,123 @@ fn rotate_vec3(q: &xr::Quaternionf, v: [f32; 3]) -> [f32; 3] {
 }
 
 #[cfg(feature = "xr")]
+fn quat_dot(a: &xr::Quaternionf, b: &xr::Quaternionf) -> f32 {
+    a.x * b.x + a.y * b.y + a.z * b.z + a.w * b.w
+}
+
+#[cfg(feature = "xr")]
+fn quat_normalize(q: xr::Quaternionf) -> xr::Quaternionf {
+    let len = (q.x * q.x + q.y * q.y + q.z * q.z + q.w * q.w).sqrt();
+    if len <= 1e-6 {
+        xr::Quaternionf::IDENTITY
+    } else {
+        xr::Quaternionf {
+            x: q.x / len,
+            y: q.y / len,
+            z: q.z / len,
+            w: q.w / len,
+        }
+    }
+}
+
+#[cfg(feature = "xr")]
+fn quat_conjugate(q: &xr::Quaternionf) -> xr::Quaternionf {
+    xr::Quaternionf {
+        x: -q.x,
+        y: -q.y,
+        z: -q.z,
+        w: q.w,
+    }
+}
+
+#[cfg(feature = "xr")]
+fn quat_mul(a: &xr::Quaternionf, b: &xr::Quaternionf) -> xr::Quaternionf {
+    quat_normalize(xr::Quaternionf {
+        x: a.w * b.x + a.x * b.w + a.y * b.z - a.z * b.y,
+        y: a.w * b.y - a.x * b.z + a.y * b.w + a.z * b.x,
+        z: a.w * b.z + a.x * b.y - a.y * b.x + a.z * b.w,
+        w: a.w * b.w - a.x * b.x - a.y * b.y - a.z * b.z,
+    })
+}
+
+#[cfg(feature = "xr")]
+fn average_pose(left: &xr::Posef, right: &xr::Posef) -> xr::Posef {
+    let mut right_orientation = right.orientation;
+    if quat_dot(&left.orientation, &right_orientation) < 0.0 {
+        right_orientation.x = -right_orientation.x;
+        right_orientation.y = -right_orientation.y;
+        right_orientation.z = -right_orientation.z;
+        right_orientation.w = -right_orientation.w;
+    }
+    xr::Posef {
+        orientation: quat_normalize(xr::Quaternionf {
+            x: left.orientation.x + right_orientation.x,
+            y: left.orientation.y + right_orientation.y,
+            z: left.orientation.z + right_orientation.z,
+            w: left.orientation.w + right_orientation.w,
+        }),
+        position: xr::Vector3f {
+            x: (left.position.x + right.position.x) * 0.5,
+            y: (left.position.y + right.position.y) * 0.5,
+            z: (left.position.z + right.position.z) * 0.5,
+        },
+    }
+}
+
+#[cfg(feature = "xr")]
+fn compose_pose(parent: &xr::Posef, local: &xr::Posef) -> xr::Posef {
+    let rotated = rotate_vec3(
+        &parent.orientation,
+        [local.position.x, local.position.y, local.position.z],
+    );
+    xr::Posef {
+        orientation: quat_mul(&parent.orientation, &local.orientation),
+        position: xr::Vector3f {
+            x: parent.position.x + rotated[0],
+            y: parent.position.y + rotated[1],
+            z: parent.position.z + rotated[2],
+        },
+    }
+}
+
+#[cfg(feature = "xr")]
+fn xr_world_panel_pose(frame_data: &crate::xr_session::XrFrameData) -> xr::Posef {
+    let head_pose = if frame_data.views.len() >= 2 {
+        average_pose(&frame_data.views[0].pose, &frame_data.views[1].pose)
+    } else {
+        frame_data
+            .views
+            .first()
+            .map(|view| view.pose)
+            .unwrap_or(xr::Posef::IDENTITY)
+    };
+    compose_pose(&head_pose, &xr_panel_local_pose())
+}
+
+#[cfg(feature = "xr")]
 fn xr_panel_pointer(
     pose: &xr::Posef,
+    panel_pose: &xr::Posef,
     target_size: winit::dpi::PhysicalSize<u32>,
     scale_factor: f64,
 ) -> Option<(f32, f32)> {
-    let origin = [pose.position.x, pose.position.y, pose.position.z];
-    let dir = rotate_vec3(&pose.orientation, [0.0, 0.0, -1.0]);
+    let inv_panel_orientation = quat_conjugate(&panel_pose.orientation);
+    let origin = rotate_vec3(
+        &inv_panel_orientation,
+        [
+            pose.position.x - panel_pose.position.x,
+            pose.position.y - panel_pose.position.y,
+            pose.position.z - panel_pose.position.z,
+        ],
+    );
+    let dir = rotate_vec3(
+        &inv_panel_orientation,
+        rotate_vec3(&pose.orientation, [0.0, 0.0, -1.0]),
+    );
     if dir[2].abs() < 1e-4 {
         return None;
     }
-    let t = (-XR_PANEL_DISTANCE - origin[2]) / dir[2];
+    let t = -origin[2] / dir[2];
     if t <= 0.0 {
         return None;
     }
@@ -799,6 +890,8 @@ impl ApplicationHandler for App {
             xr_panel_depth_texture: None,
             #[cfg(feature = "xr")]
             xr_panel_depth_size: (0, 0),
+            #[cfg(all(feature = "xr", target_os = "android"))]
+            xr_world_panel_pose: None,
             #[cfg(feature = "xr")]
             xr_panel_target: None,
             #[cfg(feature = "xr")]
@@ -1176,6 +1269,11 @@ impl ApplicationHandler for App {
                                         if let Err(e) = xr.sync_input() {
                                             log::error!("XR input sync error: {:?}", e);
                                         }
+                                        #[cfg(target_os = "android")]
+                                        if s.xr_world_panel_pose.is_none() {
+                                            s.xr_world_panel_pose =
+                                                Some(xr_world_panel_pose(&frame_data));
+                                        }
                                         let select_down = xr.select_pressed().unwrap_or(false);
                                         let scroll_axis = xr.scroll_axis().unwrap_or(0.0);
                                         if scroll_axis != 0.0 {
@@ -1198,11 +1296,28 @@ impl ApplicationHandler for App {
                                             }
                                         };
                                         if let Some((mx, my)) = pointer_pose.and_then(|pose| {
-                                            xr_panel_pointer(
-                                                &pose,
-                                                s.view_size,
-                                                s.view_scale_factor,
-                                            )
+                                            #[cfg(target_os = "android")]
+                                            {
+                                                s.xr_world_panel_pose.as_ref().and_then(
+                                                    |panel_pose| {
+                                                        xr_panel_pointer(
+                                                            &pose,
+                                                            panel_pose,
+                                                            s.view_size,
+                                                            s.view_scale_factor,
+                                                        )
+                                                    },
+                                                )
+                                            }
+                                            #[cfg(not(target_os = "android"))]
+                                            {
+                                                xr_panel_pointer(
+                                                    &pose,
+                                                    &xr_panel_local_pose(),
+                                                    s.view_size,
+                                                    s.view_scale_factor,
+                                                )
+                                            }
                                         }) {
                                             unsafe {
                                                 CURSOR_POS = (mx, my);
@@ -1296,37 +1411,6 @@ impl ApplicationHandler for App {
 
                                         #[cfg(target_os = "android")]
                                         {
-                                            let recreate_target = s
-                                                .xr_panel_target
-                                                .as_ref()
-                                                .map(|target| target.size != s.view_size)
-                                                .unwrap_or(true);
-                                            if recreate_target {
-                                                s.xr_panel_target =
-                                                    Some(s.gpu.create_render_target(
-                                                        s.view_size.width,
-                                                        s.view_size.height,
-                                                    ));
-                                            }
-                                            let panel_target = s.xr_panel_target.as_ref().unwrap();
-                                            let mut projection_overlay_commands =
-                                                overlay_commands.clone();
-                                            push_xr_debug_marker(
-                                                &mut projection_overlay_commands,
-                                                s.view_size,
-                                                [0.95, 0.2, 0.2, 0.95],
-                                                false,
-                                            );
-                                            s.gpu.render_to_target(
-                                                panel_target,
-                                                s.view_scale_factor as f32,
-                                                &s.static_commands,
-                                                &projection_overlay_commands,
-                                                s.clear_color,
-                                                s.scroll_y,
-                                                &canvases,
-                                            );
-
                                             let (pw, ph) = xr.panel_swapchain_size();
                                             if s.xr_panel_depth_texture.is_none()
                                                 || s.xr_panel_depth_size != (pw, ph)
@@ -1375,27 +1459,11 @@ impl ApplicationHandler for App {
                                                             ..Default::default()
                                                         },
                                                     );
-                                                    s.gpu.render_xr_panel_views(
+                                                    clear_xr_projection_views(
+                                                        &s.gpu,
                                                         &left_view,
                                                         &right_view,
-                                                        &panel_target.sample_view,
                                                         [0.0, 0.0, 0.0, 1.0],
-                                                        xr_panel_mvp_at(
-                                                            &frame_data.views[0],
-                                                            panel_target.size,
-                                                            -1.35,
-                                                            -0.8,
-                                                            -2.2,
-                                                            0.16,
-                                                        ),
-                                                        xr_panel_mvp_at(
-                                                            &frame_data.views[1],
-                                                            panel_target.size,
-                                                            -1.35,
-                                                            -0.8,
-                                                            -2.2,
-                                                            0.16,
-                                                        ),
                                                     );
 
                                                     match xr.acquire_panel_swapchain_texture() {
@@ -1443,8 +1511,7 @@ impl ApplicationHandler for App {
                                                             if let Err(e) = xr
                                                                 .release_both_and_end_frame(
                                                                     &frame_data,
-                                                                    xr_panel_pose(),
-                                                                    xr_panel_alt_pose(),
+                                                                    s.xr_world_panel_pose.unwrap(),
                                                                     xr_panel_layer_size(
                                                                         s.view_size,
                                                                     ),
@@ -1593,6 +1660,10 @@ impl ApplicationHandler for App {
                             s.xr_select_down = false;
                             s.xr_pointer_pos = None;
                             s.xr_exit_down = false;
+                            #[cfg(target_os = "android")]
+                            {
+                                s.xr_world_panel_pose = None;
+                            }
                             log::info!("XR session stopped");
                         } else {
                             self.state.as_mut().unwrap().xr_session = Some(xr);
