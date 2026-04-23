@@ -1137,7 +1137,7 @@ impl JsBridge {
         is_primary: bool,
     ) -> bool {
         let doc_y = client_y + scroll_y;
-        self.fire_pointer_event(
+        let prevented = self.fire_pointer_event(
             "pointerup",
             layout,
             client_x,
@@ -1188,6 +1188,7 @@ impl JsBridge {
             .borrow_mut()
             .pointer_down_targets
             .remove(&pointer_id);
+        prevented
     }
 
     pub fn is_dirty(&self) -> bool {

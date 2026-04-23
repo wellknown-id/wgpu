@@ -975,19 +975,18 @@ impl ApplicationHandler for App {
                     }
                     winit::event::TouchPhase::Moved => {
                         #[cfg(feature = "js")]
-                        let mut prevented = false;
-                        #[cfg(feature = "js")]
-                        {
+                        let prevented = {
                             let s = self.state.as_mut().unwrap();
                             let pid = touch.id as i32 + 1;
                             let is_primary = pid == 1;
-                            prevented = s.js.dispatch_pointer_move(
+                            let p = s.js.dispatch_pointer_move(
                                 &s.layout, mx, my, s.scroll_y, pid, "touch", 1.0, is_primary,
                             ) || s.touch_default_prevented;
                             if s.js.is_dirty() {
                                 self.rebuild_layout();
                             }
-                        }
+                            p
+                        };
 
                         let s = self.state.as_mut().unwrap();
                         #[cfg(feature = "js")]
