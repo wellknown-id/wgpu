@@ -15,28 +15,31 @@
         android:name="android.hardware.vulkan.level"
         android:required="true"
         android:version="1" />
+    <uses-feature
+        android:name="android.hardware.vr.headtracking"
+        android:required="false"
+        android:version="1" />
+    <uses-feature
+        android:name="com.oculus.software.handtracking"
+        android:required="false" />
+    <uses-permission android:name="com.oculus.permission.HAND_TRACKING" />
 
     <application
         android:label="wgpu_example_04_custom_webview"
         android:hasCode="true"
         android:debuggable="true">
-
-        <activity
-            android:name=".PanelActivity"
-            android:configChanges="screenSize|screenLayout|orientation|keyboardHidden|keyboard|navigation|uiMode|density"
-            android:exported="true"
-            android:launchMode="singleTask"
-            android:screenOrientation="landscape">
-            <meta-data
-                android:name="android.app.lib_name"
-                android:value="wgpu_example_04_custom_webview" />
-            <intent-filter>
-                <action android:name="android.intent.action.MAIN" />
-                <category android:name="android.intent.category.DEFAULT" />
-                <category android:name="android.intent.category.LAUNCHER" />
-                <category android:name="com.oculus.intent.category.2D" />
-            </intent-filter>
-        </activity>
+        <meta-data
+            android:name="com.oculus.supportedDevices"
+            android:value="quest2|questpro|quest3|quest3s" />
+        <meta-data
+            android:name="com.oculus.supportedInputDevices"
+            android:value="controller|hand_tracking" />
+        <meta-data
+            android:name="com.oculus.vr.focusaware"
+            android:value="true" />
+        <meta-data
+            android:name="handtracking"
+            android:value="1" />
 
         <activity
             android:name=".VrActivity"
@@ -47,15 +50,16 @@
             <meta-data
                 android:name="android.app.lib_name"
                 android:value="wgpu_example_04_custom_webview" />
+            <meta-data
+                android:name="com.oculus.vr.mode"
+                android:value="vr_only" />
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.LAUNCHER" />
                 <category android:name="com.oculus.intent.category.VR" />
+                <category android:name="com.oculus.intent.category.VR_HOME_LAUNCHER" />
             </intent-filter>
         </activity>
-
-        <receiver
-            android:name=".HybridLaunchReceiver"
-            android:exported="true" />
     </application>
 </manifest>

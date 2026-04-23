@@ -44,6 +44,28 @@ struct Vertex {
     uv: [f32; 2],
 }
 
+#[cfg(feature = "xr")]
+#[repr(C)]
+#[derive(Clone, Copy, Pod, Zeroable)]
+struct PanelVertex {
+    position: [f32; 3],
+    uv: [f32; 2],
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Pod, Zeroable)]
+struct TexRectInstance {
+    rect: [f32; 4],
+    draw_order: f32,
+}
+
+#[cfg(feature = "xr")]
+#[repr(C)]
+#[derive(Clone, Copy, Pod, Zeroable)]
+struct XrPanelUniform {
+    mvp: [f32; 16],
+}
+
 #[repr(C)]
 #[derive(Clone, Copy, Pod, Zeroable)]
 struct RectInstance {
@@ -533,6 +555,40 @@ fn fs_texrect(in: TexRectOutput) -> @location(0) vec4<f32> {
 }
 "#;
 
+#[cfg(feature = "xr")]
+const XR_PANEL_SHADER: &str = r#"
+struct PanelUniform {
+    mvp: mat4x4<f32>,
+};
+
+struct VsInput {
+    @location(0) position: vec3<f32>,
+    @location(1) uv: vec2<f32>,
+};
+
+struct VsOutput {
+    @builtin(position) position: vec4<f32>,
+    @location(0) uv: vec2<f32>,
+};
+
+@group(0) @binding(0) var<uniform> panel: PanelUniform;
+@group(0) @binding(1) var panel_tex: texture_2d<f32>;
+@group(0) @binding(2) var panel_sampler: sampler;
+
+@vertex
+fn vs_panel(in: VsInput) -> VsOutput {
+    var out: VsOutput;
+    out.position = panel.mvp * vec4<f32>(in.position, 1.0);
+    out.uv = in.uv;
+    return out;
+}
+
+@fragment
+fn fs_panel(in: VsOutput) -> @location(0) vec4<f32> {
+    return textureSample(panel_tex, panel_sampler, in.uv);
+}
+"#;
+
 pub struct GpuState {
     pub window: Arc<Window>,
     pub instance: wgpu::Instance,
@@ -544,6 +600,7 @@ pub struct GpuState {
     render_format: wgpu::TextureFormat,
     pub size: winit::dpi::PhysicalSize<u32>,
     pub scale_factor: f64,
+    render_scale_factor: f32,
 
     screen_buffer: wgpu::Buffer,
     vertex_buffer: wgpu::Buffer,
@@ -559,6 +616,12 @@ pub struct GpuState {
     texrect_pipeline: wgpu::RenderPipeline,
     texrect_bgl: wgpu::BindGroupLayout,
     texrect_sampler: wgpu::Sampler,
+    #[cfg(feature = "xr")]
+    xr_panel_pipeline: wgpu::RenderPipeline,
+    #[cfg(feature = "xr")]
+    xr_panel_bgl: wgpu::BindGroupLayout,
+    #[cfg(feature = "xr")]
+    xr_panel_vertex_buffer: wgpu::Buffer,
 
     atlas: GlyphAtlas,
     pub font_system: FontSystem,
@@ -566,6 +629,15 @@ pub struct GpuState {
     pub static_dirty: bool,
     cached_static_groups: Vec<InternalDrawGroup>,
     depth_view: wgpu::TextureView,
+}
+
+pub struct OffscreenRenderTarget {
+    pub texture: wgpu::Texture,
+    pub view: wgpu::TextureView,
+    depth_texture: wgpu::Texture,
+    pub depth_view: wgpu::TextureView,
+    pub size: winit::dpi::PhysicalSize<u32>,
+    pub format: wgpu::TextureFormat,
 }
 
 impl GpuState {
@@ -1079,13 +1151,6 @@ impl GpuState {
             immediate_size: 0,
         });
 
-        #[repr(C)]
-        #[derive(Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
-        struct TexRectInstance {
-            rect: [f32; 4],
-            draw_order: f32,
-        }
-
         let texrect_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: Some("texrect pipeline"),
             layout: Some(&texrect_pl),
@@ -1132,6 +1197,115 @@ impl GpuState {
             cache: None,
         });
 
+        #[cfg(feature = "xr")]
+        let xr_panel_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("xr panel bgl"),
+            entries: &[
+                wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: wgpu::ShaderStages::VERTEX,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Uniform,
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 1,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: false,
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 2,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                    count: None,
+                },
+            ],
+        });
+        #[cfg(feature = "xr")]
+        let xr_panel_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("xr panel shader"),
+            source: wgpu::ShaderSource::Wgsl(Cow::Borrowed(XR_PANEL_SHADER)),
+        });
+        #[cfg(feature = "xr")]
+        let xr_panel_pl = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("xr panel pl"),
+            bind_group_layouts: &[Some(&xr_panel_bgl)],
+            immediate_size: 0,
+        });
+        #[cfg(feature = "xr")]
+        let xr_panel_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("xr panel pipeline"),
+            layout: Some(&xr_panel_pl),
+            vertex: wgpu::VertexState {
+                module: &xr_panel_shader,
+                entry_point: Some("vs_panel"),
+                compilation_options: Default::default(),
+                buffers: &[wgpu::VertexBufferLayout {
+                    array_stride: std::mem::size_of::<PanelVertex>() as u64,
+                    step_mode: wgpu::VertexStepMode::Vertex,
+                    attributes: &wgpu::vertex_attr_array![0 => Float32x3, 1 => Float32x2],
+                }],
+            },
+            fragment: Some(wgpu::FragmentState {
+                module: &xr_panel_shader,
+                entry_point: Some("fs_panel"),
+                compilation_options: Default::default(),
+                targets: &[Some(wgpu::ColorTargetState {
+                    format: wgpu::TextureFormat::Rgba8UnormSrgb,
+                    blend: Some(wgpu::BlendState::ALPHA_BLENDING),
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
+            }),
+            primitive: wgpu::PrimitiveState {
+                topology: wgpu::PrimitiveTopology::TriangleList,
+                cull_mode: None,
+                ..Default::default()
+            },
+            depth_stencil: None,
+            multisample: Default::default(),
+            multiview_mask: None,
+            cache: None,
+        });
+        #[cfg(feature = "xr")]
+        let xr_panel_vertex_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("xr panel verts"),
+            contents: bytemuck::cast_slice(&[
+                PanelVertex {
+                    position: [-0.5, -0.5, 0.0],
+                    uv: [0.0, 1.0],
+                },
+                PanelVertex {
+                    position: [0.5, -0.5, 0.0],
+                    uv: [1.0, 1.0],
+                },
+                PanelVertex {
+                    position: [-0.5, 0.5, 0.0],
+                    uv: [0.0, 0.0],
+                },
+                PanelVertex {
+                    position: [0.5, -0.5, 0.0],
+                    uv: [1.0, 1.0],
+                },
+                PanelVertex {
+                    position: [0.5, 0.5, 0.0],
+                    uv: [1.0, 0.0],
+                },
+                PanelVertex {
+                    position: [-0.5, 0.5, 0.0],
+                    uv: [0.0, 0.0],
+                },
+            ]),
+            usage: wgpu::BufferUsages::VERTEX,
+        });
+
         #[cfg(target_os = "android")]
         let font_system = {
             let mut db = cosmic_text::fontdb::Database::new();
@@ -1176,10 +1350,17 @@ impl GpuState {
             texrect_pipeline,
             texrect_bgl,
             texrect_sampler,
+            #[cfg(feature = "xr")]
+            xr_panel_pipeline,
+            #[cfg(feature = "xr")]
+            xr_panel_bgl,
+            #[cfg(feature = "xr")]
+            xr_panel_vertex_buffer,
             atlas,
             font_system,
             swash_cache,
             scale_factor,
+            render_scale_factor: scale_factor as f32,
             static_dirty: true,
             cached_static_groups: Vec::new(),
             depth_view,
@@ -1211,6 +1392,48 @@ impl GpuState {
         }
     }
 
+    pub fn create_render_target(&self, width: u32, height: u32) -> OffscreenRenderTarget {
+        let size = winit::dpi::PhysicalSize::new(width.max(1), height.max(1));
+        let texture = self.device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("offscreen render target"),
+            size: wgpu::Extent3d {
+                width: size.width,
+                height: size.height,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: self.render_format,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
+            view_formats: &[],
+        });
+        let view = texture.create_view(&Default::default());
+        let depth_texture = self.device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("offscreen depth target"),
+            size: wgpu::Extent3d {
+                width: size.width,
+                height: size.height,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Depth32Float,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+            view_formats: &[],
+        });
+        let depth_view = depth_texture.create_view(&Default::default());
+        OffscreenRenderTarget {
+            texture,
+            view,
+            depth_texture,
+            depth_view,
+            size,
+            format: self.render_format,
+        }
+    }
+
     pub fn render(
         &mut self,
         static_commands: &[DrawCommand],
@@ -1228,18 +1451,73 @@ impl GpuState {
             format: Some(self.render_format),
             ..Default::default()
         });
+        let depth_view = self.depth_view.clone();
+        let target_size = self.size;
+        let srgb_target =
+            self.surface_format.is_srgb() && self.render_format == self.surface_format;
+        self.render_to_view(
+            &view,
+            &depth_view,
+            target_size,
+            self.scale_factor as f32,
+            srgb_target,
+            static_commands,
+            ghost_commands,
+            clear_color,
+            scroll_y,
+            webgpu_canvases,
+        );
+        frame.present();
+    }
 
+    pub fn render_to_target(
+        &mut self,
+        target: &OffscreenRenderTarget,
+        target_scale_factor: f32,
+        static_commands: &[DrawCommand],
+        ghost_commands: &[DrawCommand],
+        clear_color: [f32; 4],
+        scroll_y: f32,
+        webgpu_canvases: &[([f32; 4], &wgpu::TextureView)],
+    ) {
+        self.render_to_view(
+            &target.view,
+            &target.depth_view,
+            target.size,
+            target_scale_factor,
+            target.format.is_srgb(),
+            static_commands,
+            ghost_commands,
+            clear_color,
+            scroll_y,
+            webgpu_canvases,
+        );
+    }
+
+    fn render_to_view(
+        &mut self,
+        view: &wgpu::TextureView,
+        depth_view: &wgpu::TextureView,
+        target_size: winit::dpi::PhysicalSize<u32>,
+        target_scale_factor: f32,
+        srgb_target: bool,
+        static_commands: &[DrawCommand],
+        ghost_commands: &[DrawCommand],
+        clear_color: [f32; 4],
+        scroll_y: f32,
+        webgpu_canvases: &[([f32; 4], &wgpu::TextureView)],
+    ) {
+        if (self.render_scale_factor - target_scale_factor).abs() > f32::EPSILON {
+            self.render_scale_factor = target_scale_factor;
+            self.static_dirty = true;
+        }
         self.queue.write_buffer(
             &self.screen_buffer,
             0,
             bytemuck::cast_slice(&[
-                self.size.width as f32 / self.scale_factor as f32,
-                self.size.height as f32 / self.scale_factor as f32,
-                if self.surface_format.is_srgb() && self.render_format == self.surface_format {
-                    1.0_f32
-                } else {
-                    0.0_f32
-                },
+                target_size.width as f32 / self.render_scale_factor,
+                target_size.height as f32 / self.render_scale_factor,
+                if srgb_target { 1.0_f32 } else { 0.0_f32 },
                 scroll_y,
             ]),
         );
@@ -1260,7 +1538,7 @@ impl GpuState {
             let mut rpass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("static pass"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: &view,
+                    view,
                     resolve_target: None,
                     ops: wgpu::Operations {
                         load: wgpu::LoadOp::Clear(wgpu::Color {
@@ -1274,7 +1552,7 @@ impl GpuState {
                     depth_slice: None,
                 })],
                 depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
-                    view: &self.depth_view,
+                    view: depth_view,
                     depth_ops: Some(wgpu::Operations {
                         load: wgpu::LoadOp::Clear(1.0),
                         store: wgpu::StoreOp::Store,
@@ -1292,7 +1570,7 @@ impl GpuState {
             let mut rpass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("ghost pass"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: &view,
+                    view,
                     resolve_target: None,
                     ops: wgpu::Operations {
                         load: wgpu::LoadOp::Load,
@@ -1301,7 +1579,7 @@ impl GpuState {
                     depth_slice: None,
                 })],
                 depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
-                    view: &self.depth_view,
+                    view: depth_view,
                     depth_ops: Some(wgpu::Operations {
                         load: wgpu::LoadOp::Clear(1.0),
                         store: wgpu::StoreOp::Store,
@@ -1317,17 +1595,10 @@ impl GpuState {
 
         // Draw WebGPU canvas textures
         if !webgpu_canvases.is_empty() {
-            #[repr(C)]
-            #[derive(Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
-            struct TexRectInstance {
-                rect: [f32; 4],
-                draw_order: f32,
-            }
-
             let mut rpass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("texrect pass"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: &view,
+                    view,
                     resolve_target: None,
                     ops: wgpu::Operations {
                         load: wgpu::LoadOp::Load,
@@ -1336,7 +1607,7 @@ impl GpuState {
                     depth_slice: None,
                 })],
                 depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
-                    view: &self.depth_view,
+                    view: depth_view,
                     depth_ops: Some(wgpu::Operations {
                         load: wgpu::LoadOp::Load,
                         store: wgpu::StoreOp::Store,
@@ -1384,7 +1655,102 @@ impl GpuState {
         }
 
         self.queue.submit(std::iter::once(encoder.finish()));
-        frame.present();
+    }
+
+    #[cfg(feature = "xr")]
+    pub fn render_xr_panel_views(
+        &self,
+        left_target: &wgpu::TextureView,
+        right_target: &wgpu::TextureView,
+        panel_texture: &wgpu::TextureView,
+        clear_color: [f32; 4],
+        left_mvp: [f32; 16],
+        right_mvp: [f32; 16],
+    ) {
+        let left_uniform = self
+            .device
+            .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("xr panel left uniform"),
+                contents: bytemuck::bytes_of(&XrPanelUniform { mvp: left_mvp }),
+                usage: wgpu::BufferUsages::UNIFORM,
+            });
+        let right_uniform = self
+            .device
+            .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("xr panel right uniform"),
+                contents: bytemuck::bytes_of(&XrPanelUniform { mvp: right_mvp }),
+                usage: wgpu::BufferUsages::UNIFORM,
+            });
+        let left_bg = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("xr panel left bg"),
+            layout: &self.xr_panel_bgl,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: left_uniform.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::TextureView(panel_texture),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: wgpu::BindingResource::Sampler(&self.texrect_sampler),
+                },
+            ],
+        });
+        let right_bg = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("xr panel right bg"),
+            layout: &self.xr_panel_bgl,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: right_uniform.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::TextureView(panel_texture),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: wgpu::BindingResource::Sampler(&self.texrect_sampler),
+                },
+            ],
+        });
+
+        let mut encoder = self
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("xr panel encoder"),
+            });
+        for (target, bind_group) in [(left_target, &left_bg), (right_target, &right_bg)] {
+            let mut rpass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("xr panel pass"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: target,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(wgpu::Color {
+                            r: clear_color[0] as f64,
+                            g: clear_color[1] as f64,
+                            b: clear_color[2] as f64,
+                            a: clear_color[3] as f64,
+                        }),
+                        store: wgpu::StoreOp::Store,
+                    },
+                    depth_slice: None,
+                })],
+                depth_stencil_attachment: None,
+                timestamp_writes: None,
+                occlusion_query_set: None,
+                multiview_mask: None,
+            });
+            rpass.set_pipeline(&self.xr_panel_pipeline);
+            rpass.set_bind_group(0, Some(bind_group), &[]);
+            rpass.set_vertex_buffer(0, self.xr_panel_vertex_buffer.slice(..));
+            rpass.draw(0..6, 0..1);
+        }
+        self.queue.submit(std::iter::once(encoder.finish()));
     }
 
     fn build_draw_groups(&mut self, commands: &[DrawCommand]) -> Vec<InternalDrawGroup> {
@@ -1570,7 +1936,7 @@ impl GpuState {
         center: [f32; 2],
         instances: &mut Vec<GlyphInstance>,
     ) {
-        let scale = self.scale_factor as f32;
+        let scale = self.render_scale_factor;
         let phys_font_size = font_size * scale;
         let metrics = Metrics::new(phys_font_size, phys_font_size * 1.2);
         let family = if cfg!(target_os = "android") {

@@ -91,6 +91,7 @@ pub struct SharedState {
     pub pointer_capture: Option<String>,
     pub pointer_down_target: Option<String>,
     pub element_rects: HashMap<String, crate::types::LayoutRect>,
+    pub scroll_y: f32,
     pub animation_callbacks: Vec<rquickjs::Persistent<rquickjs::Function<'static>>>,
     pub webgpu: Option<WebGpuBridge>,
     pub xr_request_pending: bool,
@@ -111,6 +112,7 @@ impl JsBridge {
             pointer_capture: None,
             pointer_down_target: None,
             element_rects: HashMap::new(),
+            scroll_y: 0.0,
             animation_callbacks: Vec::new(),
             webgpu: None,
             xr_request_pending: false,
@@ -384,7 +386,7 @@ impl JsBridge {
                     move |_ctx: rquickjs::Ctx<'_>, id: String| -> String {
                         let s = shared_clone.borrow();
                         if let Some(r) = s.element_rects.get(&id) {
-                            format!("{},{},{},{}", r.x, r.y, r.w, r.h)
+                            format!("{},{},{},{}", r.x, r.y - s.scroll_y, r.w, r.h)
                         } else {
                             "0,0,0,0".to_string()
                         }
@@ -883,6 +885,13 @@ impl JsBridge {
                     };
                 };
 
+                globalThis.__hostActiveXrSession = null;
+                globalThis.__hostForceEndActiveXrSession = function() {
+                    if (globalThis.__hostActiveXrSession && !globalThis.__hostActiveXrSession._ended) {
+                        globalThis.__hostActiveXrSession.end();
+                    }
+                };
+
                 navigator.xr = {
                     isSessionSupported: function(mode) {
                         return Promise.resolve(mode === 'immersive-vr' && typeof __hostXrRequestSession !== 'undefined');
@@ -932,6 +941,9 @@ impl JsBridge {
                                 },
                                 end: function() {
                                     session._ended = true;
+                                    if (globalThis.__hostActiveXrSession === session) {
+                                        globalThis.__hostActiveXrSession = null;
+                                    }
                                     if (typeof __hostXrEndSession !== 'undefined') __hostXrEndSession();
                                     for (var i = 0; i < session._endListeners.length; i++) {
                                         session._endListeners[i]();
@@ -939,6 +951,7 @@ impl JsBridge {
                                     return Promise.resolve();
                                 }
                             };
+                            globalThis.__hostActiveXrSession = session;
                             return Promise.resolve(session);
                         }
                         return Promise.reject(new Error('XR mode not supported: ' + mode));
@@ -995,14 +1008,16 @@ impl JsBridge {
         &mut self,
         event_type: &str,
         layout: &crate::layout::LayoutTree,
-        x: f32,
-        y: f32,
+        client_x: f32,
+        client_y: f32,
+        scroll_y: f32,
     ) {
+        let doc_y = client_y + scroll_y;
         let (ids, target_id) = {
             let s = self.shared.borrow();
             if let Some(ref cap) = s.pointer_capture {
                 (vec![cap.clone()], cap.clone())
-            } else if let Some(hit) = crate::renderer::hit_test(layout, x, y) {
+            } else if let Some(hit) = crate::renderer::hit_test(layout, client_x, doc_y) {
                 let target = hit.id_chain.first().cloned().unwrap_or_default();
                 (hit.id_chain.clone(), target)
             } else {
@@ -1013,25 +1028,45 @@ impl JsBridge {
         let etype = event_type.to_string();
         let _ = self.context.with(|ctx| -> Result<()> {
             let f: Function<'_> = ctx.globals().get("__dispatchPointerEvent")?;
-            f.call::<_, ()>((etype, ids_str, target_id, x as f64, y as f64))?;
+            f.call::<_, ()>((etype, ids_str, target_id, client_x as f64, client_y as f64))?;
             Ok(())
         });
         self.drain_jobs();
     }
 
-    pub fn dispatch_pointer_down(&mut self, layout: &crate::layout::LayoutTree, x: f32, y: f32) {
-        let target =
-            crate::renderer::hit_test(layout, x, y).and_then(|h| h.id_chain.first().cloned());
+    pub fn dispatch_pointer_down(
+        &mut self,
+        layout: &crate::layout::LayoutTree,
+        client_x: f32,
+        client_y: f32,
+        scroll_y: f32,
+    ) {
+        let doc_y = client_y + scroll_y;
+        let target = crate::renderer::hit_test(layout, client_x, doc_y)
+            .and_then(|h| h.id_chain.first().cloned());
         self.shared.borrow_mut().pointer_down_target = target;
-        self.fire_pointer_event("pointerdown", layout, x, y);
+        self.fire_pointer_event("pointerdown", layout, client_x, client_y, scroll_y);
     }
 
-    pub fn dispatch_pointer_move(&mut self, layout: &crate::layout::LayoutTree, x: f32, y: f32) {
-        self.fire_pointer_event("pointermove", layout, x, y);
+    pub fn dispatch_pointer_move(
+        &mut self,
+        layout: &crate::layout::LayoutTree,
+        client_x: f32,
+        client_y: f32,
+        scroll_y: f32,
+    ) {
+        self.fire_pointer_event("pointermove", layout, client_x, client_y, scroll_y);
     }
 
-    pub fn dispatch_pointer_up(&mut self, layout: &crate::layout::LayoutTree, x: f32, y: f32) {
-        self.fire_pointer_event("pointerup", layout, x, y);
+    pub fn dispatch_pointer_up(
+        &mut self,
+        layout: &crate::layout::LayoutTree,
+        client_x: f32,
+        client_y: f32,
+        scroll_y: f32,
+    ) {
+        let doc_y = client_y + scroll_y;
+        self.fire_pointer_event("pointerup", layout, client_x, client_y, scroll_y);
 
         let had_capture = self.shared.borrow_mut().pointer_capture.take().is_some();
 
@@ -1039,12 +1074,13 @@ impl JsBridge {
         let up_target = if had_capture {
             None
         } else {
-            crate::renderer::hit_test(layout, x, y).and_then(|h| h.id_chain.first().cloned())
+            crate::renderer::hit_test(layout, client_x, doc_y)
+                .and_then(|h| h.id_chain.first().cloned())
         };
 
         if let (Some(ref dt), Some(ref ut)) = (&down_target, &up_target) {
             if dt == ut {
-                self.fire_pointer_event("click", layout, x, y);
+                self.fire_pointer_event("click", layout, client_x, client_y, scroll_y);
             }
         }
         self.shared.borrow_mut().pointer_down_target = None;
@@ -1068,6 +1104,10 @@ impl JsBridge {
 
     pub fn update_element_rects(&self, rects: HashMap<String, crate::types::LayoutRect>) {
         self.shared.borrow_mut().element_rects = rects;
+    }
+
+    pub fn set_scroll_y(&self, scroll_y: f32) {
+        self.shared.borrow_mut().scroll_y = scroll_y;
     }
 
     pub fn text_overrides(&self) -> std::cell::Ref<'_, HashMap<String, String>> {
@@ -1547,6 +1587,21 @@ impl JsBridge {
         let req = s.xr_end_requested;
         s.xr_end_requested = false;
         req
+    }
+
+    pub fn force_end_active_xr_session(&mut self) -> Result<()> {
+        self.context.with(|ctx| -> Result<()> {
+            ctx.eval::<(), _>(
+                r#"
+                if (typeof globalThis.__hostForceEndActiveXrSession === 'function') {
+                    globalThis.__hostForceEndActiveXrSession();
+                }
+                "#,
+            )?;
+            Ok(())
+        })?;
+        self.drain_jobs();
+        Ok(())
     }
 }
 

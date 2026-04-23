@@ -1,3 +1,5 @@
 package com.example.custom_webview;
 
-public class VrActivity extends BaseNativeActivity {}
+import android.app.NativeActivity;
+
+public class VrActivity extends NativeActivity {}

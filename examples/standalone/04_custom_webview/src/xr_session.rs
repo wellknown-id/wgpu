@@ -110,6 +110,13 @@ pub struct XrSession {
     state: XrState,
     swapchain_width: u32,
     swapchain_height: u32,
+    action_set: xr::ActionSet,
+    select_action: xr::Action<bool>,
+    exit_action: xr::Action<bool>,
+    right_thumbstick_action: xr::Action<xr::Vector2f>,
+    left_thumbstick_action: xr::Action<xr::Vector2f>,
+    right_aim_space: xr::Space,
+    left_aim_space: xr::Space,
 }
 
 impl XrSession {
@@ -173,6 +180,95 @@ impl XrSession {
         let reference_space =
             session.create_reference_space(xr::ReferenceSpaceType::LOCAL, xr::Posef::IDENTITY)?;
 
+        let action_set = ctx.instance.create_action_set("input", "Input", 0)?;
+        let select_action = action_set.create_action::<bool>("select", "Select", &[])?;
+        let exit_action = action_set.create_action::<bool>("exit", "Exit", &[])?;
+        let right_thumbstick_action = action_set.create_action::<xr::Vector2f>(
+            "right_thumbstick",
+            "Right Thumbstick",
+            &[],
+        )?;
+        let left_thumbstick_action =
+            action_set.create_action::<xr::Vector2f>("left_thumbstick", "Left Thumbstick", &[])?;
+        let right_aim_action =
+            action_set.create_action::<xr::Posef>("right_aim", "Right Aim", &[])?;
+        let left_aim_action = action_set.create_action::<xr::Posef>("left_aim", "Left Aim", &[])?;
+        let left_select = ctx
+            .instance
+            .string_to_path("/user/hand/left/input/select/click")?;
+        let right_select = ctx
+            .instance
+            .string_to_path("/user/hand/right/input/select/click")?;
+        let left_x = ctx
+            .instance
+            .string_to_path("/user/hand/left/input/x/click")?;
+        let right_a = ctx
+            .instance
+            .string_to_path("/user/hand/right/input/a/click")?;
+        ctx.instance.suggest_interaction_profile_bindings(
+            ctx.instance
+                .string_to_path("/interaction_profiles/khr/simple_controller")?,
+            &[
+                xr::Binding::new(&select_action, left_select),
+                xr::Binding::new(&select_action, right_select),
+                xr::Binding::new(
+                    &left_aim_action,
+                    ctx.instance
+                        .string_to_path("/user/hand/left/input/grip/pose")?,
+                ),
+                xr::Binding::new(
+                    &right_aim_action,
+                    ctx.instance
+                        .string_to_path("/user/hand/right/input/grip/pose")?,
+                ),
+            ],
+        )?;
+        let left_aim = ctx
+            .instance
+            .string_to_path("/user/hand/left/input/aim/pose")?;
+        let right_aim = ctx
+            .instance
+            .string_to_path("/user/hand/right/input/aim/pose")?;
+        let left_thumbstick = ctx
+            .instance
+            .string_to_path("/user/hand/left/input/thumbstick")?;
+        let right_thumbstick = ctx
+            .instance
+            .string_to_path("/user/hand/right/input/thumbstick")?;
+        let left_exit = ctx
+            .instance
+            .string_to_path("/user/hand/left/input/y/click")?;
+        let right_exit = ctx
+            .instance
+            .string_to_path("/user/hand/right/input/b/click")?;
+        for profile_path in [
+            "/interaction_profiles/oculus/touch_controller",
+            "/interaction_profiles/meta/touch_controller_plus",
+        ] {
+            if let Ok(profile) = ctx.instance.string_to_path(profile_path) {
+                if let Err(error) = ctx.instance.suggest_interaction_profile_bindings(
+                    profile,
+                    &[
+                        xr::Binding::new(&select_action, left_x),
+                        xr::Binding::new(&select_action, right_a),
+                        xr::Binding::new(&exit_action, left_exit),
+                        xr::Binding::new(&exit_action, right_exit),
+                        xr::Binding::new(&left_thumbstick_action, left_thumbstick),
+                        xr::Binding::new(&right_thumbstick_action, right_thumbstick),
+                        xr::Binding::new(&left_aim_action, left_aim),
+                        xr::Binding::new(&right_aim_action, right_aim),
+                    ],
+                ) {
+                    log::warn!("Skipping unsupported input profile {profile_path}: {error}");
+                }
+            }
+        }
+        session.attach_action_sets(&[&action_set])?;
+        let right_aim_space =
+            right_aim_action.create_space(&session, xr::Path::NULL, xr::Posef::IDENTITY)?;
+        let left_aim_space =
+            left_aim_action.create_space(&session, xr::Path::NULL, xr::Posef::IDENTITY)?;
+
         Ok(Self {
             instance: ctx.instance.clone(),
             session,
@@ -184,6 +280,13 @@ impl XrSession {
             state: XrState::Idle,
             swapchain_width: width,
             swapchain_height: height,
+            action_set,
+            select_action,
+            exit_action,
+            right_thumbstick_action,
+            left_thumbstick_action,
+            right_aim_space,
+            left_aim_space,
         })
     }
 
@@ -297,6 +400,44 @@ impl XrSession {
             &[],
         )?;
         Ok(())
+    }
+
+    pub fn sync_input(&self) -> Result<()> {
+        self.session.sync_actions(&[(&self.action_set).into()])?;
+        Ok(())
+    }
+
+    pub fn select_pressed(&self) -> Result<bool> {
+        let select_state = self.select_action.state(&self.session, xr::Path::NULL)?;
+        Ok(select_state.is_active && select_state.current_state)
+    }
+
+    pub fn exit_pressed(&self) -> Result<bool> {
+        let exit_state = self.exit_action.state(&self.session, xr::Path::NULL)?;
+        Ok(exit_state.is_active && exit_state.current_state)
+    }
+
+    pub fn pointer_pose(&self, predicted_display_time: xr::Time) -> Result<Option<xr::Posef>> {
+        for space in [&self.right_aim_space, &self.left_aim_space] {
+            let location = space.locate(&self.reference_space, predicted_display_time)?;
+            let flags = location.location_flags;
+            if flags.contains(xr::SpaceLocationFlags::POSITION_VALID)
+                && flags.contains(xr::SpaceLocationFlags::ORIENTATION_VALID)
+            {
+                return Ok(Some(location.pose));
+            }
+        }
+        Ok(None)
+    }
+
+    pub fn scroll_axis(&self) -> Result<f32> {
+        for action in [&self.right_thumbstick_action, &self.left_thumbstick_action] {
+            let state = action.state(&self.session, xr::Path::NULL)?;
+            if state.is_active && state.current_state.y.abs() > 0.15 {
+                return Ok(state.current_state.y);
+            }
+        }
+        Ok(0.0)
     }
 
     pub fn release_and_end_frame(&mut self, frame_data: &XrFrameData) -> Result<()> {

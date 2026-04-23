@@ -1,6 +1,4 @@
 #![allow(clippy::disallowed_types, dead_code, static_mut_refs)]
-#[cfg(target_os = "android")]
-pub mod android_handoff;
 pub mod css_engine;
 pub mod gpu;
 pub mod html_parser;
@@ -18,6 +16,8 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Instant;
 
+#[cfg(feature = "xr")]
+use openxr as xr;
 use winit::{
     application::ApplicationHandler,
     event::WindowEvent,
@@ -71,6 +71,8 @@ pub struct WebviewState {
     pub asset_dir: PathBuf,
     #[allow(dead_code)]
     pub start_time: Instant,
+    pub view_size: winit::dpi::PhysicalSize<u32>,
+    pub view_scale_factor: f64,
     pub scroll_y: f32,
     pub mouse_down: bool,
     pub text_cache: TextMeasureCache,
@@ -81,22 +83,26 @@ pub struct WebviewState {
     #[cfg(feature = "xr")]
     pub xr_session: Option<xr_session::XrSession>,
     #[cfg(feature = "xr")]
+    pub xr_session_failed: bool,
+    #[cfg(feature = "xr")]
     pub xr_depth_texture: Option<wgpu::Texture>,
     #[cfg(feature = "xr")]
     pub xr_depth_size: (u32, u32),
+    #[cfg(feature = "xr")]
+    pub xr_panel_target: Option<gpu::OffscreenRenderTarget>,
+    #[cfg(feature = "xr")]
+    pub page_xr_active: bool,
+    #[cfg(feature = "xr")]
+    pub xr_select_down: bool,
+    #[cfg(feature = "xr")]
+    pub xr_pointer_pos: Option<(f32, f32)>,
+    #[cfg(feature = "xr")]
+    pub xr_exit_down: bool,
 }
 
 #[derive(Default)]
 pub struct App {
     pub state: Option<WebviewState>,
-    #[cfg(target_os = "android")]
-    pub android_app: Option<winit::platform::android::activity::AndroidApp>,
-    #[cfg(target_os = "android")]
-    pub immersive_activity: bool,
-    #[cfg(target_os = "android")]
-    pub launch_asset: Option<String>,
-    #[cfg(target_os = "android")]
-    pub auto_enter_vr: bool,
 }
 
 fn asset_name(href: &str) -> &str {
@@ -120,9 +126,124 @@ fn mobile_html_source(href: &str) -> String {
     }
 }
 
+#[cfg(feature = "xr")]
+const XR_PANEL_DISTANCE: f32 = 1.4;
+#[cfg(feature = "xr")]
+const XR_PANEL_WIDTH: f32 = 1.45;
+#[cfg(feature = "xr")]
+const XR_PANEL_RENDER_WIDTH: u32 = 1280;
+#[cfg(feature = "xr")]
+const XR_PANEL_RENDER_HEIGHT: u32 = 720;
+#[cfg(feature = "xr")]
+const XR_SCROLL_SPEED: f32 = 14.0;
+
+#[cfg(feature = "xr")]
+fn xr_panel_render_size() -> winit::dpi::PhysicalSize<u32> {
+    winit::dpi::PhysicalSize::new(XR_PANEL_RENDER_WIDTH, XR_PANEL_RENDER_HEIGHT)
+}
+
+#[cfg(feature = "xr")]
+fn xr_panel_height(target_size: winit::dpi::PhysicalSize<u32>) -> f32 {
+    XR_PANEL_WIDTH * target_size.height as f32 / target_size.width.max(1) as f32
+}
+
+#[cfg(feature = "xr")]
+fn xr_panel_model_matrix(target_size: winit::dpi::PhysicalSize<u32>) -> [f32; 16] {
+    let mut scale = types::mat4_identity();
+    scale[0] = XR_PANEL_WIDTH;
+    scale[5] = xr_panel_height(target_size);
+    let translate = types::mat4_translate(&types::mat4_identity(), 0.0, 0.0, -XR_PANEL_DISTANCE);
+    types::mat4_mul(&translate, &scale)
+}
+
+#[cfg(feature = "xr")]
+fn xr_panel_mvp(
+    view: &crate::xr_session::XrEyeView,
+    target_size: winit::dpi::PhysicalSize<u32>,
+) -> [f32; 16] {
+    let model = xr_panel_model_matrix(target_size);
+    let view_model = types::mat4_mul(&view.view_matrix, &model);
+    types::mat4_mul(&view.projection_matrix, &view_model)
+}
+
+#[cfg(feature = "xr")]
+fn rotate_vec3(q: &xr::Quaternionf, v: [f32; 3]) -> [f32; 3] {
+    let u = [q.x, q.y, q.z];
+    let uv = [
+        u[1] * v[2] - u[2] * v[1],
+        u[2] * v[0] - u[0] * v[2],
+        u[0] * v[1] - u[1] * v[0],
+    ];
+    let uuv = [
+        u[1] * uv[2] - u[2] * uv[1],
+        u[2] * uv[0] - u[0] * uv[2],
+        u[0] * uv[1] - u[1] * uv[0],
+    ];
+    [
+        v[0] + 2.0 * (q.w * uv[0] + uuv[0]),
+        v[1] + 2.0 * (q.w * uv[1] + uuv[1]),
+        v[2] + 2.0 * (q.w * uv[2] + uuv[2]),
+    ]
+}
+
+#[cfg(feature = "xr")]
+fn xr_panel_pointer(
+    pose: &xr::Posef,
+    target_size: winit::dpi::PhysicalSize<u32>,
+    scale_factor: f64,
+) -> Option<(f32, f32)> {
+    let origin = [pose.position.x, pose.position.y, pose.position.z];
+    let dir = rotate_vec3(&pose.orientation, [0.0, 0.0, -1.0]);
+    if dir[2].abs() < 1e-4 {
+        return None;
+    }
+    let t = (-XR_PANEL_DISTANCE - origin[2]) / dir[2];
+    if t <= 0.0 {
+        return None;
+    }
+    let hit_x = origin[0] + dir[0] * t;
+    let hit_y = origin[1] + dir[1] * t;
+    let panel_half_width = XR_PANEL_WIDTH * 0.5;
+    let panel_half_height = xr_panel_height(target_size) * 0.5;
+    if hit_x.abs() > panel_half_width || hit_y.abs() > panel_half_height {
+        return None;
+    }
+    let logical_width = target_size.width as f32 / scale_factor as f32;
+    let logical_height = target_size.height as f32 / scale_factor as f32;
+    let u = hit_x / XR_PANEL_WIDTH + 0.5;
+    let v = 0.5 - hit_y / (panel_half_height * 2.0);
+    Some((u * logical_width, v * logical_height))
+}
+
 impl App {
+    fn target_view_size(&self, _gpu: &GpuState) -> winit::dpi::PhysicalSize<u32> {
+        #[cfg(all(target_os = "android", feature = "xr"))]
+        {
+            xr_panel_render_size()
+        }
+        #[cfg(not(all(target_os = "android", feature = "xr")))]
+        {
+            _gpu.size
+        }
+    }
+
+    fn target_view_scale_factor(&self, _gpu: &GpuState) -> f64 {
+        #[cfg(all(target_os = "android", feature = "xr"))]
+        {
+            1.0
+        }
+        #[cfg(not(all(target_os = "android", feature = "xr")))]
+        {
+            _gpu.scale_factor
+        }
+    }
+
     pub fn rebuild_layout(&mut self) {
         let state = self.state.as_mut().unwrap();
+        Self::rebuild_layout_state(state);
+    }
+
+    fn rebuild_layout_state(state: &mut WebviewState) {
         let mut styled = state.styled_base.clone();
 
         #[cfg(feature = "js")]
@@ -138,8 +259,8 @@ impl App {
         #[cfg(not(feature = "js"))]
         let canvas_ops = std::collections::HashMap::new();
 
-        let size = state.gpu.size;
-        let scale = state.gpu.scale_factor as f32;
+        let size = state.view_size;
+        let scale = state.view_scale_factor as f32;
         state.layout = build_layout(
             &styled,
             size.width as f32 / scale,
@@ -159,8 +280,15 @@ impl App {
             state
                 .js
                 .update_element_rects(state.layout.collect_element_rects());
+            state.js.set_scroll_y(state.scroll_y);
             state.js.clear_dirty();
         }
+    }
+
+    fn max_scroll(state: &WebviewState) -> f32 {
+        (state.layout.content_height()
+            - state.view_size.height as f32 / state.view_scale_factor as f32)
+            .max(0.0)
     }
 
     pub fn full_rebuild(&mut self) {
@@ -237,6 +365,58 @@ impl App {
             }
         }
         (static_cmds, ghost_cmds)
+    }
+
+    #[cfg(feature = "js")]
+    fn tick_dom(&mut self, include_pointer_drag: bool) {
+        {
+            let s = self.state.as_mut().unwrap();
+            let now_ms = s.start_time.elapsed().as_secs_f64() * 1000.0;
+            s.js.tick(now_ms);
+        }
+        if include_pointer_drag {
+            let dragging = self.state.as_ref().map(|s| s.mouse_down).unwrap_or(false);
+            if dragging {
+                let (mx, my) = unsafe { CURSOR_POS };
+                let s = self.state.as_mut().unwrap();
+                s.js.dispatch_pointer_move(&s.layout, mx, my, s.scroll_y);
+            }
+        }
+        let should_patch = include_pointer_drag
+            && self.state.as_ref().map(|s| s.mouse_down).unwrap_or(false)
+            && self.try_patch_position();
+        if self.state.as_ref().unwrap().js.is_dirty() && !should_patch {
+            self.rebuild_layout();
+        }
+    }
+
+    #[cfg(feature = "xr")]
+    fn create_xr_session(state: &mut WebviewState) {
+        if state.xr_session.is_some() || state.xr_session_failed {
+            return;
+        }
+        log::info!("Creating XR session");
+        if let Some(ctx) = state.xr_context.as_ref() {
+            match xr_session::XrSession::new(
+                ctx,
+                &state.gpu.instance,
+                &state.gpu.adapter,
+                &state.gpu.device,
+            ) {
+                Ok(session) => {
+                    state.xr_session = Some(session);
+                    state.xr_session_failed = false;
+                    log::info!("XR session created");
+                }
+                Err(e) => {
+                    state.xr_session_failed = true;
+                    log::error!("Failed to create XR session: {:?}", e);
+                }
+            }
+        } else {
+            state.xr_session_failed = true;
+            log::error!("Cannot create XR session without XR context");
+        }
     }
 
     pub fn navigate(&mut self, href: &str) {
@@ -357,10 +537,7 @@ impl ApplicationHandler for App {
             (html_file, html_source)
         };
         #[cfg(target_os = "android")]
-        let initial_asset = self
-            .launch_asset
-            .clone()
-            .unwrap_or_else(|| "index.html".to_string());
+        let initial_asset = "index.html".to_string();
         #[cfg(target_os = "ios")]
         let initial_asset = "index.html".to_string();
         #[cfg(any(target_os = "android", target_os = "ios"))]
@@ -405,13 +582,14 @@ impl ApplicationHandler for App {
         #[cfg(not(feature = "js"))]
         let canvas_ops = std::collections::HashMap::new();
 
-        let size = gpu.size;
-        let scale = gpu.scale_factor as f32;
+        let view_size = self.target_view_size(&gpu);
+        let view_scale_factor = self.target_view_scale_factor(&gpu);
+        let scale = view_scale_factor as f32;
         let mut text_cache = TextMeasureCache::default();
         let layout_tree = build_layout(
             &styled,
-            size.width as f32 / scale,
-            size.height as f32 / scale,
+            view_size.width as f32 / scale,
+            view_size.height as f32 / scale,
             &mut text_cache,
             &mut |text, font_size, max_width| gpu.measure_text(text, font_size, max_width),
         );
@@ -437,6 +615,8 @@ impl ApplicationHandler for App {
             #[cfg(any(target_os = "android", target_os = "ios"))]
             asset_dir: PathBuf::new(),
             start_time: Instant::now(),
+            view_size,
+            view_scale_factor,
             scroll_y: 0.0,
             mouse_down: false,
             text_cache,
@@ -447,21 +627,27 @@ impl ApplicationHandler for App {
             #[cfg(feature = "xr")]
             xr_session: None,
             #[cfg(feature = "xr")]
+            xr_session_failed: false,
+            #[cfg(feature = "xr")]
             xr_depth_texture: None,
             #[cfg(feature = "xr")]
             xr_depth_size: (0, 0),
+            #[cfg(feature = "xr")]
+            xr_panel_target: None,
+            #[cfg(feature = "xr")]
+            page_xr_active: false,
+            #[cfg(feature = "xr")]
+            xr_select_down: false,
+            #[cfg(feature = "xr")]
+            xr_pointer_pos: None,
+            #[cfg(feature = "xr")]
+            xr_exit_down: false,
         });
 
-        #[cfg(all(target_os = "android", feature = "js"))]
-        if self.immersive_activity && self.auto_enter_vr {
-            self.auto_enter_vr = false;
+        #[cfg(all(target_os = "android", feature = "xr"))]
+        {
             let state = self.state.as_mut().unwrap();
-            if state.current_asset == "webxr.html" {
-                log::info!("Auto-entering XR in immersive activity");
-                if let Err(e) = state.js.eval_script("enterVR();") {
-                    log::error!("failed to auto-enter XR: {:?}", e);
-                }
-            }
+            Self::create_xr_session(state);
         }
 
         window.request_redraw();
@@ -475,7 +661,18 @@ impl ApplicationHandler for App {
         match event {
             WindowEvent::CloseRequested => event_loop.exit(),
             WindowEvent::Resized(size) => {
-                self.state.as_mut().unwrap().gpu.resize(size);
+                let state = self.state.as_mut().unwrap();
+                state.gpu.resize(size);
+                #[cfg(all(target_os = "android", feature = "xr"))]
+                {
+                    state.view_size = xr_panel_render_size();
+                    state.view_scale_factor = 1.0;
+                }
+                #[cfg(not(all(target_os = "android", feature = "xr")))]
+                {
+                    state.view_size = state.gpu.size;
+                    state.view_scale_factor = state.gpu.scale_factor;
+                }
                 self.rebuild_layout();
                 self.state.as_ref().unwrap().gpu.window.request_redraw();
             }
@@ -498,8 +695,7 @@ impl ApplicationHandler for App {
                 #[cfg(feature = "js")]
                 {
                     let s = self.state.as_mut().unwrap();
-                    let y = my + s.scroll_y;
-                    s.js.dispatch_pointer_down(&s.layout, mx, y);
+                    s.js.dispatch_pointer_down(&s.layout, mx, my, s.scroll_y);
                     if s.js.is_dirty() {
                         self.rebuild_layout();
                         self.state.as_ref().unwrap().gpu.window.request_redraw();
@@ -516,8 +712,7 @@ impl ApplicationHandler for App {
                 {
                     let s = self.state.as_mut().unwrap();
                     let (mx, my) = unsafe { CURSOR_POS };
-                    let y = my + s.scroll_y;
-                    s.js.dispatch_pointer_up(&s.layout, mx, y);
+                    s.js.dispatch_pointer_up(&s.layout, mx, my, s.scroll_y);
                     if s.js.is_dirty() {
                         self.rebuild_layout();
                         self.state.as_ref().unwrap().gpu.window.request_redraw();
@@ -530,14 +725,14 @@ impl ApplicationHandler for App {
                     winit::event::MouseScrollDelta::LineDelta(_, y) => -y * 40.0,
                     winit::event::MouseScrollDelta::PixelDelta(pos) => -pos.y as f32,
                 };
-                let max_scroll = (s.layout.content_height()
-                    - s.gpu.size.height as f32 / s.gpu.scale_factor as f32)
-                    .max(0.0);
+                let max_scroll = Self::max_scroll(s);
                 s.scroll_y = (s.scroll_y + dy).clamp(0.0, max_scroll);
+                #[cfg(feature = "js")]
+                s.js.set_scroll_y(s.scroll_y);
                 s.gpu.window.request_redraw();
             }
             WindowEvent::Touch(touch) => {
-                let scale = self.state.as_ref().unwrap().gpu.scale_factor as f32;
+                let scale = self.state.as_ref().unwrap().view_scale_factor as f32;
                 let mx = touch.location.x as f32 / scale;
                 let my = touch.location.y as f32 / scale;
                 unsafe {
@@ -561,8 +756,7 @@ impl ApplicationHandler for App {
                         #[cfg(feature = "js")]
                         {
                             let s = self.state.as_mut().unwrap();
-                            let y = my + s.scroll_y;
-                            s.js.dispatch_pointer_down(&s.layout, mx, y);
+                            s.js.dispatch_pointer_down(&s.layout, mx, my, s.scroll_y);
                             if s.js.is_dirty() {
                                 self.rebuild_layout();
                             }
@@ -574,10 +768,10 @@ impl ApplicationHandler for App {
                         if s.ghost_commands.is_empty() {
                             if let Some(last_y) = s.last_touch_y {
                                 let dy = last_y - my;
-                                let max_scroll = (s.layout.content_height()
-                                    - s.gpu.size.height as f32 / s.gpu.scale_factor as f32)
-                                    .max(0.0);
+                                let max_scroll = Self::max_scroll(s);
                                 s.scroll_y = (s.scroll_y + dy).clamp(0.0, max_scroll);
+                                #[cfg(feature = "js")]
+                                s.js.set_scroll_y(s.scroll_y);
                             }
                         }
                         s.last_touch_y = Some(my);
@@ -585,8 +779,7 @@ impl ApplicationHandler for App {
                         #[cfg(feature = "js")]
                         {
                             let s = self.state.as_mut().unwrap();
-                            let y = my + s.scroll_y;
-                            s.js.dispatch_pointer_move(&s.layout, mx, y);
+                            s.js.dispatch_pointer_move(&s.layout, mx, my, s.scroll_y);
                             if s.js.is_dirty() && !self.try_patch_position() {
                                 self.rebuild_layout();
                             }
@@ -600,8 +793,7 @@ impl ApplicationHandler for App {
                         #[cfg(feature = "js")]
                         {
                             let s = self.state.as_mut().unwrap();
-                            let y = my + s.scroll_y;
-                            s.js.dispatch_pointer_up(&s.layout, mx, y);
+                            s.js.dispatch_pointer_up(&s.layout, mx, my, s.scroll_y);
                             s.ghost_pos = None;
                             if s.js.is_dirty() {
                                 self.rebuild_layout();
@@ -626,59 +818,41 @@ impl ApplicationHandler for App {
                 #[cfg(all(feature = "js", feature = "xr"))]
                 {
                     let s = self.state.as_mut().unwrap();
-                    if s.js.take_xr_request() && s.xr_session.is_none() {
-                        #[cfg(target_os = "android")]
-                        if !self.immersive_activity {
-                            if let Some(app) = self.android_app.as_ref() {
-                                match android_handoff::launch_immersive_activity(
-                                    app,
-                                    &s.current_asset,
-                                    true,
-                                ) {
-                                    Ok(()) => {
-                                        log::info!(
-                                            "Launched immersive activity for {}",
-                                            s.current_asset
-                                        );
-                                        return;
-                                    }
-                                    Err(e) => {
-                                        log::error!("Failed to launch immersive activity: {:?}", e);
-                                    }
-                                }
-                            }
-                        }
+                    #[cfg(target_os = "android")]
+                    if s.xr_session.is_none() {
+                        Self::create_xr_session(s);
+                    }
 
-                        log::info!("Creating XR session from JS request");
-                        if let Some(ctx) = s.xr_context.as_ref() {
-                            match xr_session::XrSession::new(
-                                ctx,
-                                &s.gpu.instance,
-                                &s.gpu.adapter,
-                                &s.gpu.device,
-                            ) {
-                                Ok(session) => {
-                                    s.xr_session = Some(session);
-                                    log::info!("XR session created");
-                                }
-                                Err(e) => log::error!("Failed to create XR session: {:?}", e),
-                            }
-                        } else {
-                            log::error!("Cannot create XR session without XR context");
+                    if s.js.take_xr_request() {
+                        s.page_xr_active = true;
+                        if s.xr_session.is_none() {
+                            Self::create_xr_session(s);
                         }
                     }
                     if s.js.take_xr_end_request() {
-                        s.xr_session = None;
-                        log::info!("XR session ended");
+                        s.page_xr_active = false;
+                        s.xr_select_down = false;
+                        s.xr_pointer_pos = None;
+                        s.xr_exit_down = false;
+                        #[cfg(not(target_os = "android"))]
+                        {
+                            s.xr_session = None;
+                            log::info!("XR session ended");
+                        }
+                        #[cfg(target_os = "android")]
+                        {
+                            log::info!("Returned to immersive panel");
+                        }
                     }
                 }
 
                 // XR render loop (when session is active)
                 #[cfg(all(feature = "xr", feature = "js"))]
                 {
-                    let s = self.state.as_mut().unwrap();
                     let mut xr_rendered = false;
-                    if let Some(ref mut xr) = s.xr_session {
+                    let mut xr_navigation = None;
+                    let xr_session = self.state.as_mut().unwrap().xr_session.take();
+                    if let Some(mut xr) = xr_session {
                         if let Err(e) = xr.poll_events() {
                             log::error!("XR poll error: {:?}", e);
                         }
@@ -687,6 +861,7 @@ impl ApplicationHandler for App {
                             match xr.wait_frame() {
                                 Ok(Some(frame_data)) => match xr.acquire_swapchain_image() {
                                     Ok((texture, _idx)) => {
+                                        let s = self.state.as_mut().unwrap();
                                         // Create per-eye views from the array texture
                                         let left_view =
                                             texture.create_view(&wgpu::TextureViewDescriptor {
@@ -732,66 +907,226 @@ impl ApplicationHandler for App {
                                             .unwrap()
                                             .create_view(&Default::default());
 
-                                        // Register in WebGpuBridge
-                                        let (left_vh, right_vh, depth_vh) = {
-                                            let mut bridge = s.js.webgpu_bridge_mut();
-                                            let gpu = bridge.as_mut().unwrap();
-                                            let lvh = gpu.register_texture_view(left_view);
-                                            let rvh = gpu.register_texture_view(right_view);
-                                            let dvh = gpu.register_texture_view(depth_view);
-                                            (lvh, rvh, dvh)
-                                        };
+                                        if s.page_xr_active {
+                                            if let Err(e) = xr.sync_input() {
+                                                log::error!("XR input sync error: {:?}", e);
+                                            }
+                                            let exit_down = xr.exit_pressed().unwrap_or(false);
+                                            if !s.xr_exit_down && exit_down {
+                                                if let Err(e) = s.js.force_end_active_xr_session() {
+                                                    log::error!(
+                                                        "Failed to end XR session from controller: {:?}",
+                                                        e
+                                                    );
+                                                }
+                                            }
+                                            s.xr_exit_down = exit_down;
+                                            let (left_vh, right_vh, depth_vh) = {
+                                                let mut bridge = s.js.webgpu_bridge_mut();
+                                                let gpu = bridge.as_mut().unwrap();
+                                                let lvh = gpu.register_texture_view(left_view);
+                                                let rvh = gpu.register_texture_view(right_view);
+                                                let dvh = gpu.register_texture_view(depth_view);
+                                                (lvh, rvh, dvh)
+                                            };
 
-                                        // Provide view data to JS
-                                        let left_eye = js_bridge::XrEyeData {
-                                            tex_handle: 0, // not needed, JS uses view handle
-                                            view_handle: left_vh,
-                                            width: sw,
-                                            height: sh,
-                                            proj_matrix: frame_data.views[0].projection_matrix,
-                                            view_inv_matrix: frame_data.views[0].view_matrix,
-                                        };
-                                        let right_eye = js_bridge::XrEyeData {
-                                            tex_handle: 0,
-                                            view_handle: right_vh,
-                                            width: sw,
-                                            height: sh,
-                                            proj_matrix: frame_data.views[1].projection_matrix,
-                                            view_inv_matrix: frame_data.views[1].view_matrix,
-                                        };
+                                            let left_eye = js_bridge::XrEyeData {
+                                                tex_handle: depth_vh,
+                                                view_handle: left_vh,
+                                                width: sw,
+                                                height: sh,
+                                                proj_matrix: frame_data.views[0].projection_matrix,
+                                                view_inv_matrix: frame_data.views[0].view_matrix,
+                                            };
+                                            let right_eye = js_bridge::XrEyeData {
+                                                tex_handle: depth_vh,
+                                                view_handle: right_vh,
+                                                width: sw,
+                                                height: sh,
+                                                proj_matrix: frame_data.views[1].projection_matrix,
+                                                view_inv_matrix: frame_data.views[1].view_matrix,
+                                            };
 
-                                        // Set depth view handle on both eyes
-                                        // (JS will read it from the sub-image)
-                                        let left_eye = js_bridge::XrEyeData {
-                                            tex_handle: depth_vh, // repurpose: JS depth view
-                                            ..left_eye
-                                        };
-                                        let right_eye = js_bridge::XrEyeData {
-                                            tex_handle: depth_vh,
-                                            ..right_eye
-                                        };
+                                            s.js.set_xr_view_data(Some(js_bridge::XrViewData {
+                                                left: left_eye,
+                                                right: right_eye,
+                                            }));
 
-                                        s.js.set_xr_view_data(Some(js_bridge::XrViewData {
-                                            left: left_eye,
-                                            right: right_eye,
-                                        }));
+                                            let now_ms =
+                                                s.start_time.elapsed().as_secs_f64() * 1000.0;
+                                            s.js.tick(now_ms);
+                                            s.js.set_xr_view_data(None);
+                                            {
+                                                let mut bridge = s.js.webgpu_bridge_mut();
+                                                let gpu = bridge.as_mut().unwrap();
+                                                gpu.unregister_texture_view(left_vh);
+                                                gpu.unregister_texture_view(right_vh);
+                                                gpu.unregister_texture_view(depth_vh);
+                                            }
+                                        } else {
+                                            if let Err(e) = xr.sync_input() {
+                                                log::error!("XR input sync error: {:?}", e);
+                                            }
+                                            let select_down = xr.select_pressed().unwrap_or(false);
+                                            let scroll_axis = xr.scroll_axis().unwrap_or(0.0);
+                                            if scroll_axis != 0.0 {
+                                                let max_scroll = Self::max_scroll(s);
+                                                s.scroll_y = (s.scroll_y
+                                                    - scroll_axis * XR_SCROLL_SPEED)
+                                                    .clamp(0.0, max_scroll);
+                                                s.js.set_scroll_y(s.scroll_y);
+                                            }
+                                            let pointer_pose = match xr
+                                                .pointer_pose(frame_data.predicted_display_time)
+                                            {
+                                                Ok(pose) => pose,
+                                                Err(e) => {
+                                                    log::error!(
+                                                        "XR pointer pose lookup error: {:?}",
+                                                        e
+                                                    );
+                                                    None
+                                                }
+                                            };
+                                            if let Some((mx, my)) = pointer_pose.and_then(|pose| {
+                                                xr_panel_pointer(
+                                                    &pose,
+                                                    s.view_size,
+                                                    s.view_scale_factor,
+                                                )
+                                            }) {
+                                                unsafe {
+                                                    CURSOR_POS = (mx, my);
+                                                }
+                                                s.xr_pointer_pos = Some((mx, my));
+                                                s.js.dispatch_pointer_move(
+                                                    &s.layout, mx, my, s.scroll_y,
+                                                );
+                                            } else if !select_down {
+                                                s.xr_pointer_pos = None;
+                                            }
+                                            if !s.xr_select_down && select_down {
+                                                if let Some((mx, my)) = s.xr_pointer_pos {
+                                                    let y = my + s.scroll_y;
+                                                    let hit = renderer::hit_test(&s.layout, mx, y);
+                                                    if let Some(href) =
+                                                        hit.and_then(|hit| hit.href.clone())
+                                                    {
+                                                        xr_navigation = Some(href);
+                                                    } else {
+                                                        s.js.dispatch_pointer_down(
+                                                            &s.layout, mx, my, s.scroll_y,
+                                                        );
+                                                    }
+                                                }
+                                            }
+                                            if s.xr_select_down && !select_down {
+                                                if let Some((mx, my)) = s.xr_pointer_pos {
+                                                    s.js.dispatch_pointer_up(
+                                                        &s.layout, mx, my, s.scroll_y,
+                                                    );
+                                                }
+                                            }
+                                            s.xr_select_down = select_down;
+                                            s.xr_exit_down = false;
 
-                                        // Tick JS animation frame (this runs the XR render callback)
-                                        let now_ms = s.start_time.elapsed().as_secs_f64() * 1000.0;
-                                        s.js.tick(now_ms);
+                                            let now_ms =
+                                                s.start_time.elapsed().as_secs_f64() * 1000.0;
+                                            s.js.tick(now_ms);
+                                            if s.js.is_dirty() {
+                                                Self::rebuild_layout_state(s);
+                                            }
 
-                                        // Clean up registered views
-                                        s.js.set_xr_view_data(None);
-                                        {
-                                            let mut bridge = s.js.webgpu_bridge_mut();
-                                            let gpu = bridge.as_mut().unwrap();
-                                            gpu.unregister_texture_view(left_vh);
-                                            gpu.unregister_texture_view(right_vh);
-                                            gpu.unregister_texture_view(depth_vh);
+                                            let recreate_target = s
+                                                .xr_panel_target
+                                                .as_ref()
+                                                .map(|target| target.size != s.view_size)
+                                                .unwrap_or(true);
+                                            if recreate_target {
+                                                s.xr_panel_target =
+                                                    Some(s.gpu.create_render_target(
+                                                        s.view_size.width,
+                                                        s.view_size.height,
+                                                    ));
+                                            }
+
+                                            let mut overlay_commands = s.ghost_commands.clone();
+                                            if let Some((mx, my)) = s.xr_pointer_pos {
+                                                overlay_commands.push(DrawCommand::Rect {
+                                                    rect: types::LayoutRect {
+                                                        x: mx - 8.0,
+                                                        y: my - 8.0,
+                                                        w: 16.0,
+                                                        h: 16.0,
+                                                    },
+                                                    color: [1.0, 1.0, 1.0, 0.2],
+                                                    border_radius: 8.0,
+                                                    element_id: None,
+                                                    transform: types::mat4_identity(),
+                                                    is_fixed: false,
+                                                });
+                                                overlay_commands.push(DrawCommand::Border {
+                                                    rect: types::LayoutRect {
+                                                        x: mx - 8.0,
+                                                        y: my - 8.0,
+                                                        w: 16.0,
+                                                        h: 16.0,
+                                                    },
+                                                    color: [1.0, 1.0, 1.0, 0.9],
+                                                    width: 2.0,
+                                                    radius: 8.0,
+                                                    element_id: None,
+                                                    transform: types::mat4_identity(),
+                                                    is_fixed: false,
+                                                });
+                                            }
+
+                                            let (gpu, panel_target) =
+                                                (&mut s.gpu, s.xr_panel_target.as_ref().unwrap());
+                                            let bridge_ref = s.js.webgpu_bridge();
+                                            let canvases: Vec<([f32; 4], &wgpu::TextureView)> =
+                                                if let Some(ref bridge) = *bridge_ref {
+                                                    let elem_rects =
+                                                        s.layout.collect_element_rects();
+                                                    bridge
+                                                        .canvas_ids()
+                                                        .iter()
+                                                        .filter_map(|id| {
+                                                            let tv = bridge
+                                                                .get_canvas_texture_view(id)?;
+                                                            let lr = elem_rects.get(id)?;
+                                                            Some(([lr.x, lr.y, lr.w, lr.h], tv))
+                                                        })
+                                                        .collect()
+                                                } else {
+                                                    Vec::new()
+                                                };
+                                            gpu.render_to_target(
+                                                panel_target,
+                                                s.view_scale_factor as f32,
+                                                &s.static_commands,
+                                                &overlay_commands,
+                                                s.clear_color,
+                                                s.scroll_y,
+                                                &canvases,
+                                            );
+                                            gpu.render_xr_panel_views(
+                                                &left_view,
+                                                &right_view,
+                                                &panel_target.view,
+                                                [0.01, 0.015, 0.025, 1.0],
+                                                xr_panel_mvp(
+                                                    &frame_data.views[0],
+                                                    panel_target.size,
+                                                ),
+                                                xr_panel_mvp(
+                                                    &frame_data.views[1],
+                                                    panel_target.size,
+                                                ),
+                                            );
                                         }
 
-                                        let _ =
-                                            s.gpu.device.poll(wgpu::PollType::wait_indefinitely());
+                                        let _ = s.gpu.device.poll(wgpu::PollType::Poll);
                                         if let Err(e) = xr.release_and_end_frame(&frame_data) {
                                             log::error!("XR end frame error: {:?}", e);
                                         }
@@ -812,13 +1147,24 @@ impl ApplicationHandler for App {
                                 Ok(None) => {}
                                 Err(e) => log::error!("XR wait_frame error: {:?}", e),
                             }
-                        } else if xr.state() == xr_session::XrState::Stopping {
-                            drop(s.xr_session.take());
+                        }
+
+                        if xr.state() == xr_session::XrState::Stopping {
+                            let s = self.state.as_mut().unwrap();
+                            s.page_xr_active = false;
+                            s.xr_select_down = false;
+                            s.xr_pointer_pos = None;
+                            s.xr_exit_down = false;
                             log::info!("XR session stopped");
+                        } else {
+                            self.state.as_mut().unwrap().xr_session = Some(xr);
+                        }
+                        if let Some(href) = xr_navigation.take() {
+                            self.navigate(&href);
                         }
                     }
                     if xr_rendered {
-                        s.gpu.window.request_redraw();
+                        self.state.as_ref().unwrap().gpu.window.request_redraw();
                         return;
                     }
                 }
@@ -826,24 +1172,7 @@ impl ApplicationHandler for App {
                 // Normal 2D panel rendering
                 #[cfg(feature = "js")]
                 {
-                    {
-                        let s = self.state.as_mut().unwrap();
-                        let now_ms = s.start_time.elapsed().as_secs_f64() * 1000.0;
-                        s.js.tick(now_ms);
-                    }
-                    {
-                        let s = self.state.as_mut().unwrap();
-                        if s.mouse_down {
-                            let (mx, my) = unsafe { CURSOR_POS };
-                            s.js.dispatch_pointer_move(&s.layout, mx, my + s.scroll_y);
-                        }
-                    }
-                    let is_dragging = self.state.as_ref().map(|s| s.mouse_down).unwrap_or(false);
-                    if self.state.as_ref().unwrap().js.is_dirty()
-                        && !(is_dragging && self.try_patch_position())
-                    {
-                        self.rebuild_layout();
-                    }
+                    self.tick_dom(true);
                 }
                 let s = self.state.as_mut().unwrap();
 
@@ -924,22 +1253,11 @@ pub fn android_main(app: winit::platform::android::activity::AndroidApp) {
 
     log::info!("android_main: starting");
 
-    let launch = crate::android_handoff::read_launch_options(&app).unwrap_or_else(|e| {
-        log::error!("Failed to query Android launch options: {:?}", e);
-        crate::android_handoff::LaunchOptions::default()
-    });
-
     loop {
         match EventLoop::builder().with_android_app(app.clone()).build() {
             Ok(event_loop) => {
                 event_loop.set_control_flow(ControlFlow::Poll);
-                let mut application = App {
-                    state: None,
-                    android_app: Some(app.clone()),
-                    immersive_activity: launch.immersive_activity,
-                    launch_asset: launch.launch_asset.clone(),
-                    auto_enter_vr: launch.auto_enter_vr,
-                };
+                let mut application = App::default();
                 let _ = event_loop.run_app(&mut application);
                 break;
             }

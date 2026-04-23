@@ -55,8 +55,8 @@ CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER="$CLANG" \
 cargo build --lib -F xr --target "$TARGET_TRIPLE" "${PROFILE_FLAG[@]}"
 popd >/dev/null
 
-WORK_DIR="$REPO_ROOT/target/$PROFILE/custom_webview_hybrid_apk"
-OUTPUT_APK="$REPO_ROOT/target/$PROFILE/apk/wgpu_example_04_custom_webview_hybrid.apk"
+WORK_DIR="$REPO_ROOT/target/$PROFILE/custom_webview_openxr_apk"
+OUTPUT_APK="$REPO_ROOT/target/$PROFILE/apk/wgpu_example_04_custom_webview_openxr.apk"
 LIB_DIR="$REPO_ROOT/target/$TARGET_TRIPLE/$PROFILE"
 
 rm -rf "$WORK_DIR"

@@ -383,8 +383,8 @@ function enterVR() {
     }).then(function(refSpace) {
       xrRefSpace = refSpace;
       session.requestAnimationFrame(onXrFrame);
-      log('VR active');
-      btn.textContent = 'Exit VR';
+      log('VR active - press B/Y or click Exit VR');
+      btn.textContent = 'Exit VR (B/Y)';
       btn.disabled = false;
       btn.onclick = exitVR;
     });
