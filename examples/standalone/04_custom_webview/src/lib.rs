@@ -92,8 +92,6 @@ pub struct WebviewState {
     pub xr_panel_depth_texture: Option<wgpu::Texture>,
     #[cfg(feature = "xr")]
     pub xr_panel_depth_size: (u32, u32),
-    #[cfg(all(feature = "xr", target_os = "android"))]
-    pub xr_world_panel_pose: Option<xr::Posef>,
     #[cfg(feature = "xr")]
     pub xr_panel_target: Option<gpu::OffscreenRenderTarget>,
     #[cfg(feature = "xr")]
@@ -294,11 +292,6 @@ fn rotate_vec3(q: &xr::Quaternionf, v: [f32; 3]) -> [f32; 3] {
 }
 
 #[cfg(feature = "xr")]
-fn quat_dot(a: &xr::Quaternionf, b: &xr::Quaternionf) -> f32 {
-    a.x * b.x + a.y * b.y + a.z * b.z + a.w * b.w
-}
-
-#[cfg(feature = "xr")]
 fn quat_normalize(q: xr::Quaternionf) -> xr::Quaternionf {
     let len = (q.x * q.x + q.y * q.y + q.z * q.z + q.w * q.w).sqrt();
     if len <= 1e-6 {
@@ -350,58 +343,6 @@ fn quat_from_axis_angle(axis: [f32; 3], angle: f32) -> xr::Quaternionf {
 }
 
 #[cfg(feature = "xr")]
-fn quat_from_yaw(yaw: f32) -> xr::Quaternionf {
-    let half = yaw * 0.5;
-    quat_normalize(xr::Quaternionf {
-        x: 0.0,
-        y: half.sin(),
-        z: 0.0,
-        w: half.cos(),
-    })
-}
-
-#[cfg(feature = "xr")]
-fn average_pose(left: &xr::Posef, right: &xr::Posef) -> xr::Posef {
-    let mut right_orientation = right.orientation;
-    if quat_dot(&left.orientation, &right_orientation) < 0.0 {
-        right_orientation.x = -right_orientation.x;
-        right_orientation.y = -right_orientation.y;
-        right_orientation.z = -right_orientation.z;
-        right_orientation.w = -right_orientation.w;
-    }
-    xr::Posef {
-        orientation: quat_normalize(xr::Quaternionf {
-            x: left.orientation.x + right_orientation.x,
-            y: left.orientation.y + right_orientation.y,
-            z: left.orientation.z + right_orientation.z,
-            w: left.orientation.w + right_orientation.w,
-        }),
-        position: xr::Vector3f {
-            x: (left.position.x + right.position.x) * 0.5,
-            y: (left.position.y + right.position.y) * 0.5,
-            z: (left.position.z + right.position.z) * 0.5,
-        },
-    }
-}
-
-#[cfg(feature = "xr")]
-fn leveled_pose(pose: &xr::Posef) -> xr::Posef {
-    let forward = rotate_vec3(&pose.orientation, [0.0, 0.0, -1.0]);
-    let horizontal = [forward[0], 0.0, forward[2]];
-    let horizontal_len = (horizontal[0] * horizontal[0] + horizontal[2] * horizontal[2]).sqrt();
-    let orientation = if horizontal_len > 1e-4 {
-        let yaw = (-horizontal[0]).atan2(-horizontal[2]);
-        quat_from_yaw(yaw)
-    } else {
-        xr::Quaternionf::IDENTITY
-    };
-    xr::Posef {
-        orientation,
-        position: pose.position,
-    }
-}
-
-#[cfg(feature = "xr")]
 fn pointer_orientation(pose: &xr::Posef) -> xr::Quaternionf {
     #[cfg(target_os = "android")]
     {
@@ -416,37 +357,6 @@ fn pointer_orientation(pose: &xr::Posef) -> xr::Quaternionf {
     {
         pose.orientation
     }
-}
-
-#[cfg(feature = "xr")]
-fn compose_pose(parent: &xr::Posef, local: &xr::Posef) -> xr::Posef {
-    let rotated = rotate_vec3(
-        &parent.orientation,
-        [local.position.x, local.position.y, local.position.z],
-    );
-    xr::Posef {
-        orientation: quat_mul(&parent.orientation, &local.orientation),
-        position: xr::Vector3f {
-            x: parent.position.x + rotated[0],
-            y: parent.position.y + rotated[1],
-            z: parent.position.z + rotated[2],
-        },
-    }
-}
-
-#[cfg(feature = "xr")]
-fn xr_world_panel_pose(frame_data: &crate::xr_session::XrFrameData) -> xr::Posef {
-    let head_pose = if frame_data.views.len() >= 2 {
-        average_pose(&frame_data.views[0].pose, &frame_data.views[1].pose)
-    } else {
-        frame_data
-            .views
-            .first()
-            .map(|view| view.pose)
-            .unwrap_or(xr::Posef::IDENTITY)
-    };
-    let head_pose = leveled_pose(&head_pose);
-    compose_pose(&head_pose, &xr_panel_local_pose())
 }
 
 #[cfg(feature = "xr")]
@@ -910,8 +820,6 @@ impl ApplicationHandler for App {
             xr_panel_depth_texture: None,
             #[cfg(feature = "xr")]
             xr_panel_depth_size: (0, 0),
-            #[cfg(all(feature = "xr", target_os = "android"))]
-            xr_world_panel_pose: None,
             #[cfg(feature = "xr")]
             xr_panel_target: None,
             #[cfg(feature = "xr")]
@@ -1289,11 +1197,6 @@ impl ApplicationHandler for App {
                                         if let Err(e) = xr.sync_input() {
                                             log::error!("XR input sync error: {:?}", e);
                                         }
-                                        #[cfg(target_os = "android")]
-                                        if s.xr_world_panel_pose.is_none() {
-                                            s.xr_world_panel_pose =
-                                                Some(xr_world_panel_pose(&frame_data));
-                                        }
                                         let select_down = xr.select_pressed().unwrap_or(false);
                                         let scroll_axis = xr.scroll_axis().unwrap_or(0.0);
                                         if scroll_axis != 0.0 {
@@ -1316,28 +1219,12 @@ impl ApplicationHandler for App {
                                             }
                                         };
                                         if let Some((mx, my)) = pointer_pose.and_then(|pose| {
-                                            #[cfg(target_os = "android")]
-                                            {
-                                                s.xr_world_panel_pose.as_ref().and_then(
-                                                    |panel_pose| {
-                                                        xr_panel_pointer(
-                                                            &pose,
-                                                            panel_pose,
-                                                            s.view_size,
-                                                            s.view_scale_factor,
-                                                        )
-                                                    },
-                                                )
-                                            }
-                                            #[cfg(not(target_os = "android"))]
-                                            {
-                                                xr_panel_pointer(
-                                                    &pose,
-                                                    &xr_panel_local_pose(),
-                                                    s.view_size,
-                                                    s.view_scale_factor,
-                                                )
-                                            }
+                                            xr_panel_pointer(
+                                                &pose,
+                                                &xr_panel_local_pose(),
+                                                s.view_size,
+                                                s.view_scale_factor,
+                                            )
                                         }) {
                                             unsafe {
                                                 CURSOR_POS = (mx, my);
@@ -1523,7 +1410,7 @@ impl ApplicationHandler for App {
                                                             if let Err(e) = xr
                                                                 .release_both_and_end_frame(
                                                                     &frame_data,
-                                                                    s.xr_world_panel_pose.unwrap(),
+                                                                    xr_panel_local_pose(),
                                                                     xr_panel_layer_size(
                                                                         s.view_size,
                                                                     ),
@@ -1672,10 +1559,6 @@ impl ApplicationHandler for App {
                             s.xr_select_down = false;
                             s.xr_pointer_pos = None;
                             s.xr_exit_down = false;
-                            #[cfg(target_os = "android")]
-                            {
-                                s.xr_world_panel_pose = None;
-                            }
                             log::info!("XR session stopped");
                         } else {
                             self.state.as_mut().unwrap().xr_session = Some(xr);
