@@ -147,9 +147,9 @@ const XR_PANEL_RENDER_HEIGHT: u32 = 1728;
 #[cfg(feature = "xr")]
 const XR_SCROLL_SPEED: f32 = 14.0;
 #[cfg(all(feature = "xr", target_os = "android"))]
-const XR_PANEL_POINTER_BIAS_X: f32 = 0.00;
+const XR_POINTER_YAW_BIAS_DEGREES: f32 = 0.0;
 #[cfg(all(feature = "xr", target_os = "android"))]
-const XR_PANEL_POINTER_BIAS_Y: f32 = 0.00;
+const XR_POINTER_PITCH_BIAS_DEGREES: f32 = 0.0;
 
 #[cfg(feature = "xr")]
 fn xr_panel_view_size() -> winit::dpi::PhysicalSize<u32> {
@@ -334,6 +334,22 @@ fn quat_mul(a: &xr::Quaternionf, b: &xr::Quaternionf) -> xr::Quaternionf {
 }
 
 #[cfg(feature = "xr")]
+fn quat_from_axis_angle(axis: [f32; 3], angle: f32) -> xr::Quaternionf {
+    let axis_len = (axis[0] * axis[0] + axis[1] * axis[1] + axis[2] * axis[2]).sqrt();
+    if axis_len <= 1e-6 {
+        return xr::Quaternionf::IDENTITY;
+    }
+    let half = angle * 0.5;
+    let scale = half.sin() / axis_len;
+    quat_normalize(xr::Quaternionf {
+        x: axis[0] * scale,
+        y: axis[1] * scale,
+        z: axis[2] * scale,
+        w: half.cos(),
+    })
+}
+
+#[cfg(feature = "xr")]
 fn quat_from_yaw(yaw: f32) -> xr::Quaternionf {
     let half = yaw * 0.5;
     quat_normalize(xr::Quaternionf {
@@ -386,6 +402,23 @@ fn leveled_pose(pose: &xr::Posef) -> xr::Posef {
 }
 
 #[cfg(feature = "xr")]
+fn pointer_orientation(pose: &xr::Posef) -> xr::Quaternionf {
+    #[cfg(target_os = "android")]
+    {
+        let yaw_correction =
+            quat_from_axis_angle([0.0, 1.0, 0.0], XR_POINTER_YAW_BIAS_DEGREES.to_radians());
+        let pitch_correction =
+            quat_from_axis_angle([1.0, 0.0, 0.0], XR_POINTER_PITCH_BIAS_DEGREES.to_radians());
+        let local_correction = quat_mul(&yaw_correction, &pitch_correction);
+        return quat_mul(&pose.orientation, &local_correction);
+    }
+    #[cfg(not(target_os = "android"))]
+    {
+        pose.orientation
+    }
+}
+
+#[cfg(feature = "xr")]
 fn compose_pose(parent: &xr::Posef, local: &xr::Posef) -> xr::Posef {
     let rotated = rotate_vec3(
         &parent.orientation,
@@ -432,9 +465,10 @@ fn xr_panel_pointer(
             pose.position.z - panel_pose.position.z,
         ],
     );
+    let pointer_orientation = pointer_orientation(pose);
     let dir = rotate_vec3(
         &inv_panel_orientation,
-        rotate_vec3(&pose.orientation, [0.0, 0.0, -1.0]),
+        rotate_vec3(&pointer_orientation, [0.0, 0.0, -1.0]),
     );
     if dir[2].abs() < 1e-4 {
         return None;
@@ -443,12 +477,6 @@ fn xr_panel_pointer(
     if t <= 0.0 {
         return None;
     }
-    #[cfg(target_os = "android")]
-    let (hit_x, hit_y) = (
-        origin[0] + dir[0] * t - XR_PANEL_POINTER_BIAS_X * XR_PANEL_WIDTH,
-        origin[1] + dir[1] * t - XR_PANEL_POINTER_BIAS_Y * xr_panel_height(target_size),
-    );
-    #[cfg(not(target_os = "android"))]
     let (hit_x, hit_y) = (origin[0] + dir[0] * t, origin[1] + dir[1] * t);
     let panel_half_width = XR_PANEL_WIDTH * 0.5;
     let panel_half_height = xr_panel_height(target_size) * 0.5;
