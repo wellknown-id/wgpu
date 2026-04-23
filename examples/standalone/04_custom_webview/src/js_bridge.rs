@@ -85,6 +85,7 @@ pub struct JsBridge {
 
 pub struct SharedState {
     pub dom_dirty: bool,
+    pub dirty_props: Vec<(String, String)>,
     pub text_overrides: HashMap<String, String>,
     pub style_overrides: HashMap<String, HashMap<String, String>>,
     pub canvas_ops: HashMap<String, Vec<CanvasDrawOp>>,
@@ -107,6 +108,7 @@ impl JsBridge {
 
         let shared = Rc::new(RefCell::new(SharedState {
             dom_dirty: false,
+            dirty_props: Vec::new(),
             text_overrides: HashMap::new(),
             style_overrides: HashMap::new(),
             canvas_ops: HashMap::new(),
@@ -156,7 +158,8 @@ impl JsBridge {
                     ctx.clone(),
                     move |_ctx: rquickjs::Ctx<'_>, id: String, text: String| {
                         let mut s = shared_clone.borrow_mut();
-                        s.text_overrides.insert(id, text);
+                        s.text_overrides.insert(id.clone(), text);
+                        s.dirty_props.push((id, "textContent".to_string()));
                         s.dom_dirty = true;
                     },
                 )?,
@@ -169,9 +172,10 @@ impl JsBridge {
                     ctx.clone(),
                     move |_ctx: rquickjs::Ctx<'_>, id: String, prop: String, value: String| {
                         let mut s = shared_clone.borrow_mut();
-                        let map = s.style_overrides.entry(id).or_default();
+                        let map = s.style_overrides.entry(id.clone()).or_default();
                         if map.get(&prop).map(|v| v.as_str()) != Some(value.as_str()) {
-                            map.insert(prop, value);
+                            map.insert(prop.clone(), value);
+                            s.dirty_props.push((id, prop));
                             s.dom_dirty = true;
                         }
                     },
@@ -1302,8 +1306,35 @@ impl JsBridge {
         self.shared.borrow().dom_dirty
     }
 
+    pub fn is_visual_only_dirty(&self) -> bool {
+        let s = self.shared.borrow();
+        if !s.dom_dirty || s.dirty_props.is_empty() {
+            return false;
+        }
+        s.dirty_props.iter().all(|(_, prop)| {
+            matches!(
+                prop.as_str(),
+                "left" | "top" | "backgroundColor" | "background-color" | "opacity" | "textContent"
+            )
+        })
+    }
+
+    pub fn dirty_elements(&self) -> Vec<String> {
+        let s = self.shared.borrow();
+        let mut elems: Vec<String> = s.dirty_props.iter().map(|(id, _)| id.clone()).collect();
+        elems.sort();
+        elems.dedup();
+        elems
+    }
+
+    pub fn style_overrides_ref(&self) -> std::cell::Ref<'_, HashMap<String, HashMap<String, String>>> {
+        std::cell::Ref::map(self.shared.borrow(), |s| &s.style_overrides)
+    }
+
     pub fn clear_dirty(&mut self) {
-        self.shared.borrow_mut().dom_dirty = false;
+        let mut s = self.shared.borrow_mut();
+        s.dom_dirty = false;
+        s.dirty_props.clear();
     }
 
     pub fn canvas_ops(&self) -> HashMap<String, Vec<CanvasDrawOp>> {
@@ -1316,6 +1347,10 @@ impl JsBridge {
 
     pub fn update_element_rects(&self, rects: HashMap<String, crate::types::LayoutRect>) {
         self.shared.borrow_mut().element_rects = rects;
+    }
+
+    pub fn element_rects(&self) -> HashMap<String, crate::types::LayoutRect> {
+        self.shared.borrow().element_rects.clone()
     }
 
     pub fn set_scroll_y(&self, scroll_y: f32) {

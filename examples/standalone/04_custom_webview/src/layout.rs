@@ -124,6 +124,35 @@ impl LayoutTree {
         collect_rects_recursive(&self.taffy, &self.root, 0.0, 0.0, &mut map);
         map
     }
+
+    pub fn collect_descendant_ids(&self, parent_id: &str) -> Vec<String> {
+        let mut result = Vec::new();
+        if let Some(node) = find_node_by_id(&self.root, parent_id) {
+            gather_child_ids(node, &mut result);
+        }
+        result
+    }
+}
+
+fn find_node_by_id<'a>(node: &'a LayoutNode, id: &str) -> Option<&'a LayoutNode> {
+    if node.id.as_deref() == Some(id) {
+        return Some(node);
+    }
+    for child in &node.children {
+        if let Some(found) = find_node_by_id(child, id) {
+            return Some(found);
+        }
+    }
+    None
+}
+
+fn gather_child_ids(node: &LayoutNode, result: &mut Vec<String>) {
+    for child in &node.children {
+        if let Some(ref id) = child.id {
+            result.push(id.clone());
+        }
+        gather_child_ids(child, result);
+    }
 }
 
 fn collect_rects_recursive(

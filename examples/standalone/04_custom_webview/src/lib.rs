@@ -65,6 +65,7 @@ pub struct WebviewState {
     pub layout: LayoutTree,
     pub static_commands: Vec<DrawCommand>,
     pub ghost_commands: Vec<DrawCommand>,
+    pub cmd_index: std::collections::HashMap<String, Vec<usize>>,
     pub clear_color: [f32; 4],
     pub current_asset: String,
     pub html_source: String,
@@ -79,6 +80,7 @@ pub struct WebviewState {
     pub mouse_buttons: i32,
     pub text_cache: TextMeasureCache,
     pub ghost_pos: Option<(f32, f32)>,
+    pub prev_style_positions: std::collections::HashMap<String, (f32, f32)>,
     pub last_touch_y: Option<f32>,
     pub touch_default_prevented: bool,
     #[cfg(feature = "xr")]
@@ -464,8 +466,10 @@ impl App {
         let (s, g) = Self::split_commands(all_commands);
         state.static_commands = s;
         state.ghost_commands = g;
+        state.cmd_index = Self::build_cmd_index(&state.static_commands, &state.ghost_commands);
         state.clear_color = styled.style.background_color;
         state.ghost_pos = None;
+        state.prev_style_positions.clear();
         state.gpu.static_dirty = true;
         #[cfg(feature = "js")]
         {
@@ -473,6 +477,14 @@ impl App {
                 .js
                 .update_element_rects(state.layout.collect_element_rects());
             state.js.set_scroll_y(state.scroll_y);
+            let style_ov = state.js.style_overrides();
+            for (id, props) in &style_ov {
+                let left = props.iter().find(|(k, _)| k == "left").and_then(|(_, v)| css_engine::parse_length(v));
+                let top = props.iter().find(|(k, _)| k == "top").and_then(|(_, v)| css_engine::parse_length(v));
+                if let (Some(l), Some(t)) = (left, top) {
+                    state.prev_style_positions.insert(id.clone(), (l, t));
+                }
+            }
             state.js.clear_dirty();
         }
     }
@@ -538,6 +550,124 @@ impl App {
         }
     }
 
+    #[cfg(feature = "js")]
+    pub fn try_patch_visual(&mut self) -> bool {
+        let state = self.state.as_mut().unwrap();
+        if !state.js.is_visual_only_dirty() {
+            return false;
+        }
+        let dirty_elements = state.js.dirty_elements();
+
+        struct PatchData {
+            elem_id: String,
+            new_left: Option<f32>,
+            new_top: Option<f32>,
+            new_bg: Option<[f32; 4]>,
+            new_text: Option<String>,
+        }
+
+        let patches: Vec<PatchData> = {
+            let style_ov = state.js.style_overrides_ref();
+            let text_ov = state.js.text_overrides();
+            dirty_elements
+                .iter()
+                .map(|elem_id| {
+                    let (new_left, new_top, new_bg) = if let Some(props) = style_ov.get(elem_id) {
+                        (
+                            props.get("left").and_then(|v| css_engine::parse_length(v)),
+                            props.get("top").and_then(|v| css_engine::parse_length(v)),
+                            props.get("background-color").and_then(|v| css_engine::parse_color(v)),
+                        )
+                    } else {
+                        (None, None, None)
+                    };
+                    let new_text = text_ov.get(elem_id).cloned();
+                    PatchData { elem_id: elem_id.clone(), new_left, new_top, new_bg, new_text }
+                })
+                .collect()
+        };
+
+        let static_len = state.static_commands.len();
+
+        for p in &patches {
+            let prev = state.prev_style_positions.get(&p.elem_id).copied();
+            let (dx, dy) = match (p.new_left, p.new_top, prev) {
+                (Some(nx), Some(ny), Some((ox, oy))) => (nx - ox, ny - oy),
+                _ => (0.0, 0.0),
+            };
+
+            if p.new_left.is_some() || p.new_top.is_some() {
+                state.prev_style_positions.insert(
+                    p.elem_id.clone(),
+                    (
+                        p.new_left.unwrap_or(prev.map(|v| v.0).unwrap_or(0.0)),
+                        p.new_top.unwrap_or(prev.map(|v| v.1).unwrap_or(0.0)),
+                    ),
+                );
+            }
+
+            let has_position_change = dx != 0.0 || dy != 0.0;
+
+            if has_position_change {
+                let mut all_indices: Vec<usize> = Vec::new();
+                if let Some(indices) = state.cmd_index.get(&p.elem_id) {
+                    all_indices.extend(indices);
+                }
+                for desc_id in state.layout.collect_descendant_ids(&p.elem_id) {
+                    if let Some(indices) = state.cmd_index.get(&desc_id) {
+                        all_indices.extend(indices);
+                    }
+                }
+                for &idx in &all_indices {
+                    let cmd = if idx < static_len {
+                        &mut state.static_commands[idx]
+                    } else {
+                        &mut state.ghost_commands[idx - static_len]
+                    };
+                    match cmd {
+                        DrawCommand::Rect { rect, .. } | DrawCommand::Border { rect, .. } => {
+                            rect.x += dx;
+                            rect.y += dy;
+                        }
+                        DrawCommand::Text { x, y, .. } => {
+                            *x += dx;
+                            *y += dy;
+                        }
+                        _ => {}
+                    }
+                }
+            }
+
+            if p.new_bg.is_some() || p.new_text.is_some() {
+                if let Some(indices) = state.cmd_index.get(&p.elem_id).cloned() {
+                    for idx in &indices {
+                        let cmd = if *idx < static_len {
+                            &mut state.static_commands[*idx]
+                        } else {
+                            &mut state.ghost_commands[*idx - static_len]
+                        };
+
+                        if let Some(bg) = p.new_bg {
+                            if let DrawCommand::Rect { color, .. } = cmd {
+                                *color = bg;
+                            }
+                        }
+
+                        if let Some(ref new_text) = p.new_text {
+                            if let DrawCommand::Text { text, .. } = cmd {
+                                *text = new_text.clone();
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        state.gpu.static_dirty = true;
+        state.js.clear_dirty();
+        true
+    }
+
     pub fn split_commands(commands: Vec<DrawCommand>) -> (Vec<DrawCommand>, Vec<DrawCommand>) {
         let mut static_cmds = Vec::new();
         let mut ghost_cmds = Vec::new();
@@ -557,6 +687,26 @@ impl App {
             }
         }
         (static_cmds, ghost_cmds)
+    }
+
+    fn build_cmd_index(
+        static_cmds: &[DrawCommand],
+        ghost_cmds: &[DrawCommand],
+    ) -> std::collections::HashMap<String, Vec<usize>> {
+        let mut index: std::collections::HashMap<String, Vec<usize>> =
+            std::collections::HashMap::new();
+        for (i, cmd) in static_cmds.iter().chain(ghost_cmds.iter()).enumerate() {
+            let id = match cmd {
+                DrawCommand::Rect { element_id, .. }
+                | DrawCommand::Border { element_id, .. }
+                | DrawCommand::Text { element_id, .. } => element_id.as_deref(),
+                _ => None,
+            };
+            if let Some(id) = id {
+                index.entry(id.to_string()).or_default().push(i);
+            }
+        }
+        index
     }
 
     #[cfg(feature = "js")]
@@ -778,6 +928,7 @@ impl ApplicationHandler for App {
         );
         let all_commands = generate_draw_commands(&layout_tree, &canvas_ops);
         let (static_commands, ghost_commands) = Self::split_commands(all_commands);
+        let cmd_index = Self::build_cmd_index(&static_commands, &ghost_commands);
 
         let clear_color = styled.style.background_color;
 
@@ -788,6 +939,7 @@ impl ApplicationHandler for App {
             layout: layout_tree,
             static_commands,
             ghost_commands,
+            cmd_index,
             clear_color,
             current_asset: initial_asset,
             html_source,
@@ -804,6 +956,7 @@ impl ApplicationHandler for App {
             mouse_buttons: 0,
             text_cache,
             ghost_pos: None,
+            prev_style_positions: std::collections::HashMap::new(),
             last_touch_y: None,
             touch_default_prevented: false,
             #[cfg(feature = "xr")]
@@ -901,7 +1054,7 @@ impl ApplicationHandler for App {
                                 &s.layout, mx, my, s.scroll_y, 1, "mouse", 1.0, true,
                                 s.mouse_buttons, button_index,
                             );
-                            if s.js.is_dirty() {
+                            if s.js.is_dirty() && !self.try_patch_visual() {
                                 self.rebuild_layout();
                                 self.state.as_ref().unwrap().gpu.window.request_redraw();
                             }
@@ -916,7 +1069,7 @@ impl ApplicationHandler for App {
                                 &s.layout, mx, my, s.scroll_y, 1, "mouse", 0.0, true,
                                 s.mouse_buttons, button_index,
                             );
-                            if s.js.is_dirty() {
+                            if s.js.is_dirty() && !self.try_patch_visual() {
                                 self.rebuild_layout();
                                 self.state.as_ref().unwrap().gpu.window.request_redraw();
                             }
@@ -1048,7 +1201,7 @@ impl ApplicationHandler for App {
                     s.js.dispatch_pointer_move(
                         &s.layout, mx, my, s.scroll_y, 1, "mouse", pressure, true, buttons, 0,
                     );
-                    if s.js.is_dirty() {
+                    if s.js.is_dirty() && !self.try_patch_visual() {
                         self.rebuild_layout();
                     }
                 }

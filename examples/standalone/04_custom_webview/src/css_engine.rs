@@ -400,7 +400,7 @@ fn parse_angle(s: &str) -> Option<f32> {
     s.parse().ok()
 }
 
-fn parse_length(s: &str) -> Option<f32> {
+pub fn parse_length(s: &str) -> Option<f32> {
     let s = s.trim();
     if let Some(v) = s.strip_suffix("px") {
         return v.trim().parse().ok();
@@ -417,7 +417,7 @@ fn parse_length(s: &str) -> Option<f32> {
     s.parse().ok()
 }
 
-fn parse_color(s: &str) -> Option<[f32; 4]> {
+pub fn parse_color(s: &str) -> Option<[f32; 4]> {
     let s = s.trim();
     if s.starts_with('#') {
         let hex = &s[1..];

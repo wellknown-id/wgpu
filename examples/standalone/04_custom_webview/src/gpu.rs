@@ -624,6 +624,7 @@ pub struct GpuState {
     pub queue: Arc<wgpu::Queue>,
     pub surface: wgpu::Surface<'static>,
     pub surface_format: wgpu::TextureFormat,
+    present_mode: wgpu::PresentMode,
     render_format: wgpu::TextureFormat,
     pub size: winit::dpi::PhysicalSize<u32>,
     pub scale_factor: f64,
@@ -819,6 +820,11 @@ impl GpuState {
         } else {
             vec![]
         };
+        let present_mode = if caps.present_modes.contains(&wgpu::PresentMode::Mailbox) {
+            wgpu::PresentMode::Mailbox
+        } else {
+            wgpu::PresentMode::AutoVsync
+        };
 
         surface.configure(
             &device,
@@ -827,10 +833,10 @@ impl GpuState {
                 format: surface_format,
                 width: size.width.max(1),
                 height: size.height.max(1),
-                present_mode: wgpu::PresentMode::AutoVsync,
+                present_mode,
                 alpha_mode: wgpu::CompositeAlphaMode::Auto,
                 view_formats: view_formats.clone(),
-                desired_maximum_frame_latency: 2,
+                desired_maximum_frame_latency: 1,
             },
         );
 
@@ -1422,6 +1428,7 @@ impl GpuState {
             queue,
             surface,
             surface_format,
+            present_mode,
             render_format,
             size,
             screen_buffer,
@@ -1472,10 +1479,10 @@ impl GpuState {
                     format: self.surface_format,
                     width: new_size.width,
                     height: new_size.height,
-                    present_mode: wgpu::PresentMode::AutoVsync,
+                    present_mode: self.present_mode,
                     alpha_mode: wgpu::CompositeAlphaMode::Auto,
                     view_formats,
-                    desired_maximum_frame_latency: 2,
+                    desired_maximum_frame_latency: 1,
                 },
             );
             self.depth_view = create_depth_view(&self.device, new_size.width, new_size.height);
