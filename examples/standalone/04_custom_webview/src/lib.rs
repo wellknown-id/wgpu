@@ -180,8 +180,8 @@ fn xr_panel_local_pose() -> xr::Posef {
     xr::Posef {
         orientation: xr::Quaternionf::IDENTITY,
         position: xr::Vector3f {
-            x: 0.08,
-            y: 0.0,
+            x: 0.04,
+            y: -0.03,
             z: -XR_PANEL_DISTANCE,
         },
     }
@@ -376,6 +376,17 @@ fn quat_mul(a: &xr::Quaternionf, b: &xr::Quaternionf) -> xr::Quaternionf {
 }
 
 #[cfg(feature = "xr")]
+fn quat_from_yaw(yaw: f32) -> xr::Quaternionf {
+    let half = yaw * 0.5;
+    quat_normalize(xr::Quaternionf {
+        x: 0.0,
+        y: half.sin(),
+        z: 0.0,
+        w: half.cos(),
+    })
+}
+
+#[cfg(feature = "xr")]
 fn average_pose(left: &xr::Posef, right: &xr::Posef) -> xr::Posef {
     let mut right_orientation = right.orientation;
     if quat_dot(&left.orientation, &right_orientation) < 0.0 {
@@ -396,6 +407,23 @@ fn average_pose(left: &xr::Posef, right: &xr::Posef) -> xr::Posef {
             y: (left.position.y + right.position.y) * 0.5,
             z: (left.position.z + right.position.z) * 0.5,
         },
+    }
+}
+
+#[cfg(feature = "xr")]
+fn leveled_pose(pose: &xr::Posef) -> xr::Posef {
+    let forward = rotate_vec3(&pose.orientation, [0.0, 0.0, -1.0]);
+    let horizontal = [forward[0], 0.0, forward[2]];
+    let horizontal_len = (horizontal[0] * horizontal[0] + horizontal[2] * horizontal[2]).sqrt();
+    let orientation = if horizontal_len > 1e-4 {
+        let yaw = (-horizontal[0]).atan2(-horizontal[2]);
+        quat_from_yaw(yaw)
+    } else {
+        xr::Quaternionf::IDENTITY
+    };
+    xr::Posef {
+        orientation,
+        position: pose.position,
     }
 }
 
@@ -426,6 +454,7 @@ fn xr_world_panel_pose(frame_data: &crate::xr_session::XrFrameData) -> xr::Posef
             .map(|view| view.pose)
             .unwrap_or(xr::Posef::IDENTITY)
     };
+    let head_pose = leveled_pose(&head_pose);
     compose_pose(&head_pose, &xr_panel_local_pose())
 }
 
