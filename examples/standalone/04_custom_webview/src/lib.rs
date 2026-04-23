@@ -89,6 +89,10 @@ pub struct WebviewState {
     #[cfg(feature = "xr")]
     pub xr_depth_size: (u32, u32),
     #[cfg(feature = "xr")]
+    pub xr_panel_depth_texture: Option<wgpu::Texture>,
+    #[cfg(feature = "xr")]
+    pub xr_panel_depth_size: (u32, u32),
+    #[cfg(feature = "xr")]
     pub xr_panel_target: Option<gpu::OffscreenRenderTarget>,
     #[cfg(feature = "xr")]
     pub page_xr_active: bool,
@@ -131,11 +135,20 @@ const XR_PANEL_DISTANCE: f32 = 1.4;
 #[cfg(feature = "xr")]
 const XR_PANEL_WIDTH: f32 = 1.45;
 #[cfg(feature = "xr")]
-const XR_PANEL_RENDER_WIDTH: u32 = 1280;
+const XR_PANEL_LOGICAL_WIDTH: u32 = 1920;
 #[cfg(feature = "xr")]
-const XR_PANEL_RENDER_HEIGHT: u32 = 720;
+const XR_PANEL_LOGICAL_HEIGHT: u32 = 1080;
+#[cfg(feature = "xr")]
+const XR_PANEL_RENDER_WIDTH: u32 = 3072;
+#[cfg(feature = "xr")]
+const XR_PANEL_RENDER_HEIGHT: u32 = 1728;
 #[cfg(feature = "xr")]
 const XR_SCROLL_SPEED: f32 = 14.0;
+
+#[cfg(feature = "xr")]
+fn xr_panel_view_size() -> winit::dpi::PhysicalSize<u32> {
+    winit::dpi::PhysicalSize::new(XR_PANEL_LOGICAL_WIDTH, XR_PANEL_LOGICAL_HEIGHT)
+}
 
 #[cfg(feature = "xr")]
 fn xr_panel_render_size() -> winit::dpi::PhysicalSize<u32> {
@@ -143,8 +156,38 @@ fn xr_panel_render_size() -> winit::dpi::PhysicalSize<u32> {
 }
 
 #[cfg(feature = "xr")]
+fn xr_panel_render_scale_factor() -> f32 {
+    XR_PANEL_RENDER_WIDTH as f32 / XR_PANEL_LOGICAL_WIDTH as f32
+}
+
+#[cfg(feature = "xr")]
 fn xr_panel_height(target_size: winit::dpi::PhysicalSize<u32>) -> f32 {
     XR_PANEL_WIDTH * target_size.height as f32 / target_size.width.max(1) as f32
+}
+
+#[cfg(feature = "xr")]
+fn xr_panel_layer_size(target_size: winit::dpi::PhysicalSize<u32>) -> xr::Extent2Df {
+    xr::Extent2Df {
+        width: XR_PANEL_WIDTH,
+        height: xr_panel_height(target_size),
+    }
+}
+
+#[cfg(feature = "xr")]
+fn xr_panel_pose() -> xr::Posef {
+    xr::Posef {
+        orientation: xr::Quaternionf {
+            x: 0.0,
+            y: 1.0,
+            z: 0.0,
+            w: 0.0,
+        },
+        position: xr::Vector3f {
+            x: 0.0,
+            y: 0.0,
+            z: -XR_PANEL_DISTANCE,
+        },
+    }
 }
 
 #[cfg(feature = "xr")]
@@ -219,7 +262,7 @@ impl App {
     fn target_view_size(&self, _gpu: &GpuState) -> winit::dpi::PhysicalSize<u32> {
         #[cfg(all(target_os = "android", feature = "xr"))]
         {
-            xr_panel_render_size()
+            xr_panel_view_size()
         }
         #[cfg(not(all(target_os = "android", feature = "xr")))]
         {
@@ -382,10 +425,7 @@ impl App {
                 s.js.dispatch_pointer_move(&s.layout, mx, my, s.scroll_y);
             }
         }
-        let should_patch = include_pointer_drag
-            && self.state.as_ref().map(|s| s.mouse_down).unwrap_or(false)
-            && self.try_patch_position();
-        if self.state.as_ref().unwrap().js.is_dirty() && !should_patch {
+        if self.state.as_ref().unwrap().js.is_dirty() {
             self.rebuild_layout();
         }
     }
@@ -402,6 +442,8 @@ impl App {
                 &state.gpu.instance,
                 &state.gpu.adapter,
                 &state.gpu.device,
+                #[cfg(target_os = "android")]
+                (xr_panel_render_size().width, xr_panel_render_size().height),
             ) {
                 Ok(session) => {
                     state.xr_session = Some(session);
@@ -633,6 +675,10 @@ impl ApplicationHandler for App {
             #[cfg(feature = "xr")]
             xr_depth_size: (0, 0),
             #[cfg(feature = "xr")]
+            xr_panel_depth_texture: None,
+            #[cfg(feature = "xr")]
+            xr_panel_depth_size: (0, 0),
+            #[cfg(feature = "xr")]
             xr_panel_target: None,
             #[cfg(feature = "xr")]
             page_xr_active: false,
@@ -665,7 +711,7 @@ impl ApplicationHandler for App {
                 state.gpu.resize(size);
                 #[cfg(all(target_os = "android", feature = "xr"))]
                 {
-                    state.view_size = xr_panel_render_size();
+                    state.view_size = xr_panel_view_size();
                     state.view_scale_factor = 1.0;
                 }
                 #[cfg(not(all(target_os = "android", feature = "xr")))]
@@ -780,7 +826,7 @@ impl ApplicationHandler for App {
                         {
                             let s = self.state.as_mut().unwrap();
                             s.js.dispatch_pointer_move(&s.layout, mx, my, s.scroll_y);
-                            if s.js.is_dirty() && !self.try_patch_position() {
+                            if s.js.is_dirty() {
                                 self.rebuild_layout();
                             }
                         }
@@ -803,12 +849,19 @@ impl ApplicationHandler for App {
                     }
                 }
             }
-            WindowEvent::CursorMoved { position, .. } => unsafe {
-                CURSOR_POS = (position.x as f32, position.y as f32);
+            WindowEvent::CursorMoved { position, .. } => {
+                let scale = self
+                    .state
+                    .as_ref()
+                    .map(|s| s.view_scale_factor as f32)
+                    .unwrap_or(1.0);
+                unsafe {
+                    CURSOR_POS = (position.x as f32 / scale, position.y as f32 / scale);
+                }
                 if self.state.as_ref().map(|s| s.mouse_down).unwrap_or(false) {
                     self.state.as_ref().unwrap().gpu.window.request_redraw();
                 }
-            },
+            }
             WindowEvent::RedrawRequested => {
                 if self.state.is_none() {
                     return;
@@ -859,291 +912,529 @@ impl ApplicationHandler for App {
                         if xr.state() == xr_session::XrState::Running {
                             let (sw, sh) = xr.swapchain_size();
                             match xr.wait_frame() {
-                                Ok(Some(frame_data)) => match xr.acquire_swapchain_image() {
-                                    Ok((texture, _idx)) => {
-                                        let s = self.state.as_mut().unwrap();
-                                        // Create per-eye views from the array texture
-                                        let left_view =
-                                            texture.create_view(&wgpu::TextureViewDescriptor {
-                                                dimension: Some(wgpu::TextureViewDimension::D2),
-                                                base_array_layer: 0,
-                                                array_layer_count: Some(1),
-                                                ..Default::default()
-                                            });
-                                        let right_view =
-                                            texture.create_view(&wgpu::TextureViewDescriptor {
-                                                dimension: Some(wgpu::TextureViewDimension::D2),
-                                                base_array_layer: 1,
-                                                array_layer_count: Some(1),
-                                                ..Default::default()
-                                            });
-
-                                        // Create or reuse depth texture
-                                        if s.xr_depth_texture.is_none()
-                                            || s.xr_depth_size != (sw, sh)
-                                        {
-                                            let dt = s.gpu.device.create_texture(
-                                                &wgpu::TextureDescriptor {
-                                                    label: Some("xr depth"),
-                                                    size: wgpu::Extent3d {
-                                                        width: sw,
-                                                        height: sh,
-                                                        depth_or_array_layers: 1,
+                                Ok(Some(frame_data)) => {
+                                    if self.state.as_ref().unwrap().page_xr_active {
+                                        match xr.acquire_swapchain_image() {
+                                            Ok((texture, _idx)) => {
+                                                let s = self.state.as_mut().unwrap();
+                                                let left_view = texture.create_view(
+                                                    &wgpu::TextureViewDescriptor {
+                                                        dimension: Some(
+                                                            wgpu::TextureViewDimension::D2,
+                                                        ),
+                                                        base_array_layer: 0,
+                                                        array_layer_count: Some(1),
+                                                        ..Default::default()
                                                     },
-                                                    mip_level_count: 1,
-                                                    sample_count: 1,
-                                                    dimension: wgpu::TextureDimension::D2,
-                                                    format: wgpu::TextureFormat::Depth24Plus,
-                                                    usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
-                                                    view_formats: &[],
-                                                },
-                                            );
-                                            s.xr_depth_texture = Some(dt);
-                                            s.xr_depth_size = (sw, sh);
-                                        }
-                                        let depth_view = s
-                                            .xr_depth_texture
-                                            .as_ref()
-                                            .unwrap()
-                                            .create_view(&Default::default());
-
-                                        if s.page_xr_active {
-                                            if let Err(e) = xr.sync_input() {
-                                                log::error!("XR input sync error: {:?}", e);
-                                            }
-                                            let exit_down = xr.exit_pressed().unwrap_or(false);
-                                            if !s.xr_exit_down && exit_down {
-                                                if let Err(e) = s.js.force_end_active_xr_session() {
-                                                    log::error!(
-                                                        "Failed to end XR session from controller: {:?}",
-                                                        e
-                                                    );
-                                                }
-                                            }
-                                            s.xr_exit_down = exit_down;
-                                            let (left_vh, right_vh, depth_vh) = {
-                                                let mut bridge = s.js.webgpu_bridge_mut();
-                                                let gpu = bridge.as_mut().unwrap();
-                                                let lvh = gpu.register_texture_view(left_view);
-                                                let rvh = gpu.register_texture_view(right_view);
-                                                let dvh = gpu.register_texture_view(depth_view);
-                                                (lvh, rvh, dvh)
-                                            };
-
-                                            let left_eye = js_bridge::XrEyeData {
-                                                tex_handle: depth_vh,
-                                                view_handle: left_vh,
-                                                width: sw,
-                                                height: sh,
-                                                proj_matrix: frame_data.views[0].projection_matrix,
-                                                view_inv_matrix: frame_data.views[0].view_matrix,
-                                            };
-                                            let right_eye = js_bridge::XrEyeData {
-                                                tex_handle: depth_vh,
-                                                view_handle: right_vh,
-                                                width: sw,
-                                                height: sh,
-                                                proj_matrix: frame_data.views[1].projection_matrix,
-                                                view_inv_matrix: frame_data.views[1].view_matrix,
-                                            };
-
-                                            s.js.set_xr_view_data(Some(js_bridge::XrViewData {
-                                                left: left_eye,
-                                                right: right_eye,
-                                            }));
-
-                                            let now_ms =
-                                                s.start_time.elapsed().as_secs_f64() * 1000.0;
-                                            s.js.tick(now_ms);
-                                            s.js.set_xr_view_data(None);
-                                            {
-                                                let mut bridge = s.js.webgpu_bridge_mut();
-                                                let gpu = bridge.as_mut().unwrap();
-                                                gpu.unregister_texture_view(left_vh);
-                                                gpu.unregister_texture_view(right_vh);
-                                                gpu.unregister_texture_view(depth_vh);
-                                            }
-                                        } else {
-                                            if let Err(e) = xr.sync_input() {
-                                                log::error!("XR input sync error: {:?}", e);
-                                            }
-                                            let select_down = xr.select_pressed().unwrap_or(false);
-                                            let scroll_axis = xr.scroll_axis().unwrap_or(0.0);
-                                            if scroll_axis != 0.0 {
-                                                let max_scroll = Self::max_scroll(s);
-                                                s.scroll_y = (s.scroll_y
-                                                    - scroll_axis * XR_SCROLL_SPEED)
-                                                    .clamp(0.0, max_scroll);
-                                                s.js.set_scroll_y(s.scroll_y);
-                                            }
-                                            let pointer_pose = match xr
-                                                .pointer_pose(frame_data.predicted_display_time)
-                                            {
-                                                Ok(pose) => pose,
-                                                Err(e) => {
-                                                    log::error!(
-                                                        "XR pointer pose lookup error: {:?}",
-                                                        e
-                                                    );
-                                                    None
-                                                }
-                                            };
-                                            if let Some((mx, my)) = pointer_pose.and_then(|pose| {
-                                                xr_panel_pointer(
-                                                    &pose,
-                                                    s.view_size,
-                                                    s.view_scale_factor,
-                                                )
-                                            }) {
-                                                unsafe {
-                                                    CURSOR_POS = (mx, my);
-                                                }
-                                                s.xr_pointer_pos = Some((mx, my));
-                                                s.js.dispatch_pointer_move(
-                                                    &s.layout, mx, my, s.scroll_y,
                                                 );
-                                            } else if !select_down {
-                                                s.xr_pointer_pos = None;
-                                            }
-                                            if !s.xr_select_down && select_down {
-                                                if let Some((mx, my)) = s.xr_pointer_pos {
-                                                    let y = my + s.scroll_y;
-                                                    let hit = renderer::hit_test(&s.layout, mx, y);
-                                                    if let Some(href) =
-                                                        hit.and_then(|hit| hit.href.clone())
+                                                let right_view = texture.create_view(
+                                                    &wgpu::TextureViewDescriptor {
+                                                        dimension: Some(
+                                                            wgpu::TextureViewDimension::D2,
+                                                        ),
+                                                        base_array_layer: 1,
+                                                        array_layer_count: Some(1),
+                                                        ..Default::default()
+                                                    },
+                                                );
+
+                                                if s.xr_depth_texture.is_none()
+                                                    || s.xr_depth_size != (sw, sh)
+                                                {
+                                                    let dt = s.gpu.device.create_texture(
+                                                        &wgpu::TextureDescriptor {
+                                                            label: Some("xr depth"),
+                                                            size: wgpu::Extent3d {
+                                                                width: sw,
+                                                                height: sh,
+                                                                depth_or_array_layers: 1,
+                                                            },
+                                                            mip_level_count: 1,
+                                                            sample_count: 1,
+                                                            dimension: wgpu::TextureDimension::D2,
+                                                            format: wgpu::TextureFormat::Depth24Plus,
+                                                            usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+                                                            view_formats: &[],
+                                                        },
+                                                    );
+                                                    s.xr_depth_texture = Some(dt);
+                                                    s.xr_depth_size = (sw, sh);
+                                                }
+                                                let depth_view = s
+                                                    .xr_depth_texture
+                                                    .as_ref()
+                                                    .unwrap()
+                                                    .create_view(&Default::default());
+
+                                                if let Err(e) = xr.sync_input() {
+                                                    log::error!("XR input sync error: {:?}", e);
+                                                }
+                                                let exit_down = xr.exit_pressed().unwrap_or(false);
+                                                if !s.xr_exit_down && exit_down {
+                                                    if let Err(e) =
+                                                        s.js.force_end_active_xr_session()
                                                     {
-                                                        xr_navigation = Some(href);
-                                                    } else {
-                                                        s.js.dispatch_pointer_down(
-                                                            &s.layout, mx, my, s.scroll_y,
+                                                        log::error!(
+                                                            "Failed to end XR session from controller: {:?}",
+                                                            e
                                                         );
                                                     }
                                                 }
+                                                s.xr_exit_down = exit_down;
+                                                let (left_vh, right_vh, depth_vh) = {
+                                                    let mut bridge = s.js.webgpu_bridge_mut();
+                                                    let gpu = bridge.as_mut().unwrap();
+                                                    let lvh = gpu.register_texture_view(left_view);
+                                                    let rvh = gpu.register_texture_view(right_view);
+                                                    let dvh = gpu.register_texture_view(depth_view);
+                                                    (lvh, rvh, dvh)
+                                                };
+
+                                                let left_eye = js_bridge::XrEyeData {
+                                                    tex_handle: depth_vh,
+                                                    view_handle: left_vh,
+                                                    width: sw,
+                                                    height: sh,
+                                                    proj_matrix: frame_data.views[0]
+                                                        .projection_matrix,
+                                                    view_inv_matrix: frame_data.views[0]
+                                                        .view_matrix,
+                                                };
+                                                let right_eye = js_bridge::XrEyeData {
+                                                    tex_handle: depth_vh,
+                                                    view_handle: right_vh,
+                                                    width: sw,
+                                                    height: sh,
+                                                    proj_matrix: frame_data.views[1]
+                                                        .projection_matrix,
+                                                    view_inv_matrix: frame_data.views[1]
+                                                        .view_matrix,
+                                                };
+
+                                                s.js.set_xr_view_data(Some(
+                                                    js_bridge::XrViewData {
+                                                        left: left_eye,
+                                                        right: right_eye,
+                                                    },
+                                                ));
+
+                                                let now_ms =
+                                                    s.start_time.elapsed().as_secs_f64() * 1000.0;
+                                                s.js.tick(now_ms);
+                                                s.js.set_xr_view_data(None);
+                                                {
+                                                    let mut bridge = s.js.webgpu_bridge_mut();
+                                                    let gpu = bridge.as_mut().unwrap();
+                                                    gpu.unregister_texture_view(left_vh);
+                                                    gpu.unregister_texture_view(right_vh);
+                                                    gpu.unregister_texture_view(depth_vh);
+                                                }
+
+                                                let _ = s.gpu.device.poll(wgpu::PollType::Poll);
+                                                if let Err(e) =
+                                                    xr.release_and_end_frame(&frame_data)
+                                                {
+                                                    log::error!("XR end frame error: {:?}", e);
+                                                }
+                                                xr_rendered = true;
                                             }
-                                            if s.xr_select_down && !select_down {
-                                                if let Some((mx, my)) = s.xr_pointer_pos {
-                                                    s.js.dispatch_pointer_up(
+                                            Err(e) => {
+                                                log::error!("XR acquire error: {:?}", e);
+                                                if let Err(end_err) = xr.end_frame_without_layers(
+                                                    frame_data.predicted_display_time,
+                                                ) {
+                                                    log::error!(
+                                                        "XR end frame after acquire failure error: {:?}",
+                                                        end_err
+                                                    );
+                                                }
+                                            }
+                                        }
+                                    } else {
+                                        let s = self.state.as_mut().unwrap();
+                                        if let Err(e) = xr.sync_input() {
+                                            log::error!("XR input sync error: {:?}", e);
+                                        }
+                                        let select_down = xr.select_pressed().unwrap_or(false);
+                                        let scroll_axis = xr.scroll_axis().unwrap_or(0.0);
+                                        if scroll_axis != 0.0 {
+                                            let max_scroll = Self::max_scroll(s);
+                                            s.scroll_y = (s.scroll_y
+                                                - scroll_axis * XR_SCROLL_SPEED)
+                                                .clamp(0.0, max_scroll);
+                                            s.js.set_scroll_y(s.scroll_y);
+                                        }
+                                        let pointer_pose = match xr
+                                            .pointer_pose(frame_data.predicted_display_time)
+                                        {
+                                            Ok(pose) => pose,
+                                            Err(e) => {
+                                                log::error!(
+                                                    "XR pointer pose lookup error: {:?}",
+                                                    e
+                                                );
+                                                None
+                                            }
+                                        };
+                                        if let Some((mx, my)) = pointer_pose.and_then(|pose| {
+                                            xr_panel_pointer(
+                                                &pose,
+                                                s.view_size,
+                                                s.view_scale_factor,
+                                            )
+                                        }) {
+                                            unsafe {
+                                                CURSOR_POS = (mx, my);
+                                            }
+                                            s.xr_pointer_pos = Some((mx, my));
+                                            s.js.dispatch_pointer_move(
+                                                &s.layout, mx, my, s.scroll_y,
+                                            );
+                                        } else if !select_down {
+                                            s.xr_pointer_pos = None;
+                                        }
+                                        if !s.xr_select_down && select_down {
+                                            if let Some((mx, my)) = s.xr_pointer_pos {
+                                                let y = my + s.scroll_y;
+                                                let hit = renderer::hit_test(&s.layout, mx, y);
+                                                if let Some(href) =
+                                                    hit.and_then(|hit| hit.href.clone())
+                                                {
+                                                    xr_navigation = Some(href);
+                                                } else {
+                                                    s.js.dispatch_pointer_down(
                                                         &s.layout, mx, my, s.scroll_y,
                                                     );
                                                 }
                                             }
-                                            s.xr_select_down = select_down;
-                                            s.xr_exit_down = false;
-
-                                            let now_ms =
-                                                s.start_time.elapsed().as_secs_f64() * 1000.0;
-                                            s.js.tick(now_ms);
-                                            if s.js.is_dirty() {
-                                                Self::rebuild_layout_state(s);
-                                            }
-
-                                            let recreate_target = s
-                                                .xr_panel_target
-                                                .as_ref()
-                                                .map(|target| target.size != s.view_size)
-                                                .unwrap_or(true);
-                                            if recreate_target {
-                                                s.xr_panel_target =
-                                                    Some(s.gpu.create_render_target(
-                                                        s.view_size.width,
-                                                        s.view_size.height,
-                                                    ));
-                                            }
-
-                                            let mut overlay_commands = s.ghost_commands.clone();
+                                        }
+                                        if s.xr_select_down && !select_down {
                                             if let Some((mx, my)) = s.xr_pointer_pos {
-                                                overlay_commands.push(DrawCommand::Rect {
-                                                    rect: types::LayoutRect {
-                                                        x: mx - 8.0,
-                                                        y: my - 8.0,
-                                                        w: 16.0,
-                                                        h: 16.0,
-                                                    },
-                                                    color: [1.0, 1.0, 1.0, 0.2],
-                                                    border_radius: 8.0,
-                                                    element_id: None,
-                                                    transform: types::mat4_identity(),
-                                                    is_fixed: true,
-                                                });
-                                                overlay_commands.push(DrawCommand::Border {
-                                                    rect: types::LayoutRect {
-                                                        x: mx - 8.0,
-                                                        y: my - 8.0,
-                                                        w: 16.0,
-                                                        h: 16.0,
-                                                    },
-                                                    color: [1.0, 1.0, 1.0, 0.9],
-                                                    width: 2.0,
-                                                    radius: 8.0,
-                                                    element_id: None,
-                                                    transform: types::mat4_identity(),
-                                                    is_fixed: true,
-                                                });
+                                                s.js.dispatch_pointer_up(
+                                                    &s.layout, mx, my, s.scroll_y,
+                                                );
+                                            }
+                                        }
+                                        s.xr_select_down = select_down;
+                                        s.xr_exit_down = false;
+
+                                        let now_ms = s.start_time.elapsed().as_secs_f64() * 1000.0;
+                                        s.js.tick(now_ms);
+                                        if s.js.is_dirty() {
+                                            Self::rebuild_layout_state(s);
+                                        }
+
+                                        let mut overlay_commands = s.ghost_commands.clone();
+                                        if let Some((mx, my)) = s.xr_pointer_pos {
+                                            overlay_commands.push(DrawCommand::Rect {
+                                                rect: types::LayoutRect {
+                                                    x: mx - 8.0,
+                                                    y: my - 8.0,
+                                                    w: 16.0,
+                                                    h: 16.0,
+                                                },
+                                                color: [1.0, 1.0, 1.0, 0.2],
+                                                border_radius: 8.0,
+                                                element_id: None,
+                                                transform: types::mat4_identity(),
+                                                is_fixed: true,
+                                            });
+                                            overlay_commands.push(DrawCommand::Border {
+                                                rect: types::LayoutRect {
+                                                    x: mx - 8.0,
+                                                    y: my - 8.0,
+                                                    w: 16.0,
+                                                    h: 16.0,
+                                                },
+                                                color: [1.0, 1.0, 1.0, 0.9],
+                                                width: 2.0,
+                                                radius: 8.0,
+                                                element_id: None,
+                                                transform: types::mat4_identity(),
+                                                is_fixed: true,
+                                            });
+                                        }
+
+                                        let bridge_ref = s.js.webgpu_bridge();
+                                        let canvases: Vec<([f32; 4], &wgpu::TextureView)> =
+                                            if let Some(ref bridge) = *bridge_ref {
+                                                let elem_rects = s.layout.collect_element_rects();
+                                                bridge
+                                                    .canvas_ids()
+                                                    .iter()
+                                                    .filter_map(|id| {
+                                                        let tv =
+                                                            bridge.get_canvas_texture_view(id)?;
+                                                        let lr = elem_rects.get(id)?;
+                                                        Some(([lr.x, lr.y, lr.w, lr.h], tv))
+                                                    })
+                                                    .collect()
+                                            } else {
+                                                Vec::new()
+                                            };
+
+                                        #[cfg(target_os = "android")]
+                                        {
+                                            let (pw, ph) = xr.panel_swapchain_size();
+                                            if s.xr_depth_texture.is_none()
+                                                || s.xr_depth_size != (sw, sh)
+                                            {
+                                                let dt =
+                                                    s.gpu
+                                                        .device
+                                                        .create_texture(&wgpu::TextureDescriptor {
+                                                        label: Some("xr depth"),
+                                                        size: wgpu::Extent3d {
+                                                            width: sw,
+                                                            height: sh,
+                                                            depth_or_array_layers: 1,
+                                                        },
+                                                        mip_level_count: 1,
+                                                        sample_count: 1,
+                                                        dimension: wgpu::TextureDimension::D2,
+                                                        format: wgpu::TextureFormat::Depth24Plus,
+                                                        usage:
+                                                            wgpu::TextureUsages::RENDER_ATTACHMENT,
+                                                        view_formats: &[],
+                                                    });
+                                                s.xr_depth_texture = Some(dt);
+                                                s.xr_depth_size = (sw, sh);
+                                            }
+                                            if s.xr_panel_depth_texture.is_none()
+                                                || s.xr_panel_depth_size != (pw, ph)
+                                            {
+                                                let dt =
+                                                    s.gpu
+                                                        .device
+                                                        .create_texture(&wgpu::TextureDescriptor {
+                                                        label: Some("xr panel depth"),
+                                                        size: wgpu::Extent3d {
+                                                            width: pw,
+                                                            height: ph,
+                                                            depth_or_array_layers: 1,
+                                                        },
+                                                        mip_level_count: 1,
+                                                        sample_count: 1,
+                                                        dimension: wgpu::TextureDimension::D2,
+                                                        format: wgpu::TextureFormat::Depth32Float,
+                                                        usage:
+                                                            wgpu::TextureUsages::RENDER_ATTACHMENT,
+                                                        view_formats: &[],
+                                                    });
+                                                s.xr_panel_depth_texture = Some(dt);
+                                                s.xr_panel_depth_size = (pw, ph);
                                             }
 
-                                            let (gpu, panel_target) =
-                                                (&mut s.gpu, s.xr_panel_target.as_ref().unwrap());
-                                            let bridge_ref = s.js.webgpu_bridge();
-                                            let canvases: Vec<([f32; 4], &wgpu::TextureView)> =
-                                                if let Some(ref bridge) = *bridge_ref {
-                                                    let elem_rects =
-                                                        s.layout.collect_element_rects();
-                                                    bridge
-                                                        .canvas_ids()
-                                                        .iter()
-                                                        .filter_map(|id| {
-                                                            let tv = bridge
-                                                                .get_canvas_texture_view(id)?;
-                                                            let lr = elem_rects.get(id)?;
-                                                            Some(([lr.x, lr.y, lr.w, lr.h], tv))
-                                                        })
-                                                        .collect()
-                                                } else {
-                                                    Vec::new()
-                                                };
-                                            gpu.render_to_target(
-                                                panel_target,
-                                                s.view_scale_factor as f32,
-                                                &s.static_commands,
-                                                &overlay_commands,
-                                                s.clear_color,
-                                                s.scroll_y,
-                                                &canvases,
-                                            );
-                                            gpu.render_xr_panel_views(
-                                                &left_view,
-                                                &right_view,
-                                                &panel_target.view,
-                                                [0.01, 0.015, 0.025, 1.0],
-                                                xr_panel_mvp(
-                                                    &frame_data.views[0],
-                                                    panel_target.size,
-                                                ),
-                                                xr_panel_mvp(
-                                                    &frame_data.views[1],
-                                                    panel_target.size,
-                                                ),
-                                            );
+                                            match xr.acquire_swapchain_texture() {
+                                                Ok((eye_texture, _eye_idx)) => {
+                                                    match xr.acquire_panel_swapchain_texture() {
+                                                        Ok((panel_texture, _panel_idx)) => {
+                                                            let left_view = eye_texture.create_view(
+                                                        &wgpu::TextureViewDescriptor {
+                                                            dimension: Some(
+                                                                wgpu::TextureViewDimension::D2,
+                                                            ),
+                                                            base_array_layer: 0,
+                                                            array_layer_count: Some(1),
+                                                            ..Default::default()
+                                                        },
+                                                    );
+                                                            let right_view = eye_texture.create_view(
+                                                        &wgpu::TextureViewDescriptor {
+                                                            dimension: Some(
+                                                                wgpu::TextureViewDimension::D2,
+                                                            ),
+                                                            base_array_layer: 1,
+                                                            array_layer_count: Some(1),
+                                                            ..Default::default()
+                                                        },
+                                                    );
+                                                            let panel_view = panel_texture.create_view(
+                                                        &wgpu::TextureViewDescriptor {
+                                                            dimension: Some(
+                                                                wgpu::TextureViewDimension::D2,
+                                                            ),
+                                                            ..Default::default()
+                                                        },
+                                                    );
+                                                            let panel_depth_view = s
+                                                                .xr_panel_depth_texture
+                                                                .as_ref()
+                                                                .unwrap()
+                                                                .create_view(&Default::default());
+                                                            s.gpu.render_to_view(
+                                                                &panel_view,
+                                                                &panel_depth_view,
+                                                                winit::dpi::PhysicalSize::new(
+                                                                    pw, ph,
+                                                                ),
+                                                                xr_panel_render_scale_factor(),
+                                                                true,
+                                                                &s.static_commands,
+                                                                &overlay_commands,
+                                                                s.clear_color,
+                                                                s.scroll_y,
+                                                                &canvases,
+                                                            );
+                                                            s.gpu.render_xr_panel_views(
+                                                                &left_view,
+                                                                &right_view,
+                                                                &panel_view,
+                                                                [0.01, 0.015, 0.025, 1.0],
+                                                                xr_panel_mvp(
+                                                                    &frame_data.views[0],
+                                                                    s.view_size,
+                                                                ),
+                                                                xr_panel_mvp(
+                                                                    &frame_data.views[1],
+                                                                    s.view_size,
+                                                                ),
+                                                            );
+                                                            let _ = s
+                                                                .gpu
+                                                                .device
+                                                                .poll(wgpu::PollType::Poll);
+                                                            if let Err(e) = xr
+                                                                .release_both_and_end_frame(
+                                                                    &frame_data,
+                                                                    xr_panel_pose(),
+                                                                    xr_panel_layer_size(
+                                                                        s.view_size,
+                                                                    ),
+                                                                )
+                                                            {
+                                                                log::error!(
+                                                            "XR panel end frame error: {:?}",
+                                                            e
+                                                        );
+                                                            }
+                                                        }
+                                                        Err(e) => {
+                                                            log::error!(
+                                                                "XR panel acquire error: {:?}",
+                                                                e
+                                                            );
+                                                            if let Err(end_err) = xr
+                                                                .end_frame_without_layers(
+                                                                    frame_data
+                                                                        .predicted_display_time,
+                                                                )
+                                                            {
+                                                                log::error!(
+                                                                    "XR end frame after panel acquire failure error: {:?}",
+                                                                    end_err
+                                                                );
+                                                            }
+                                                        }
+                                                    }
+                                                }
+                                                Err(e) => {
+                                                    log::error!("XR acquire error: {:?}", e);
+                                                    if let Err(end_err) = xr
+                                                        .end_frame_without_layers(
+                                                            frame_data.predicted_display_time,
+                                                        )
+                                                    {
+                                                        log::error!(
+                                                            "XR end frame after acquire failure error: {:?}",
+                                                            end_err
+                                                        );
+                                                    }
+                                                }
+                                            }
                                         }
 
-                                        let _ = s.gpu.device.poll(wgpu::PollType::Poll);
-                                        if let Err(e) = xr.release_and_end_frame(&frame_data) {
-                                            log::error!("XR end frame error: {:?}", e);
+                                        #[cfg(not(target_os = "android"))]
+                                        {
+                                            match xr.acquire_swapchain_image() {
+                                                Ok((texture, _idx)) => {
+                                                    let recreate_target = s
+                                                        .xr_panel_target
+                                                        .as_ref()
+                                                        .map(|target| target.size != s.view_size)
+                                                        .unwrap_or(true);
+                                                    if recreate_target {
+                                                        s.xr_panel_target =
+                                                            Some(s.gpu.create_render_target(
+                                                                s.view_size.width,
+                                                                s.view_size.height,
+                                                            ));
+                                                    }
+
+                                                    let left_view = texture.create_view(
+                                                        &wgpu::TextureViewDescriptor {
+                                                            dimension: Some(
+                                                                wgpu::TextureViewDimension::D2,
+                                                            ),
+                                                            base_array_layer: 0,
+                                                            array_layer_count: Some(1),
+                                                            ..Default::default()
+                                                        },
+                                                    );
+                                                    let right_view = texture.create_view(
+                                                        &wgpu::TextureViewDescriptor {
+                                                            dimension: Some(
+                                                                wgpu::TextureViewDimension::D2,
+                                                            ),
+                                                            base_array_layer: 1,
+                                                            array_layer_count: Some(1),
+                                                            ..Default::default()
+                                                        },
+                                                    );
+
+                                                    let (gpu, panel_target) = (
+                                                        &mut s.gpu,
+                                                        s.xr_panel_target.as_ref().unwrap(),
+                                                    );
+                                                    gpu.render_to_target(
+                                                        panel_target,
+                                                        s.view_scale_factor as f32,
+                                                        &s.static_commands,
+                                                        &overlay_commands,
+                                                        s.clear_color,
+                                                        s.scroll_y,
+                                                        &canvases,
+                                                    );
+                                                    gpu.render_xr_panel_views(
+                                                        &left_view,
+                                                        &right_view,
+                                                        &panel_target.sample_view,
+                                                        [0.01, 0.015, 0.025, 1.0],
+                                                        xr_panel_mvp(
+                                                            &frame_data.views[0],
+                                                            panel_target.size,
+                                                        ),
+                                                        xr_panel_mvp(
+                                                            &frame_data.views[1],
+                                                            panel_target.size,
+                                                        ),
+                                                    );
+                                                    let _ = s.gpu.device.poll(wgpu::PollType::Poll);
+                                                    if let Err(e) =
+                                                        xr.release_and_end_frame(&frame_data)
+                                                    {
+                                                        log::error!("XR end frame error: {:?}", e);
+                                                    }
+                                                }
+                                                Err(e) => {
+                                                    log::error!("XR acquire error: {:?}", e);
+                                                    if let Err(end_err) = xr
+                                                        .end_frame_without_layers(
+                                                            frame_data.predicted_display_time,
+                                                        )
+                                                    {
+                                                        log::error!(
+                                                            "XR end frame after acquire failure error: {:?}",
+                                                            end_err
+                                                        );
+                                                    }
+                                                }
+                                            }
                                         }
+
                                         xr_rendered = true;
                                     }
-                                    Err(e) => {
-                                        log::error!("XR acquire error: {:?}", e);
-                                        if let Err(end_err) = xr.end_frame_without_layers(
-                                            frame_data.predicted_display_time,
-                                        ) {
-                                            log::error!(
-                                                "XR end frame after acquire failure error: {:?}",
-                                                end_err
-                                            );
-                                        }
-                                    }
-                                },
+                                }
                                 Ok(None) => {}
                                 Err(e) => log::error!("XR wait_frame error: {:?}", e),
                             }
