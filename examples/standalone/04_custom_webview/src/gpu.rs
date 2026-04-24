@@ -71,6 +71,15 @@ struct XrPanelUniform {
     mvp: [f32; 16],
 }
 
+#[cfg(feature = "xr")]
+#[repr(C)]
+#[derive(Clone, Copy, Pod, Zeroable)]
+struct XrPageUniform {
+    mvp: [f32; 16],
+    page_panel: [f32; 4],
+    misc: [f32; 4],
+}
+
 #[repr(C)]
 #[derive(Clone, Copy, Pod, Zeroable)]
 struct RectInstance {
@@ -699,6 +708,414 @@ fn fs_texrect(in: TexRectOutput) -> @location(0) vec4<f32> {
 "#;
 
 #[cfg(feature = "xr")]
+const XR_RECT_SHADER: &str = r#"
+struct XrPageUniform {
+    mvp: mat4x4<f32>,
+    page_panel: vec4<f32>,
+    misc: vec4<f32>,
+};
+
+fn linearize(c: vec3<f32>, srgb: f32) -> vec3<f32> {
+    return mix(c, pow(c, vec3<f32>(2.2)), srgb);
+}
+
+@group(0) @binding(0) var<uniform> page: XrPageUniform;
+
+struct RectInput {
+    @location(0) pos: vec2<f32>,
+    @location(1) uv: vec2<f32>,
+    @location(2) rect: vec4<f32>,
+    @location(3) color: vec4<f32>,
+    @location(4) radius: f32,
+    @location(5) border: f32,
+    @location(6) border_color: vec4<f32>,
+    @location(7) transform_0: vec4<f32>,
+    @location(8) transform_1: vec4<f32>,
+    @location(9) transform_2: vec4<f32>,
+    @location(10) transform_3: vec4<f32>,
+    @location(11) flags: u32,
+    @location(12) draw_order: f32,
+};
+
+struct RectOutput {
+    @builtin(position) pos: vec4<f32>,
+    @location(0) color: vec4<f32>,
+    @location(1) local_pos: vec2<f32>,
+    @location(2) rect_size: vec2<f32>,
+    @location(3) radius: f32,
+    @location(4) border: f32,
+    @location(5) border_color: vec4<f32>,
+};
+
+@vertex
+fn vs_rect(in: RectInput) -> RectOutput {
+    var out: RectOutput;
+    let local_pos = vec4<f32>(
+        in.pos.x * in.rect.z - in.rect.z * 0.5,
+        in.pos.y * in.rect.w - in.rect.w * 0.5,
+        0.0,
+        1.0,
+    );
+    let matrix = mat4x4<f32>(in.transform_0, in.transform_1, in.transform_2, in.transform_3);
+    let world_pos_4 = matrix * local_pos;
+
+    let is_fixed = (in.flags & 1u) != 0u;
+    let scroll = select(page.misc.x, 0.0, is_fixed);
+
+    let w = world_pos_4.w;
+    let cx = in.rect.x + in.rect.z * 0.5;
+    let cy = in.rect.y + in.rect.w * 0.5 - scroll;
+    let page_pos_4 = vec4<f32>(
+        world_pos_4.x + cx * w,
+        world_pos_4.y + cy * w,
+        world_pos_4.z,
+        w,
+    );
+    let page_pos = page_pos_4.xyz / page_pos_4.w;
+
+    let panel_x = (page_pos.x / page.page_panel.x - 0.5) * page.page_panel.z;
+    let panel_y = (0.5 - page_pos.y / page.page_panel.y) * page.page_panel.w;
+    let panel_z = page_pos.z * page.misc.z;
+    let clip_pos = page.mvp * vec4<f32>(panel_x, panel_y, panel_z, 1.0);
+    out.pos = vec4<f32>(
+        clip_pos.xy,
+        clip_pos.z - in.draw_order * page.misc.w * clip_pos.w,
+        clip_pos.w,
+    );
+    out.color = in.color;
+    out.local_pos = vec2<f32>(in.pos.x * in.rect.z, in.pos.y * in.rect.w);
+    out.rect_size = vec2<f32>(in.rect.z, in.rect.w);
+    out.radius = in.radius;
+    out.border = in.border;
+    out.border_color = in.border_color;
+    return out;
+}
+
+fn rounded_rect_sdf(pos: vec2<f32>, half_size: vec2<f32>, radius: f32) -> f32 {
+    let q = abs(pos) - half_size + vec2<f32>(radius);
+    return min(max(q.x, q.y), 0.0) + length(max(q, vec2<f32>(0.0))) - radius;
+}
+
+@fragment
+fn fs_rect(in: RectOutput) -> @location(0) vec4<f32> {
+    let half_size = in.rect_size * 0.5;
+    let radius = in.radius;
+    let border = in.border;
+    let centered = in.local_pos - half_size;
+    let r = min(radius, min(half_size.x, half_size.y));
+    let dist = rounded_rect_sdf(centered, half_size, r);
+
+    if dist > 0.5 {
+        discard;
+    }
+
+    let aa = max(fwidth(dist), 0.5);
+    let alpha = 1.0 - smoothstep(-aa, aa, dist);
+
+    if border > 0.0 {
+        let inner_dist = rounded_rect_sdf(centered, half_size - vec2(border), max(r - border, 0.0));
+        let inner_aa = max(fwidth(inner_dist), 0.5);
+        let inner_alpha = smoothstep(-inner_aa, inner_aa, inner_dist);
+        let fill = in.color * (1.0 - inner_alpha);
+        let border_fill = in.border_color * inner_alpha;
+        return vec4<f32>(
+            linearize(fill.rgb + border_fill.rgb, page.misc.y),
+            alpha * max(fill.a, border_fill.a),
+        );
+    }
+
+    return vec4<f32>(linearize(in.color.rgb, page.misc.y), in.color.a * alpha);
+}
+"#;
+
+#[cfg(feature = "xr")]
+const XR_GLYPH_SHADER: &str = r#"
+struct XrPageUniform {
+    mvp: mat4x4<f32>,
+    page_panel: vec4<f32>,
+    misc: vec4<f32>,
+};
+
+fn linearize(c: vec3<f32>, srgb: f32) -> vec3<f32> {
+    return mix(c, pow(c, vec3<f32>(2.2)), srgb);
+}
+
+@group(0) @binding(0) var<uniform> page: XrPageUniform;
+@group(0) @binding(1) var curve_texture: texture_2d<f32>;
+@group(0) @binding(2) var band_texture: texture_2d<u32>;
+
+struct GlyphInput {
+    @location(0) pos: vec4<f32>,
+    @location(1) tex: vec4<f32>,
+    @location(2) bnd: vec4<f32>,
+    @location(3) color: vec4<f32>,
+    @location(4) transform_0: vec4<f32>,
+    @location(5) transform_1: vec4<f32>,
+    @location(6) transform_2: vec4<f32>,
+    @location(7) transform_3: vec4<f32>,
+    @location(8) center: vec2<f32>,
+    @location(9) flags: u32,
+    @location(10) draw_order: f32,
+};
+
+struct GlyphOutput {
+    @builtin(position) pos: vec4<f32>,
+    @location(0) color: vec4<f32>,
+    @location(1) render_coord: vec2<f32>,
+    @location(2) @interpolate(flat) banding: vec4<f32>,
+    @location(3) @interpolate(flat) glyph: vec4<i32>,
+};
+
+@vertex
+fn vs_glyph(in: GlyphInput) -> GlyphOutput {
+    var out: GlyphOutput;
+    let local_pos = vec4<f32>(in.pos.x - in.center.x, in.pos.y - in.center.y, 0.0, 1.0);
+    let matrix = mat4x4<f32>(in.transform_0, in.transform_1, in.transform_2, in.transform_3);
+    let world_pos_4 = matrix * local_pos;
+
+    let w = world_pos_4.w;
+    let is_fixed = (in.flags & 1u) != 0u;
+    let scroll = select(page.misc.x, 0.0, is_fixed);
+    let cx = in.center.x;
+    let cy = in.center.y - scroll;
+    let page_pos_4 = vec4<f32>(
+        world_pos_4.x + cx * w,
+        world_pos_4.y + cy * w,
+        world_pos_4.z,
+        w,
+    );
+    let page_pos = page_pos_4.xyz / page_pos_4.w;
+
+    let panel_x = (page_pos.x / page.page_panel.x - 0.5) * page.page_panel.z;
+    let panel_y = (0.5 - page_pos.y / page.page_panel.y) * page.page_panel.w;
+    let panel_z = page_pos.z * page.misc.z;
+    let clip_pos = page.mvp * vec4<f32>(panel_x, panel_y, panel_z, 1.0);
+    out.pos = vec4<f32>(
+        clip_pos.xy,
+        clip_pos.z - in.draw_order * page.misc.w * clip_pos.w,
+        clip_pos.w,
+    );
+    out.color = in.color;
+    out.render_coord = in.tex.xy;
+    out.banding = in.bnd;
+
+    let glyph_loc = bitcast<u32>(in.tex.z);
+    let band_max = bitcast<u32>(in.tex.w);
+    out.glyph = vec4<i32>(
+        i32(glyph_loc & 0xFFFFu),
+        i32(glyph_loc >> 16u),
+        i32(band_max & 0xFFu),
+        i32((band_max >> 16u) & 0xFFu),
+    );
+    return out;
+}
+
+fn calc_root_code(y1: f32, y2: f32, y3: f32) -> u32 {
+    let i1 = bitcast<u32>(y1) >> 31u;
+    let i2 = bitcast<u32>(y2) >> 30u;
+    let i3 = bitcast<u32>(y3) >> 29u;
+    var shift = (i2 & 2u) | (i1 & ~2u);
+    shift = (i3 & 4u) | (shift & ~4u);
+    return (0x2E74u >> shift) & 0x0101u;
+}
+
+fn solve_horiz_poly(p12: vec4<f32>, p3: vec2<f32>) -> vec2<f32> {
+    let a = p12.xy - p12.zw * 2.0 + p3;
+    let b = p12.xy - p12.zw;
+    let ra = 1.0 / a.y;
+    let rb = 0.5 / b.y;
+    let d = sqrt(max(b.y * b.y - a.y * p12.y, 0.0));
+    var t1 = (b.y - d) * ra;
+    var t2 = (b.y + d) * ra;
+    if abs(a.y) < 1.0 / 65536.0 {
+        t1 = p12.y * rb;
+        t2 = t1;
+    }
+    return vec2<f32>(
+        (a.x * t1 - b.x * 2.0) * t1 + p12.x,
+        (a.x * t2 - b.x * 2.0) * t2 + p12.x,
+    );
+}
+
+fn solve_vert_poly(p12: vec4<f32>, p3: vec2<f32>) -> vec2<f32> {
+    let a = p12.xy - p12.zw * 2.0 + p3;
+    let b = p12.xy - p12.zw;
+    let ra = 1.0 / a.x;
+    let rb = 0.5 / b.x;
+    let d = sqrt(max(b.x * b.x - a.x * p12.x, 0.0));
+    var t1 = (b.x - d) * ra;
+    var t2 = (b.x + d) * ra;
+    if abs(a.x) < 1.0 / 65536.0 {
+        t1 = p12.x * rb;
+        t2 = t1;
+    }
+    return vec2<f32>(
+        (a.y * t1 - b.y * 2.0) * t1 + p12.y,
+        (a.y * t2 - b.y * 2.0) * t2 + p12.y,
+    );
+}
+
+fn calc_band_loc(glyph_loc: vec2<i32>, offset: u32) -> vec2<i32> {
+    var band_loc = vec2<i32>(glyph_loc.x + i32(offset), glyph_loc.y);
+    band_loc.y += band_loc.x >> 12u;
+    band_loc.x &= 4095;
+    return band_loc;
+}
+
+fn calc_coverage(xcov: f32, ycov: f32, xwgt: f32, ywgt: f32) -> f32 {
+    var coverage = max(
+        abs(xcov * xwgt + ycov * ywgt) / max(xwgt + ywgt, 1.0 / 65536.0),
+        min(abs(xcov), abs(ycov)),
+    );
+    coverage = clamp(coverage, 0.0, 1.0);
+    return coverage;
+}
+
+@fragment
+fn fs_glyph(in: GlyphOutput) -> @location(0) vec4<f32> {
+    let render_coord = in.render_coord;
+    let band_transform = in.banding;
+    let glyph_loc = in.glyph.xy;
+    let band_max = in.glyph.zw;
+    let ems_per_pixel = max(fwidth(render_coord), vec2<f32>(1.0 / 65536.0));
+    let pixels_per_em = 1.0 / ems_per_pixel;
+
+    let band_index = clamp(
+        vec2<i32>(render_coord * band_transform.xy + band_transform.zw),
+        vec2<i32>(0, 0),
+        band_max,
+    );
+
+    var xcov = 0.0;
+    var xwgt = 0.0;
+    let hband_data = textureLoad(
+        band_texture,
+        vec2<i32>(glyph_loc.x + band_index.y, glyph_loc.y),
+        0,
+    ).xy;
+    let hband_loc = calc_band_loc(glyph_loc, hband_data.y);
+    for (var curve_index: i32 = 0; curve_index < i32(hband_data.x); curve_index++) {
+        let curve_loc = vec2<i32>(
+            textureLoad(band_texture, vec2<i32>(hband_loc.x + curve_index, hband_loc.y), 0).xy,
+        );
+        let p12 = textureLoad(curve_texture, curve_loc, 0) - vec4<f32>(render_coord, render_coord);
+        let p3 = textureLoad(curve_texture, vec2<i32>(curve_loc.x + 1, curve_loc.y), 0).xy
+            - render_coord;
+        let code = calc_root_code(p12.y, p12.w, p3.y);
+        if code != 0u {
+            let roots = solve_horiz_poly(p12, p3) * pixels_per_em.x;
+            if (code & 1u) != 0u {
+                xcov += clamp(roots.x + 0.5, 0.0, 1.0);
+                xwgt = max(xwgt, clamp(1.0 - abs(roots.x) * 2.0, 0.0, 1.0));
+            }
+            if code > 1u {
+                xcov -= clamp(roots.y + 0.5, 0.0, 1.0);
+                xwgt = max(xwgt, clamp(1.0 - abs(roots.y) * 2.0, 0.0, 1.0));
+            }
+        }
+    }
+
+    var ycov = 0.0;
+    var ywgt = 0.0;
+    let vband_data = textureLoad(
+        band_texture,
+        vec2<i32>(glyph_loc.x + band_max.y + 1 + band_index.x, glyph_loc.y),
+        0,
+    ).xy;
+    let vband_loc = calc_band_loc(glyph_loc, vband_data.y);
+    for (var curve_index: i32 = 0; curve_index < i32(vband_data.x); curve_index++) {
+        let curve_loc = vec2<i32>(
+            textureLoad(band_texture, vec2<i32>(vband_loc.x + curve_index, vband_loc.y), 0).xy,
+        );
+        let p12 = textureLoad(curve_texture, curve_loc, 0) - vec4<f32>(render_coord, render_coord);
+        let p3 = textureLoad(curve_texture, vec2<i32>(curve_loc.x + 1, curve_loc.y), 0).xy
+            - render_coord;
+        let code = calc_root_code(p12.x, p12.z, p3.x);
+        if code != 0u {
+            let roots = solve_vert_poly(p12, p3) * pixels_per_em.y;
+            if (code & 1u) != 0u {
+                ycov -= clamp(roots.x + 0.5, 0.0, 1.0);
+                ywgt = max(ywgt, clamp(1.0 - abs(roots.x) * 2.0, 0.0, 1.0));
+            }
+            if code > 1u {
+                ycov += clamp(roots.y + 0.5, 0.0, 1.0);
+                ywgt = max(ywgt, clamp(1.0 - abs(roots.y) * 2.0, 0.0, 1.0));
+            }
+        }
+    }
+
+    let coverage = calc_coverage(xcov, ycov, xwgt, ywgt);
+    return vec4<f32>(linearize(in.color.rgb, page.misc.y), in.color.a * coverage);
+}
+"#;
+
+#[cfg(feature = "xr")]
+const XR_LINE_SHADER: &str = r#"
+struct XrPageUniform {
+    mvp: mat4x4<f32>,
+    page_panel: vec4<f32>,
+    misc: vec4<f32>,
+};
+
+fn linearize(c: vec3<f32>, srgb: f32) -> vec3<f32> {
+    return mix(c, pow(c, vec3<f32>(2.2)), srgb);
+}
+
+@group(0) @binding(0) var<uniform> page: XrPageUniform;
+
+struct LineInput {
+    @location(0) pos: vec2<f32>,
+    @location(1) uv: vec2<f32>,
+    @location(2) p0: vec2<f32>,
+    @location(3) p1: vec2<f32>,
+    @location(4) color: vec4<f32>,
+    @location(5) width: f32,
+    @location(6) draw_order: f32,
+};
+
+struct LineOutput {
+    @builtin(position) pos: vec4<f32>,
+    @location(0) color: vec4<f32>,
+    @location(1) edge_dist: f32,
+};
+
+@vertex
+fn vs_line(in: LineInput) -> LineOutput {
+    var out: LineOutput;
+    let dir = in.p1 - in.p0;
+    let len = length(dir);
+    var normal: vec2<f32>;
+    if len > 0.001 {
+        normal = vec2<f32>(-dir.y, dir.x) / len;
+    } else {
+        normal = vec2<f32>(0.0, 1.0);
+    }
+    let base = mix(in.p0, in.p1, in.pos.x);
+    let offset = normal * (in.pos.y * 2.0 - 1.0) * in.width * 0.5;
+    let page_pos = base + offset - vec2<f32>(0.0, page.misc.x);
+
+    let panel_x = (page_pos.x / page.page_panel.x - 0.5) * page.page_panel.z;
+    let panel_y = (0.5 - page_pos.y / page.page_panel.y) * page.page_panel.w;
+    let clip_pos = page.mvp * vec4<f32>(panel_x, panel_y, 0.0, 1.0);
+    out.pos = vec4<f32>(
+        clip_pos.xy,
+        clip_pos.z - in.draw_order * page.misc.w * clip_pos.w,
+        clip_pos.w,
+    );
+    out.color = in.color;
+    out.edge_dist = 1.0 - abs(in.pos.y * 2.0 - 1.0);
+    return out;
+}
+
+@fragment
+fn fs_line(in: LineOutput) -> @location(0) vec4<f32> {
+    let aa = max(fwidth(in.edge_dist), 0.0001);
+    let alpha = smoothstep(0.0, aa, in.edge_dist);
+    return vec4<f32>(linearize(in.color.rgb, page.misc.y), in.color.a * alpha);
+}
+"#;
+
+#[cfg(feature = "xr")]
 const XR_PANEL_SHADER: &str = r#"
 struct PanelUniform {
     mvp: mat4x4<f32>,
@@ -787,6 +1204,16 @@ pub struct GpuState {
     texrect_pipeline: wgpu::RenderPipeline,
     texrect_bgl: wgpu::BindGroupLayout,
     texrect_sampler: wgpu::Sampler,
+    #[cfg(feature = "xr")]
+    xr_page_bgl: wgpu::BindGroupLayout,
+    #[cfg(feature = "xr")]
+    xr_rect_pipeline: wgpu::RenderPipeline,
+    #[cfg(feature = "xr")]
+    xr_glyph_bgl: wgpu::BindGroupLayout,
+    #[cfg(feature = "xr")]
+    xr_glyph_pipeline: wgpu::RenderPipeline,
+    #[cfg(feature = "xr")]
+    xr_line_pipeline: wgpu::RenderPipeline,
     #[cfg(feature = "xr")]
     xr_panel_pipeline: wgpu::RenderPipeline,
     #[cfg(feature = "xr")]
@@ -1532,6 +1959,254 @@ impl GpuState {
         });
 
         #[cfg(feature = "xr")]
+        let xr_page_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("xr page bgl"),
+            entries: &[wgpu::BindGroupLayoutEntry {
+                binding: 0,
+                visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
+                ty: wgpu::BindingType::Buffer {
+                    ty: wgpu::BufferBindingType::Uniform,
+                    has_dynamic_offset: false,
+                    min_binding_size: None,
+                },
+                count: None,
+            }],
+        });
+        #[cfg(feature = "xr")]
+        let xr_rect_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("xr rect shader"),
+            source: wgpu::ShaderSource::Wgsl(Cow::Borrowed(XR_RECT_SHADER)),
+        });
+        #[cfg(feature = "xr")]
+        let xr_rect_pipeline_layout =
+            device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                label: Some("xr rect pl"),
+                bind_group_layouts: &[Some(&xr_page_bgl)],
+                immediate_size: 0,
+            });
+        #[cfg(feature = "xr")]
+        let xr_rect_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("xr rect pipeline"),
+            layout: Some(&xr_rect_pipeline_layout),
+            vertex: wgpu::VertexState {
+                module: &xr_rect_shader,
+                entry_point: Some("vs_rect"),
+                compilation_options: Default::default(),
+                buffers: &[
+                    wgpu::VertexBufferLayout {
+                        array_stride: std::mem::size_of::<Vertex>() as u64,
+                        step_mode: wgpu::VertexStepMode::Vertex,
+                        attributes: &wgpu::vertex_attr_array![0 => Float32x2, 1 => Float32x2],
+                    },
+                    wgpu::VertexBufferLayout {
+                        array_stride: std::mem::size_of::<RectInstance>() as u64,
+                        step_mode: wgpu::VertexStepMode::Instance,
+                        attributes: &wgpu::vertex_attr_array![
+                            2 => Float32x4,
+                            3 => Float32x4,
+                            4 => Float32,
+                            5 => Float32,
+                            6 => Float32x4,
+                            7 => Float32x4,
+                            8 => Float32x4,
+                            9 => Float32x4,
+                            10 => Float32x4,
+                            11 => Uint32,
+                            12 => Float32,
+                        ],
+                    },
+                ],
+            },
+            fragment: Some(wgpu::FragmentState {
+                module: &xr_rect_shader,
+                entry_point: Some("fs_rect"),
+                compilation_options: Default::default(),
+                targets: &[Some(wgpu::ColorTargetState {
+                    format: wgpu::TextureFormat::Rgba8UnormSrgb,
+                    blend: Some(wgpu::BlendState::ALPHA_BLENDING),
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
+            }),
+            primitive: wgpu::PrimitiveState {
+                topology: wgpu::PrimitiveTopology::TriangleList,
+                ..Default::default()
+            },
+            depth_stencil: Some(wgpu::DepthStencilState {
+                format: wgpu::TextureFormat::Depth32Float,
+                depth_write_enabled: Some(true),
+                depth_compare: Some(wgpu::CompareFunction::LessEqual),
+                stencil: wgpu::StencilState::default(),
+                bias: wgpu::DepthBiasState::default(),
+            }),
+            multisample: Default::default(),
+            multiview_mask: None,
+            cache: None,
+        });
+        #[cfg(feature = "xr")]
+        let xr_glyph_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("xr glyph bgl"),
+            entries: &[
+                wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Uniform,
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 1,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: false },
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: false,
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 2,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Uint,
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: false,
+                    },
+                    count: None,
+                },
+            ],
+        });
+        #[cfg(feature = "xr")]
+        let xr_glyph_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("xr glyph shader"),
+            source: wgpu::ShaderSource::Wgsl(Cow::Borrowed(XR_GLYPH_SHADER)),
+        });
+        #[cfg(feature = "xr")]
+        let xr_glyph_pipeline_layout =
+            device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                label: Some("xr glyph pl"),
+                bind_group_layouts: &[Some(&xr_glyph_bgl)],
+                immediate_size: 0,
+            });
+        #[cfg(feature = "xr")]
+        let xr_glyph_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("xr glyph pipeline"),
+            layout: Some(&xr_glyph_pipeline_layout),
+            vertex: wgpu::VertexState {
+                module: &xr_glyph_shader,
+                entry_point: Some("vs_glyph"),
+                compilation_options: Default::default(),
+                buffers: &[wgpu::VertexBufferLayout {
+                    array_stride: std::mem::size_of::<SlugVertex>() as u64,
+                    step_mode: wgpu::VertexStepMode::Vertex,
+                    attributes: &wgpu::vertex_attr_array![
+                        0 => Float32x4,
+                        1 => Float32x4,
+                        2 => Float32x4,
+                        3 => Float32x4,
+                        4 => Float32x4,
+                        5 => Float32x4,
+                        6 => Float32x4,
+                        7 => Float32x4,
+                        8 => Float32x2,
+                        9 => Uint32,
+                        10 => Float32,
+                    ],
+                }],
+            },
+            fragment: Some(wgpu::FragmentState {
+                module: &xr_glyph_shader,
+                entry_point: Some("fs_glyph"),
+                compilation_options: Default::default(),
+                targets: &[Some(wgpu::ColorTargetState {
+                    format: wgpu::TextureFormat::Rgba8UnormSrgb,
+                    blend: Some(wgpu::BlendState::ALPHA_BLENDING),
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
+            }),
+            primitive: wgpu::PrimitiveState {
+                topology: wgpu::PrimitiveTopology::TriangleList,
+                ..Default::default()
+            },
+            depth_stencil: Some(wgpu::DepthStencilState {
+                format: wgpu::TextureFormat::Depth32Float,
+                depth_write_enabled: Some(true),
+                depth_compare: Some(wgpu::CompareFunction::LessEqual),
+                stencil: wgpu::StencilState::default(),
+                bias: wgpu::DepthBiasState::default(),
+            }),
+            multisample: Default::default(),
+            multiview_mask: None,
+            cache: None,
+        });
+        #[cfg(feature = "xr")]
+        let xr_line_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("xr line shader"),
+            source: wgpu::ShaderSource::Wgsl(Cow::Borrowed(XR_LINE_SHADER)),
+        });
+        #[cfg(feature = "xr")]
+        let xr_line_pipeline_layout =
+            device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                label: Some("xr line pl"),
+                bind_group_layouts: &[Some(&xr_page_bgl)],
+                immediate_size: 0,
+            });
+        #[cfg(feature = "xr")]
+        let xr_line_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("xr line pipeline"),
+            layout: Some(&xr_line_pipeline_layout),
+            vertex: wgpu::VertexState {
+                module: &xr_line_shader,
+                entry_point: Some("vs_line"),
+                compilation_options: Default::default(),
+                buffers: &[
+                    wgpu::VertexBufferLayout {
+                        array_stride: std::mem::size_of::<Vertex>() as u64,
+                        step_mode: wgpu::VertexStepMode::Vertex,
+                        attributes: &wgpu::vertex_attr_array![0 => Float32x2, 1 => Float32x2],
+                    },
+                    wgpu::VertexBufferLayout {
+                        array_stride: std::mem::size_of::<LineInstance>() as u64,
+                        step_mode: wgpu::VertexStepMode::Instance,
+                        attributes: &wgpu::vertex_attr_array![
+                            2 => Float32x2,
+                            3 => Float32x2,
+                            4 => Float32x4,
+                            5 => Float32,
+                            6 => Float32,
+                        ],
+                    },
+                ],
+            },
+            fragment: Some(wgpu::FragmentState {
+                module: &xr_line_shader,
+                entry_point: Some("fs_line"),
+                compilation_options: Default::default(),
+                targets: &[Some(wgpu::ColorTargetState {
+                    format: wgpu::TextureFormat::Rgba8UnormSrgb,
+                    blend: Some(wgpu::BlendState::ALPHA_BLENDING),
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
+            }),
+            primitive: wgpu::PrimitiveState {
+                topology: wgpu::PrimitiveTopology::TriangleList,
+                ..Default::default()
+            },
+            depth_stencil: Some(wgpu::DepthStencilState {
+                format: wgpu::TextureFormat::Depth32Float,
+                depth_write_enabled: Some(true),
+                depth_compare: Some(wgpu::CompareFunction::LessEqual),
+                stencil: wgpu::StencilState::default(),
+                bias: wgpu::DepthBiasState::default(),
+            }),
+            multisample: Default::default(),
+            multiview_mask: None,
+            cache: None,
+        });
+
+        #[cfg(feature = "xr")]
         let xr_panel_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("xr panel bgl"),
             entries: &[
@@ -1710,6 +2385,16 @@ impl GpuState {
             texrect_pipeline,
             texrect_bgl,
             texrect_sampler,
+            #[cfg(feature = "xr")]
+            xr_page_bgl,
+            #[cfg(feature = "xr")]
+            xr_rect_pipeline,
+            #[cfg(feature = "xr")]
+            xr_glyph_bgl,
+            #[cfg(feature = "xr")]
+            xr_glyph_pipeline,
+            #[cfg(feature = "xr")]
+            xr_line_pipeline,
             #[cfg(feature = "xr")]
             xr_panel_pipeline,
             #[cfg(feature = "xr")]
@@ -2206,6 +2891,164 @@ impl GpuState {
         self.queue.submit(std::iter::once(encoder.finish()));
     }
 
+    #[cfg(feature = "xr")]
+    pub fn render_xr_native_views(
+        &mut self,
+        left_target: &wgpu::TextureView,
+        right_target: &wgpu::TextureView,
+        depth_view: &wgpu::TextureView,
+        page_size: winit::dpi::PhysicalSize<u32>,
+        page_scale_factor: f32,
+        panel_size: [f32; 2],
+        clear_color: [f32; 4],
+        static_commands: &[DrawCommand],
+        ghost_commands: &[DrawCommand],
+        scroll_y: f32,
+        left_mvp: [f32; 16],
+        right_mvp: [f32; 16],
+    ) {
+        if (self.render_scale_factor - page_scale_factor).abs() > f32::EPSILON {
+            self.render_scale_factor = page_scale_factor;
+            self.static_dirty = true;
+        }
+        if self.static_dirty {
+            self.cached_static_groups = self.build_draw_groups(static_commands);
+            self.static_dirty = false;
+        }
+
+        let static_max_draw_order = self.max_draw_order(&self.cached_static_groups);
+        let mut ghost_groups = self.build_draw_groups(ghost_commands);
+        self.offset_draw_orders(&mut ghost_groups, static_max_draw_order + 1.0);
+
+        let logical_width = page_size.width as f32 / page_scale_factor.max(f32::EPSILON);
+        let logical_height = page_size.height as f32 / page_scale_factor.max(f32::EPSILON);
+        let page_to_meter = panel_size[0] / logical_width.max(1.0);
+        let max_draw_order = self
+            .max_draw_order(&ghost_groups)
+            .max(static_max_draw_order)
+            .max(1.0);
+        let draw_order_depth_step = 0.001 / max_draw_order;
+
+        let make_uniform = |mvp| XrPageUniform {
+            mvp,
+            page_panel: [logical_width, logical_height, panel_size[0], panel_size[1]],
+            misc: [scroll_y, 1.0, page_to_meter, draw_order_depth_step],
+        };
+
+        let left_uniform = self
+            .device
+            .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("xr page left uniform"),
+                contents: bytemuck::bytes_of(&make_uniform(left_mvp)),
+                usage: wgpu::BufferUsages::UNIFORM,
+            });
+        let right_uniform = self
+            .device
+            .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("xr page right uniform"),
+                contents: bytemuck::bytes_of(&make_uniform(right_mvp)),
+                usage: wgpu::BufferUsages::UNIFORM,
+            });
+
+        let left_page_bg = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("xr page left bg"),
+            layout: &self.xr_page_bgl,
+            entries: &[wgpu::BindGroupEntry {
+                binding: 0,
+                resource: left_uniform.as_entire_binding(),
+            }],
+        });
+        let right_page_bg = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("xr page right bg"),
+            layout: &self.xr_page_bgl,
+            entries: &[wgpu::BindGroupEntry {
+                binding: 0,
+                resource: right_uniform.as_entire_binding(),
+            }],
+        });
+        let curve_view = self.slug_curve_texture.create_view(&Default::default());
+        let band_view = self.slug_band_texture.create_view(&Default::default());
+        let left_glyph_bg = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("xr glyph left bg"),
+            layout: &self.xr_glyph_bgl,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: left_uniform.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::TextureView(&curve_view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: wgpu::BindingResource::TextureView(&band_view),
+                },
+            ],
+        });
+        let right_glyph_bg = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("xr glyph right bg"),
+            layout: &self.xr_glyph_bgl,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: right_uniform.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::TextureView(&curve_view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: wgpu::BindingResource::TextureView(&band_view),
+                },
+            ],
+        });
+
+        let mut encoder = self
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("xr native page encoder"),
+            });
+        for (target, page_bg, glyph_bg) in [
+            (left_target, &left_page_bg, &left_glyph_bg),
+            (right_target, &right_page_bg, &right_glyph_bg),
+        ] {
+            let mut rpass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("xr native page pass"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: target,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(wgpu::Color {
+                            r: clear_color[0] as f64,
+                            g: clear_color[1] as f64,
+                            b: clear_color[2] as f64,
+                            a: clear_color[3] as f64,
+                        }),
+                        store: wgpu::StoreOp::Store,
+                    },
+                    depth_slice: None,
+                })],
+                depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                    view: depth_view,
+                    depth_ops: Some(wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(1.0),
+                        store: wgpu::StoreOp::Store,
+                    }),
+                    stencil_ops: None,
+                }),
+                timestamp_writes: None,
+                occlusion_query_set: None,
+                multiview_mask: None,
+            });
+            self.render_xr_groups(&self.cached_static_groups, page_bg, glyph_bg, &mut rpass);
+            self.render_xr_groups(&ghost_groups, page_bg, glyph_bg, &mut rpass);
+        }
+
+        self.queue.submit(std::iter::once(encoder.finish()));
+    }
+
     fn build_draw_groups(&mut self, commands: &[DrawCommand]) -> Vec<InternalDrawGroup> {
         let mut groups: Vec<InternalDrawGroup> = Vec::new();
         let mut draw_order: f32 = 0.0;
@@ -2385,6 +3228,113 @@ impl GpuState {
                     rpass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
                     rpass.set_vertex_buffer(1, buf.slice(..));
                     rpass.draw(0..6, 0..instances.len() as u32);
+                }
+            }
+        }
+    }
+
+    #[cfg(feature = "xr")]
+    fn render_xr_groups<'a>(
+        &'a self,
+        groups: &[InternalDrawGroup],
+        page_bind_group: &'a wgpu::BindGroup,
+        glyph_bind_group: &'a wgpu::BindGroup,
+        rpass: &mut wgpu::RenderPass<'a>,
+    ) {
+        for group in groups {
+            match group {
+                InternalDrawGroup::Rects(instances) => {
+                    let buf = self
+                        .device
+                        .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                            label: Some("xr rect instances"),
+                            contents: bytemuck::cast_slice(instances),
+                            usage: wgpu::BufferUsages::VERTEX,
+                        });
+                    rpass.set_pipeline(&self.xr_rect_pipeline);
+                    rpass.set_bind_group(0, page_bind_group, &[]);
+                    rpass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
+                    rpass.set_vertex_buffer(1, buf.slice(..));
+                    rpass.draw(0..6, 0..instances.len() as u32);
+                }
+                InternalDrawGroup::Glyphs { vertices, indices } => {
+                    let vertex_buffer =
+                        self.device
+                            .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                                label: Some("xr slug vertices"),
+                                contents: bytemuck::cast_slice(vertices),
+                                usage: wgpu::BufferUsages::VERTEX,
+                            });
+                    let index_buffer =
+                        self.device
+                            .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                                label: Some("xr slug indices"),
+                                contents: bytemuck::cast_slice(indices),
+                                usage: wgpu::BufferUsages::INDEX,
+                            });
+                    rpass.set_pipeline(&self.xr_glyph_pipeline);
+                    rpass.set_bind_group(0, glyph_bind_group, &[]);
+                    rpass.set_vertex_buffer(0, vertex_buffer.slice(..));
+                    rpass.set_index_buffer(index_buffer.slice(..), wgpu::IndexFormat::Uint32);
+                    rpass.draw_indexed(0..indices.len() as u32, 0, 0..1);
+                }
+                InternalDrawGroup::Lines(instances) => {
+                    let buf = self
+                        .device
+                        .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                            label: Some("xr line instances"),
+                            contents: bytemuck::cast_slice(instances),
+                            usage: wgpu::BufferUsages::VERTEX,
+                        });
+                    rpass.set_pipeline(&self.xr_line_pipeline);
+                    rpass.set_bind_group(0, page_bind_group, &[]);
+                    rpass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
+                    rpass.set_vertex_buffer(1, buf.slice(..));
+                    rpass.draw(0..6, 0..instances.len() as u32);
+                }
+            }
+        }
+    }
+
+    #[cfg(feature = "xr")]
+    fn max_draw_order(&self, groups: &[InternalDrawGroup]) -> f32 {
+        groups
+            .iter()
+            .map(|group| match group {
+                InternalDrawGroup::Rects(instances) => instances
+                    .iter()
+                    .map(|instance| instance.draw_order)
+                    .fold(0.0, f32::max),
+                InternalDrawGroup::Glyphs { vertices, .. } => vertices
+                    .iter()
+                    .map(|vertex| vertex.draw_order)
+                    .fold(0.0, f32::max),
+                InternalDrawGroup::Lines(instances) => instances
+                    .iter()
+                    .map(|instance| instance.draw_order)
+                    .fold(0.0, f32::max),
+            })
+            .fold(0.0, f32::max)
+    }
+
+    #[cfg(feature = "xr")]
+    fn offset_draw_orders(&self, groups: &mut [InternalDrawGroup], offset: f32) {
+        for group in groups {
+            match group {
+                InternalDrawGroup::Rects(instances) => {
+                    for instance in instances {
+                        instance.draw_order += offset;
+                    }
+                }
+                InternalDrawGroup::Glyphs { vertices, .. } => {
+                    for vertex in vertices {
+                        vertex.draw_order += offset;
+                    }
+                }
+                InternalDrawGroup::Lines(instances) => {
+                    for instance in instances {
+                        instance.draw_order += offset;
+                    }
                 }
             }
         }

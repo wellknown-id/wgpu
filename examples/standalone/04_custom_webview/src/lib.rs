@@ -1708,31 +1708,9 @@ impl ApplicationHandler for App {
 
                                         #[cfg(target_os = "android")]
                                         {
-                                            let (pw, ph) = xr.panel_swapchain_size();
-                                            if s.xr_panel_depth_texture.is_none()
-                                                || s.xr_panel_depth_size != (pw, ph)
-                                            {
-                                                let dt =
-                                                    s.gpu
-                                                        .device
-                                                        .create_texture(&wgpu::TextureDescriptor {
-                                                        label: Some("xr panel depth"),
-                                                        size: wgpu::Extent3d {
-                                                            width: pw,
-                                                            height: ph,
-                                                            depth_or_array_layers: 1,
-                                                        },
-                                                        mip_level_count: 1,
-                                                        sample_count: 1,
-                                                        dimension: wgpu::TextureDimension::D2,
-                                                        format: wgpu::TextureFormat::Depth32Float,
-                                                        usage:
-                                                            wgpu::TextureUsages::RENDER_ATTACHMENT,
-                                                        view_formats: &[],
-                                                    });
-                                                s.xr_panel_depth_texture = Some(dt);
-                                                s.xr_panel_depth_size = (pw, ph);
-                                            }
+                                            let use_xr_native = s.current_asset == "css3d.html"
+                                                && canvases.is_empty();
+                                            let panel_size = xr_panel_layer_size(s.view_size);
 
                                             match xr.acquire_swapchain_texture() {
                                                 Ok((eye_texture, _eye_idx)) => {
@@ -1756,77 +1734,165 @@ impl ApplicationHandler for App {
                                                             ..Default::default()
                                                         },
                                                     );
-                                                    clear_xr_projection_views(
-                                                        &s.gpu,
-                                                        &left_view,
-                                                        &right_view,
-                                                        [0.0, 0.0, 0.0, 1.0],
-                                                    );
-
-                                                    match xr.acquire_panel_swapchain_texture() {
-                                                        Ok((panel_texture, _panel_idx)) => {
-                                                            let panel_view = panel_texture
-                                                                .create_view(
-                                                                    &wgpu::TextureViewDescriptor {
-                                                                        dimension: Some(
-                                                                            wgpu::TextureViewDimension::D2,
-                                                                        ),
-                                                                        ..Default::default()
+                                                    if use_xr_native {
+                                                        let (sw, sh) = xr.swapchain_size();
+                                                        if s.xr_depth_texture.is_none()
+                                                            || s.xr_depth_size != (sw, sh)
+                                                        {
+                                                            let dt = s.gpu.device.create_texture(
+                                                                &wgpu::TextureDescriptor {
+                                                                    label: Some("xr depth"),
+                                                                    size: wgpu::Extent3d {
+                                                                        width: sw,
+                                                                        height: sh,
+                                                                        depth_or_array_layers: 1,
                                                                     },
-                                                                );
-                                                            let panel_depth_view = s
-                                                                .xr_panel_depth_texture
-                                                                .as_ref()
-                                                                .unwrap()
-                                                                .create_view(&Default::default());
-                                                            s.gpu.render_to_view(
-                                                                &panel_view,
-                                                                &panel_depth_view,
-                                                                winit::dpi::PhysicalSize::new(
-                                                                    pw, ph,
-                                                                ),
-                                                                xr_panel_render_scale_factor(),
-                                                                true,
-                                                                &s.static_commands,
-                                                                &overlay_commands,
-                                                                s.clear_color,
-                                                                s.scroll_y,
-                                                                &canvases,
+                                                                    mip_level_count: 1,
+                                                                    sample_count: 1,
+                                                                    dimension:
+                                                                        wgpu::TextureDimension::D2,
+                                                                    format:
+                                                                        wgpu::TextureFormat::Depth32Float,
+                                                                    usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+                                                                    view_formats: &[],
+                                                                },
                                                             );
-                                                            let _ = s
-                                                                .gpu
-                                                                .device
-                                                                .poll(wgpu::PollType::Poll);
-                                                            if let Err(e) = xr
-                                                                .release_both_and_end_frame(
-                                                                    &frame_data,
-                                                                    xr_panel_local_pose(),
-                                                                    xr_panel_layer_size(
-                                                                        s.view_size,
-                                                                    ),
-                                                                )
-                                                            {
-                                                                log::error!(
-                                                                    "XR panel end frame error: {:?}",
-                                                                    e
-                                                                );
-                                                            }
+                                                            s.xr_depth_texture = Some(dt);
+                                                            s.xr_depth_size = (sw, sh);
                                                         }
-                                                        Err(e) => {
+                                                        let depth_view = s
+                                                            .xr_depth_texture
+                                                            .as_ref()
+                                                            .unwrap()
+                                                            .create_view(&Default::default());
+                                                        s.gpu.render_xr_native_views(
+                                                            &left_view,
+                                                            &right_view,
+                                                            &depth_view,
+                                                            s.view_size,
+                                                            xr_panel_render_scale_factor(),
+                                                            [panel_size.width, panel_size.height],
+                                                            s.clear_color,
+                                                            &s.static_commands,
+                                                            &overlay_commands,
+                                                            s.scroll_y,
+                                                            xr_panel_mvp(
+                                                                &frame_data.views[0],
+                                                                s.view_size,
+                                                            ),
+                                                            xr_panel_mvp(
+                                                                &frame_data.views[1],
+                                                                s.view_size,
+                                                            ),
+                                                        );
+                                                        let _ =
+                                                            s.gpu.device.poll(wgpu::PollType::Poll);
+                                                        if let Err(e) =
+                                                            xr.release_and_end_frame(&frame_data)
+                                                        {
                                                             log::error!(
-                                                                "XR panel acquire error: {:?}",
+                                                                "XR native end frame error: {:?}",
                                                                 e
                                                             );
-                                                            if let Err(end_err) = xr
-                                                                .end_frame_without_layers(
-                                                                    frame_data
-                                                                        .predicted_display_time,
-                                                                )
-                                                            {
-                                                                log::error!(
-                                                                    "XR end frame after panel acquire failure error: {:?}",
-                                                                    end_err
+                                                        }
+                                                    } else {
+                                                        let (pw, ph) = xr.panel_swapchain_size();
+                                                        if s.xr_panel_depth_texture.is_none()
+                                                            || s.xr_panel_depth_size != (pw, ph)
+                                                        {
+                                                            let dt = s.gpu.device.create_texture(
+                                                                &wgpu::TextureDescriptor {
+                                                                    label: Some("xr panel depth"),
+                                                                    size: wgpu::Extent3d {
+                                                                        width: pw,
+                                                                        height: ph,
+                                                                        depth_or_array_layers: 1,
+                                                                    },
+                                                                    mip_level_count: 1,
+                                                                    sample_count: 1,
+                                                                    dimension:
+                                                                        wgpu::TextureDimension::D2,
+                                                                    format:
+                                                                        wgpu::TextureFormat::Depth32Float,
+                                                                    usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+                                                                    view_formats: &[],
+                                                                },
+                                                            );
+                                                            s.xr_panel_depth_texture = Some(dt);
+                                                            s.xr_panel_depth_size = (pw, ph);
+                                                        }
+                                                        clear_xr_projection_views(
+                                                            &s.gpu,
+                                                            &left_view,
+                                                            &right_view,
+                                                            [0.0, 0.0, 0.0, 1.0],
+                                                        );
+
+                                                        match xr.acquire_panel_swapchain_texture() {
+                                                            Ok((panel_texture, _panel_idx)) => {
+                                                                let panel_view = panel_texture
+                                                                    .create_view(
+                                                                        &wgpu::TextureViewDescriptor {
+                                                                            dimension: Some(
+                                                                                wgpu::TextureViewDimension::D2,
+                                                                            ),
+                                                                            ..Default::default()
+                                                                        },
+                                                                    );
+                                                                let panel_depth_view = s
+                                                                    .xr_panel_depth_texture
+                                                                    .as_ref()
+                                                                    .unwrap()
+                                                                    .create_view(
+                                                                        &Default::default(),
+                                                                    );
+                                                                s.gpu.render_to_view(
+                                                                    &panel_view,
+                                                                    &panel_depth_view,
+                                                                    winit::dpi::PhysicalSize::new(
+                                                                        pw, ph,
+                                                                    ),
+                                                                    xr_panel_render_scale_factor(),
+                                                                    true,
+                                                                    &s.static_commands,
+                                                                    &overlay_commands,
+                                                                    s.clear_color,
+                                                                    s.scroll_y,
+                                                                    &canvases,
                                                                 );
+                                                                let _ = s
+                                                                    .gpu
+                                                                    .device
+                                                                    .poll(wgpu::PollType::Poll);
+                                                                if let Err(e) = xr
+                                                                    .release_both_and_end_frame(
+                                                                        &frame_data,
+                                                                        xr_panel_local_pose(),
+                                                                        panel_size,
+                                                                    )
+                                                                {
+                                                                    log::error!(
+                                                                        "XR panel end frame error: {:?}",
+                                                                        e
+                                                                    );
+                                                                }
+                                                            }
+                                                            Err(e) => {
+                                                                log::error!(
+                                                                    "XR panel acquire error: {:?}",
+                                                                    e
+                                                                );
+                                                                if let Err(end_err) = xr
+                                                                    .end_frame_without_layers(
+                                                                        frame_data
+                                                                            .predicted_display_time,
+                                                                    )
+                                                                {
+                                                                    log::error!(
+                                                                        "XR end frame after panel acquire failure error: {:?}",
+                                                                        end_err
+                                                                    );
+                                                                }
                                                             }
                                                         }
                                                     }
@@ -1849,21 +1915,10 @@ impl ApplicationHandler for App {
 
                                         #[cfg(not(target_os = "android"))]
                                         {
+                                            let use_xr_native = s.current_asset == "css3d.html"
+                                                && canvases.is_empty();
                                             match xr.acquire_swapchain_image() {
                                                 Ok((texture, _idx)) => {
-                                                    let recreate_target = s
-                                                        .xr_panel_target
-                                                        .as_ref()
-                                                        .map(|target| target.size != s.view_size)
-                                                        .unwrap_or(true);
-                                                    if recreate_target {
-                                                        s.xr_panel_target =
-                                                            Some(s.gpu.create_render_target(
-                                                                s.view_size.width,
-                                                                s.view_size.height,
-                                                            ));
-                                                    }
-
                                                     let left_view = texture.create_view(
                                                         &wgpu::TextureViewDescriptor {
                                                             dimension: Some(
@@ -1884,39 +1939,122 @@ impl ApplicationHandler for App {
                                                             ..Default::default()
                                                         },
                                                     );
+                                                    if use_xr_native {
+                                                        let (sw, sh) = xr.swapchain_size();
+                                                        if s.xr_depth_texture.is_none()
+                                                            || s.xr_depth_size != (sw, sh)
+                                                        {
+                                                            let dt = s.gpu.device.create_texture(
+                                                                &wgpu::TextureDescriptor {
+                                                                    label: Some("xr depth"),
+                                                                    size: wgpu::Extent3d {
+                                                                        width: sw,
+                                                                        height: sh,
+                                                                        depth_or_array_layers: 1,
+                                                                    },
+                                                                    mip_level_count: 1,
+                                                                    sample_count: 1,
+                                                                    dimension:
+                                                                        wgpu::TextureDimension::D2,
+                                                                    format:
+                                                                        wgpu::TextureFormat::Depth32Float,
+                                                                    usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+                                                                    view_formats: &[],
+                                                                },
+                                                            );
+                                                            s.xr_depth_texture = Some(dt);
+                                                            s.xr_depth_size = (sw, sh);
+                                                        }
+                                                        let depth_view = s
+                                                            .xr_depth_texture
+                                                            .as_ref()
+                                                            .unwrap()
+                                                            .create_view(&Default::default());
+                                                        let panel_size =
+                                                            xr_panel_layer_size(s.view_size);
+                                                        s.gpu.render_xr_native_views(
+                                                            &left_view,
+                                                            &right_view,
+                                                            &depth_view,
+                                                            s.view_size,
+                                                            s.view_scale_factor as f32,
+                                                            [panel_size.width, panel_size.height],
+                                                            s.clear_color,
+                                                            &s.static_commands,
+                                                            &overlay_commands,
+                                                            s.scroll_y,
+                                                            xr_panel_mvp(
+                                                                &frame_data.views[0],
+                                                                s.view_size,
+                                                            ),
+                                                            xr_panel_mvp(
+                                                                &frame_data.views[1],
+                                                                s.view_size,
+                                                            ),
+                                                        );
+                                                        let _ =
+                                                            s.gpu.device.poll(wgpu::PollType::Poll);
+                                                        if let Err(e) =
+                                                            xr.release_and_end_frame(&frame_data)
+                                                        {
+                                                            log::error!(
+                                                                "XR native end frame error: {:?}",
+                                                                e
+                                                            );
+                                                        }
+                                                    } else {
+                                                        let recreate_target = s
+                                                            .xr_panel_target
+                                                            .as_ref()
+                                                            .map(|target| {
+                                                                target.size != s.view_size
+                                                            })
+                                                            .unwrap_or(true);
+                                                        if recreate_target {
+                                                            s.xr_panel_target =
+                                                                Some(s.gpu.create_render_target(
+                                                                    s.view_size.width,
+                                                                    s.view_size.height,
+                                                                ));
+                                                        }
 
-                                                    let (gpu, panel_target) = (
-                                                        &mut s.gpu,
-                                                        s.xr_panel_target.as_ref().unwrap(),
-                                                    );
-                                                    gpu.render_to_target(
-                                                        panel_target,
-                                                        s.view_scale_factor as f32,
-                                                        &s.static_commands,
-                                                        &overlay_commands,
-                                                        s.clear_color,
-                                                        s.scroll_y,
-                                                        &canvases,
-                                                    );
-                                                    gpu.render_xr_panel_views(
-                                                        &left_view,
-                                                        &right_view,
-                                                        &panel_target.sample_view,
-                                                        [0.01, 0.015, 0.025, 1.0],
-                                                        xr_panel_mvp(
-                                                            &frame_data.views[0],
-                                                            panel_target.size,
-                                                        ),
-                                                        xr_panel_mvp(
-                                                            &frame_data.views[1],
-                                                            panel_target.size,
-                                                        ),
-                                                    );
-                                                    let _ = s.gpu.device.poll(wgpu::PollType::Poll);
-                                                    if let Err(e) =
-                                                        xr.release_and_end_frame(&frame_data)
-                                                    {
-                                                        log::error!("XR end frame error: {:?}", e);
+                                                        let (gpu, panel_target) = (
+                                                            &mut s.gpu,
+                                                            s.xr_panel_target.as_ref().unwrap(),
+                                                        );
+                                                        gpu.render_to_target(
+                                                            panel_target,
+                                                            s.view_scale_factor as f32,
+                                                            &s.static_commands,
+                                                            &overlay_commands,
+                                                            s.clear_color,
+                                                            s.scroll_y,
+                                                            &canvases,
+                                                        );
+                                                        gpu.render_xr_panel_views(
+                                                            &left_view,
+                                                            &right_view,
+                                                            &panel_target.sample_view,
+                                                            [0.01, 0.015, 0.025, 1.0],
+                                                            xr_panel_mvp(
+                                                                &frame_data.views[0],
+                                                                panel_target.size,
+                                                            ),
+                                                            xr_panel_mvp(
+                                                                &frame_data.views[1],
+                                                                panel_target.size,
+                                                            ),
+                                                        );
+                                                        let _ =
+                                                            s.gpu.device.poll(wgpu::PollType::Poll);
+                                                        if let Err(e) =
+                                                            xr.release_and_end_frame(&frame_data)
+                                                        {
+                                                            log::error!(
+                                                                "XR end frame error: {:?}",
+                                                                e
+                                                            );
+                                                        }
                                                     }
                                                 }
                                                 Err(e) => {
