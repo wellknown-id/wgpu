@@ -5,11 +5,16 @@ use std::sync::Arc;
 use anyhow::{anyhow, Result};
 use bytemuck::{Pod, Zeroable};
 use cosmic_text::{
+    fontdb::{
+        Family as DbFamily, Query as DbQuery, Stretch as DbStretch, Style as DbStyle,
+        Weight as DbWeight,
+    },
     Attrs, Buffer as CosmicBuffer, Family, FontSystem, Metrics, Shaping, SwashCache,
 };
 use wgpu::util::DeviceExt;
 use winit::{event_loop::OwnedDisplayHandle, window::Window};
 
+use crate::slug::{build_font_atlas, FontAtlas as SlugFontAtlas};
 use crate::types::DrawCommand;
 
 #[cfg(feature = "xr")]
@@ -93,8 +98,24 @@ struct GlyphInstance {
 
 enum InternalDrawGroup {
     Rects(Vec<RectInstance>),
-    Glyphs(Vec<GlyphInstance>),
+    Glyphs {
+        vertices: Vec<SlugVertex>,
+        indices: Vec<u32>,
+    },
     Lines(Vec<LineInstance>),
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Pod, Zeroable)]
+struct SlugVertex {
+    pos: [f32; 4],
+    tex: [f32; 4],
+    bnd: [f32; 4],
+    color: [f32; 4],
+    transform: [f32; 16],
+    center: [f32; 2],
+    flags: u32,
+    draw_order: f32,
 }
 
 struct GlyphAtlas {
@@ -384,69 +405,191 @@ fn linearize(c: vec3<f32>, srgb: f32) -> vec3<f32> {
     return mix(c, pow(c, vec3<f32>(2.2)), srgb);
 }
 @group(0) @binding(0) var<uniform> screen: ScreenUniform;
-@group(0) @binding(1) var glyph_tex: texture_2d<f32>;
-@group(0) @binding(2) var glyph_sampler: sampler;
+@group(0) @binding(1) var curve_texture: texture_2d<f32>;
+@group(0) @binding(2) var band_texture: texture_2d<u32>;
 
 struct GlyphInput {
-    @location(0) pos: vec2<f32>,
-    @location(1) uv: vec2<f32>,
-    @location(2) rect: vec4<f32>,
-    @location(3) uv_rect: vec4<f32>,
-    @location(4) color: vec4<f32>,
-    @location(5) transform_0: vec4<f32>,
-    @location(6) transform_1: vec4<f32>,
-    @location(7) transform_2: vec4<f32>,
-    @location(8) transform_3: vec4<f32>,
-    @location(9) center: vec2<f32>,
-    @location(10) flags: u32,
-    @location(11) draw_order: f32,
+    @location(0) pos: vec4<f32>,
+    @location(1) tex: vec4<f32>,
+    @location(2) bnd: vec4<f32>,
+    @location(3) color: vec4<f32>,
+    @location(4) transform_0: vec4<f32>,
+    @location(5) transform_1: vec4<f32>,
+    @location(6) transform_2: vec4<f32>,
+    @location(7) transform_3: vec4<f32>,
+    @location(8) center: vec2<f32>,
+    @location(9) flags: u32,
+    @location(10) draw_order: f32,
 };
 
 struct GlyphOutput {
     @builtin(position) pos: vec4<f32>,
-    @location(0) uv: vec2<f32>,
-    @location(1) color: vec4<f32>,
+    @location(0) color: vec4<f32>,
+    @location(1) render_coord: vec2<f32>,
+    @location(2) @interpolate(flat) banding: vec4<f32>,
+    @location(3) @interpolate(flat) glyph: vec4<i32>,
 };
 
 @vertex
 fn vs_glyph(in: GlyphInput) -> GlyphOutput {
     var out: GlyphOutput;
-    // For text, the given in.rect is the individual glyph bounding box.
-    // Calculate raw position of the vertex
-    let raw_x = in.rect.x + in.pos.x * in.rect.z;
-    let raw_y = in.rect.y + in.pos.y * in.rect.w;
-    
-    // Offset by container's center before applying transform
-    let local_pos = vec4<f32>(raw_x - in.center.x, raw_y - in.center.y, 0.0, 1.0);
+    let local_pos = vec4<f32>(in.pos.x - in.center.x, in.pos.y - in.center.y, 0.0, 1.0);
     let matrix = mat4x4<f32>(in.transform_0, in.transform_1, in.transform_2, in.transform_3);
     let world_pos_4 = matrix * local_pos;
 
-    let is_fixed = (in.flags & 1u) != 0u;
-    let s = select(vec2<f32>(0.0, screen.scroll_y), vec2<f32>(0.0), is_fixed);
-    
     let w = world_pos_4.w;
     let z = world_pos_4.z;
-    let cx = in.center.x - s.x;
-    let cy = in.center.y - s.y;
-    
+    let is_fixed = (in.flags & 1u) != 0u;
+    let scroll = select(screen.scroll_y, 0.0, is_fixed);
+    let cx = in.center.x;
+    let cy = in.center.y - scroll;
     let x = world_pos_4.x + cx * w;
     let y = world_pos_4.y + cy * w;
 
     let nx = (x / (screen.size.x * w)) * 2.0 - 1.0;
     let ny = (1.0 - (y / (screen.size.y * w))) * 2.0 - 1.0;
-    
     let depth_ndc = (1.0 - in.draw_order * 0.001) - z / 50000.0;
-    out.pos = vec4<f32>(nx * w, ny * w, depth_ndc * w, w); 
-    let u = in.uv_rect.x + in.uv.x * (in.uv_rect.z - in.uv_rect.x);
-    let v = in.uv_rect.y + in.uv.y * (in.uv_rect.w - in.uv_rect.y);
-    out.uv = vec2<f32>(u, v);
+    out.pos = vec4<f32>(nx * w, ny * w, depth_ndc * w, w);
     out.color = in.color;
+    out.render_coord = in.tex.xy;
+    out.banding = in.bnd;
+
+    let glyph_loc = bitcast<u32>(in.tex.z);
+    let band_max = bitcast<u32>(in.tex.w);
+    out.glyph = vec4<i32>(
+        i32(glyph_loc & 0xFFFFu),
+        i32(glyph_loc >> 16u),
+        i32(band_max & 0xFFu),
+        i32((band_max >> 16u) & 0xFFu),
+    );
     return out;
+}
+
+fn calc_root_code(y1: f32, y2: f32, y3: f32) -> u32 {
+    let i1 = bitcast<u32>(y1) >> 31u;
+    let i2 = bitcast<u32>(y2) >> 30u;
+    let i3 = bitcast<u32>(y3) >> 29u;
+    var shift = (i2 & 2u) | (i1 & ~2u);
+    shift = (i3 & 4u) | (shift & ~4u);
+    return (0x2E74u >> shift) & 0x0101u;
+}
+
+fn solve_horiz_poly(p12: vec4<f32>, p3: vec2<f32>) -> vec2<f32> {
+    let a = p12.xy - p12.zw * 2.0 + p3;
+    let b = p12.xy - p12.zw;
+    let ra = 1.0 / a.y;
+    let rb = 0.5 / b.y;
+    let d = sqrt(max(b.y * b.y - a.y * p12.y, 0.0));
+    var t1 = (b.y - d) * ra;
+    var t2 = (b.y + d) * ra;
+    if abs(a.y) < 1.0 / 65536.0 {
+        t1 = p12.y * rb;
+        t2 = t1;
+    }
+    return vec2<f32>(
+        (a.x * t1 - b.x * 2.0) * t1 + p12.x,
+        (a.x * t2 - b.x * 2.0) * t2 + p12.x,
+    );
+}
+
+fn solve_vert_poly(p12: vec4<f32>, p3: vec2<f32>) -> vec2<f32> {
+    let a = p12.xy - p12.zw * 2.0 + p3;
+    let b = p12.xy - p12.zw;
+    let ra = 1.0 / a.x;
+    let rb = 0.5 / b.x;
+    let d = sqrt(max(b.x * b.x - a.x * p12.x, 0.0));
+    var t1 = (b.x - d) * ra;
+    var t2 = (b.x + d) * ra;
+    if abs(a.x) < 1.0 / 65536.0 {
+        t1 = p12.x * rb;
+        t2 = t1;
+    }
+    return vec2<f32>(
+        (a.y * t1 - b.y * 2.0) * t1 + p12.y,
+        (a.y * t2 - b.y * 2.0) * t2 + p12.y,
+    );
+}
+
+fn calc_band_loc(glyph_loc: vec2<i32>, offset: u32) -> vec2<i32> {
+    var band_loc = vec2<i32>(glyph_loc.x + i32(offset), glyph_loc.y);
+    band_loc.y += band_loc.x >> 12u;
+    band_loc.x &= 4095;
+    return band_loc;
+}
+
+fn calc_coverage(xcov: f32, ycov: f32, xwgt: f32, ywgt: f32) -> f32 {
+    var coverage = max(
+        abs(xcov * xwgt + ycov * ywgt) / max(xwgt + ywgt, 1.0 / 65536.0),
+        min(abs(xcov), abs(ycov)),
+    );
+    coverage = clamp(coverage, 0.0, 1.0);
+    return coverage;
 }
 
 @fragment
 fn fs_glyph(in: GlyphOutput) -> @location(0) vec4<f32> {
-    let coverage = textureSample(glyph_tex, glyph_sampler, in.uv).r;
+    let render_coord = in.render_coord;
+    let band_transform = in.banding;
+    let glyph_loc = in.glyph.xy;
+    let band_max = in.glyph.zw;
+    let ems_per_pixel = max(fwidth(render_coord), vec2<f32>(1.0 / 65536.0));
+    let pixels_per_em = 1.0 / ems_per_pixel;
+
+    let band_index = clamp(
+        vec2<i32>(render_coord * band_transform.xy + band_transform.zw),
+        vec2<i32>(0, 0),
+        band_max,
+    );
+
+    var xcov = 0.0;
+    var xwgt = 0.0;
+    let hband_data = textureLoad(band_texture, vec2<i32>(glyph_loc.x + band_index.y, glyph_loc.y), 0).xy;
+    let hband_loc = calc_band_loc(glyph_loc, hband_data.y);
+    for (var curve_index: i32 = 0; curve_index < i32(hband_data.x); curve_index++) {
+        let curve_loc = vec2<i32>(textureLoad(band_texture, vec2<i32>(hband_loc.x + curve_index, hband_loc.y), 0).xy);
+        let p12 = textureLoad(curve_texture, curve_loc, 0) - vec4<f32>(render_coord, render_coord);
+        let p3 = textureLoad(curve_texture, vec2<i32>(curve_loc.x + 1, curve_loc.y), 0).xy - render_coord;
+        let code = calc_root_code(p12.y, p12.w, p3.y);
+        if code != 0u {
+            let roots = solve_horiz_poly(p12, p3) * pixels_per_em.x;
+            if (code & 1u) != 0u {
+                xcov += clamp(roots.x + 0.5, 0.0, 1.0);
+                xwgt = max(xwgt, clamp(1.0 - abs(roots.x) * 2.0, 0.0, 1.0));
+            }
+            if code > 1u {
+                xcov -= clamp(roots.y + 0.5, 0.0, 1.0);
+                xwgt = max(xwgt, clamp(1.0 - abs(roots.y) * 2.0, 0.0, 1.0));
+            }
+        }
+    }
+
+    var ycov = 0.0;
+    var ywgt = 0.0;
+    let vband_data = textureLoad(
+        band_texture,
+        vec2<i32>(glyph_loc.x + band_max.y + 1 + band_index.x, glyph_loc.y),
+        0,
+    ).xy;
+    let vband_loc = calc_band_loc(glyph_loc, vband_data.y);
+    for (var curve_index: i32 = 0; curve_index < i32(vband_data.x); curve_index++) {
+        let curve_loc = vec2<i32>(textureLoad(band_texture, vec2<i32>(vband_loc.x + curve_index, vband_loc.y), 0).xy);
+        let p12 = textureLoad(curve_texture, curve_loc, 0) - vec4<f32>(render_coord, render_coord);
+        let p3 = textureLoad(curve_texture, vec2<i32>(curve_loc.x + 1, curve_loc.y), 0).xy - render_coord;
+        let code = calc_root_code(p12.x, p12.z, p3.x);
+        if code != 0u {
+            let roots = solve_vert_poly(p12, p3) * pixels_per_em.y;
+            if (code & 1u) != 0u {
+                ycov -= clamp(roots.x + 0.5, 0.0, 1.0);
+                ywgt = max(ywgt, clamp(1.0 - abs(roots.x) * 2.0, 0.0, 1.0));
+            }
+            if code > 1u {
+                ycov += clamp(roots.y + 0.5, 0.0, 1.0);
+                ywgt = max(ywgt, clamp(1.0 - abs(roots.y) * 2.0, 0.0, 1.0));
+            }
+        }
+    }
+
+    let coverage = calc_coverage(xcov, ycov, xwgt, ywgt);
     return vec4<f32>(linearize(in.color.rgb, screen.srgb_target), in.color.a * coverage);
 }
 "#;
@@ -658,6 +801,10 @@ pub struct GpuState {
     xr_mipmap_sampler: wgpu::Sampler,
 
     atlas: GlyphAtlas,
+    slug_font_family: String,
+    slug_atlas: SlugFontAtlas,
+    slug_curve_texture: wgpu::Texture,
+    slug_band_texture: wgpu::Texture,
     pub font_system: FontSystem,
     swash_cache: SwashCache,
     pub static_dirty: bool,
@@ -674,6 +821,132 @@ pub struct OffscreenRenderTarget {
     pub size: winit::dpi::PhysicalSize<u32>,
     pub format: wgpu::TextureFormat,
     pub mip_level_count: u32,
+}
+
+fn create_font_system() -> FontSystem {
+    #[cfg(target_os = "android")]
+    {
+        let mut db = cosmic_text::fontdb::Database::new();
+        for name in &[
+            "Roboto-Regular.ttf",
+            "NotoSans-Regular.ttf",
+            "DroidSans.ttf",
+            "DroidSans-Bold.ttf",
+            "DroidSansMono.ttf",
+        ] {
+            let path = format!("/system/fonts/{name}");
+            if std::path::Path::new(&path).exists() {
+                db.load_font_file(path).ok();
+            }
+        }
+        return FontSystem::new_with_locale_and_db("en-US".to_string(), db);
+    }
+
+    #[cfg(target_os = "ios")]
+    {
+        let mut db = cosmic_text::fontdb::Database::new();
+        db.load_fonts_dir("/System/Library/Fonts");
+        db.load_fonts_dir("/System/Library/Fonts/Core");
+        return FontSystem::new_with_locale_and_db("en-US".to_string(), db);
+    }
+
+    #[cfg(not(any(target_os = "android", target_os = "ios")))]
+    {
+        FontSystem::new()
+    }
+}
+
+fn load_slug_font(font_system: &FontSystem) -> Result<(String, SlugFontAtlas)> {
+    #[cfg(target_os = "android")]
+    let families = [
+        DbFamily::Name("Roboto"),
+        DbFamily::Name("Noto Sans"),
+        DbFamily::Name("Droid Sans"),
+    ];
+    #[cfg(not(target_os = "android"))]
+    let families = [
+        DbFamily::SansSerif,
+        DbFamily::Name("DejaVu Sans"),
+        DbFamily::Name("Arial"),
+        DbFamily::Name("Liberation Sans"),
+        DbFamily::Name("Helvetica"),
+    ];
+
+    let query = DbQuery {
+        families: &families,
+        weight: DbWeight::NORMAL,
+        stretch: DbStretch::Normal,
+        style: DbStyle::Normal,
+    };
+
+    let face_id = font_system
+        .db()
+        .query(&query)
+        .or_else(|| font_system.db().faces().next().map(|face| face.id))
+        .ok_or_else(|| anyhow!("no font face available for slug text rendering"))?;
+
+    let family_name = font_system
+        .db()
+        .face(face_id)
+        .and_then(|face| face.families.first().map(|family| family.0.clone()))
+        .ok_or_else(|| anyhow!("matched font face has no family name"))?;
+
+    let atlas = font_system
+        .db()
+        .with_face_data(face_id, |data, face_index| {
+            build_font_atlas(data, face_index)
+        })
+        .ok_or_else(|| anyhow!("failed to access matched font bytes"))?
+        .map_err(|err| anyhow!(err))?;
+
+    Ok((family_name, atlas))
+}
+
+#[allow(clippy::too_many_arguments)]
+fn create_slug_texture(
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    label: &'static str,
+    width: u32,
+    height: u32,
+    format: wgpu::TextureFormat,
+    bytes: &[u8],
+    bytes_per_row: u32,
+) -> wgpu::Texture {
+    let texture = device.create_texture(&wgpu::TextureDescriptor {
+        label: Some(label),
+        size: wgpu::Extent3d {
+            width,
+            height,
+            depth_or_array_layers: 1,
+        },
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format,
+        usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+        view_formats: &[],
+    });
+    queue.write_texture(
+        wgpu::TexelCopyTextureInfo {
+            texture: &texture,
+            mip_level: 0,
+            origin: wgpu::Origin3d::ZERO,
+            aspect: wgpu::TextureAspect::All,
+        },
+        bytes,
+        wgpu::TexelCopyBufferLayout {
+            offset: 0,
+            bytes_per_row: Some(bytes_per_row),
+            rows_per_image: None,
+        },
+        wgpu::Extent3d {
+            width,
+            height,
+            depth_or_array_layers: 1,
+        },
+    );
+    texture
 }
 
 impl GpuState {
@@ -881,6 +1154,31 @@ impl GpuState {
         });
 
         let atlas = GlyphAtlas::new(&device);
+        let font_system = create_font_system();
+        let swash_cache = SwashCache::new();
+        let (slug_font_family, slug_atlas) = load_slug_font(&font_system)?;
+        let slug_curve_texture = create_slug_texture(
+            &device,
+            &queue,
+            "slug curves",
+            4096,
+            slug_atlas.curve_height.max(1),
+            wgpu::TextureFormat::Rgba32Float,
+            bytemuck::cast_slice(&slug_atlas.curve_texels),
+            4096 * 16,
+        );
+        let slug_band_texture = create_slug_texture(
+            &device,
+            &queue,
+            "slug bands",
+            4096,
+            slug_atlas.band_height.max(1),
+            wgpu::TextureFormat::Rg32Uint,
+            bytemuck::cast_slice(&slug_atlas.band_texels),
+            4096 * 8,
+        );
+        let slug_curve_view = slug_curve_texture.create_view(&Default::default());
+        let slug_band_view = slug_band_texture.create_view(&Default::default());
 
         // -- rect pipeline --
         let rect_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
@@ -972,11 +1270,6 @@ impl GpuState {
         });
 
         // -- glyph pipeline --
-        let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
-            mag_filter: wgpu::FilterMode::Linear,
-            min_filter: wgpu::FilterMode::Linear,
-            ..Default::default()
-        });
         let glyph_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("glyph bgl"),
             entries: &[
@@ -994,7 +1287,7 @@ impl GpuState {
                     binding: 1,
                     visibility: wgpu::ShaderStages::FRAGMENT,
                     ty: wgpu::BindingType::Texture {
-                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                        sample_type: wgpu::TextureSampleType::Float { filterable: false },
                         view_dimension: wgpu::TextureViewDimension::D2,
                         multisampled: false,
                     },
@@ -1003,7 +1296,11 @@ impl GpuState {
                 wgpu::BindGroupLayoutEntry {
                     binding: 2,
                     visibility: wgpu::ShaderStages::FRAGMENT,
-                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Uint,
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: false,
+                    },
                     count: None,
                 },
             ],
@@ -1018,11 +1315,11 @@ impl GpuState {
                 },
                 wgpu::BindGroupEntry {
                     binding: 1,
-                    resource: wgpu::BindingResource::TextureView(&atlas.view),
+                    resource: wgpu::BindingResource::TextureView(&slug_curve_view),
                 },
                 wgpu::BindGroupEntry {
                     binding: 2,
-                    resource: wgpu::BindingResource::Sampler(&sampler),
+                    resource: wgpu::BindingResource::TextureView(&slug_band_view),
                 },
             ],
         });
@@ -1043,29 +1340,23 @@ impl GpuState {
                 module: &glyph_shader,
                 entry_point: Some("vs_glyph"),
                 compilation_options: Default::default(),
-                buffers: &[
-                    wgpu::VertexBufferLayout {
-                        array_stride: std::mem::size_of::<Vertex>() as u64,
-                        step_mode: wgpu::VertexStepMode::Vertex,
-                        attributes: &wgpu::vertex_attr_array![0 => Float32x2, 1 => Float32x2],
-                    },
-                    wgpu::VertexBufferLayout {
-                        array_stride: std::mem::size_of::<GlyphInstance>() as u64,
-                        step_mode: wgpu::VertexStepMode::Instance,
-                        attributes: &wgpu::vertex_attr_array![
-                            2 => Float32x4,   // rect
-                            3 => Float32x4,   // uv
-                            4 => Float32x4,   // color
-                            5 => Float32x4,   // transform 0
-                            6 => Float32x4,   // transform 1
-                            7 => Float32x4,   // transform 2
-                            8 => Float32x4,   // transform 3
-                            9 => Float32x2,   // center
-                            10 => Uint32,     // flags
-                            11 => Float32,    // draw_order
-                        ],
-                    },
-                ],
+                buffers: &[wgpu::VertexBufferLayout {
+                    array_stride: std::mem::size_of::<SlugVertex>() as u64,
+                    step_mode: wgpu::VertexStepMode::Vertex,
+                    attributes: &wgpu::vertex_attr_array![
+                        0 => Float32x4,
+                        1 => Float32x4,
+                        2 => Float32x4,
+                        3 => Float32x4,
+                        4 => Float32x4,
+                        5 => Float32x4,
+                        6 => Float32x4,
+                        7 => Float32x4,
+                        8 => Float32x2,
+                        9 => Uint32,
+                        10 => Float32,
+                    ],
+                }],
             },
             fragment: Some(wgpu::FragmentState {
                 module: &glyph_shader,
@@ -1396,28 +1687,6 @@ impl GpuState {
             usage: wgpu::BufferUsages::VERTEX,
         });
 
-        #[cfg(target_os = "android")]
-        let font_system = {
-            let mut db = cosmic_text::fontdb::Database::new();
-            for name in &["DroidSans.ttf", "DroidSans-Bold.ttf", "DroidSansMono.ttf"] {
-                let path = format!("/system/fonts/{name}");
-                if std::path::Path::new(&path).exists() {
-                    db.load_font_file(path).ok();
-                }
-            }
-            FontSystem::new_with_locale_and_db("en-US".to_string(), db)
-        };
-        #[cfg(target_os = "ios")]
-        let font_system = {
-            let mut db = cosmic_text::fontdb::Database::new();
-            db.load_fonts_dir("/System/Library/Fonts");
-            db.load_fonts_dir("/System/Library/Fonts/Core");
-            FontSystem::new_with_locale_and_db("en-US".to_string(), db)
-        };
-        #[cfg(not(any(target_os = "android", target_os = "ios")))]
-        let font_system = FontSystem::new();
-        let swash_cache = SwashCache::new();
-
         let scale_factor = window.scale_factor();
 
         Ok(Self {
@@ -1454,6 +1723,10 @@ impl GpuState {
             #[cfg(feature = "xr")]
             xr_mipmap_sampler,
             atlas,
+            slug_font_family,
+            slug_atlas,
+            slug_curve_texture,
+            slug_band_texture,
             font_system,
             swash_cache,
             scale_factor,
@@ -2001,7 +2274,8 @@ impl GpuState {
                     center,
                     ..
                 } => {
-                    let mut glyphs = Vec::new();
+                    let mut vertices = Vec::new();
+                    let mut indices = Vec::new();
                     self.rasterize_text(
                         text,
                         *x,
@@ -2012,17 +2286,23 @@ impl GpuState {
                         *is_fixed,
                         *transform,
                         *center,
-                        &mut glyphs,
+                        draw_order,
+                        &mut vertices,
+                        &mut indices,
                     );
-                    if !glyphs.is_empty() {
-                        for g in &mut glyphs {
-                            g.draw_order = draw_order;
-                        }
+                    if !vertices.is_empty() {
                         draw_order += 1.0;
-                        if let Some(InternalDrawGroup::Glyphs(ref mut v)) = groups.last_mut() {
-                            v.extend(glyphs);
+                        if let Some(InternalDrawGroup::Glyphs {
+                            vertices: existing_vertices,
+                            indices: existing_indices,
+                        }) = groups.last_mut()
+                        {
+                            let base_index = existing_vertices.len() as u32;
+                            existing_vertices.extend(vertices);
+                            existing_indices
+                                .extend(indices.into_iter().map(|index| index + base_index));
                         } else {
-                            groups.push(InternalDrawGroup::Glyphs(glyphs));
+                            groups.push(InternalDrawGroup::Glyphs { vertices, indices });
                         }
                     }
                 }
@@ -2071,19 +2351,26 @@ impl GpuState {
                     rpass.set_vertex_buffer(1, buf.slice(..));
                     rpass.draw(0..6, 0..instances.len() as u32);
                 }
-                InternalDrawGroup::Glyphs(instances) => {
-                    let buf = self
-                        .device
-                        .create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                            label: Some("glyph instances"),
-                            contents: bytemuck::cast_slice(instances),
-                            usage: wgpu::BufferUsages::VERTEX,
-                        });
+                InternalDrawGroup::Glyphs { vertices, indices } => {
+                    let vertex_buffer =
+                        self.device
+                            .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                                label: Some("slug vertices"),
+                                contents: bytemuck::cast_slice(vertices),
+                                usage: wgpu::BufferUsages::VERTEX,
+                            });
+                    let index_buffer =
+                        self.device
+                            .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                                label: Some("slug indices"),
+                                contents: bytemuck::cast_slice(indices),
+                                usage: wgpu::BufferUsages::INDEX,
+                            });
                     rpass.set_pipeline(&self.glyph_pipeline);
                     rpass.set_bind_group(0, &self.glyph_bind_group, &[]);
-                    rpass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
-                    rpass.set_vertex_buffer(1, buf.slice(..));
-                    rpass.draw(0..6, 0..instances.len() as u32);
+                    rpass.set_vertex_buffer(0, vertex_buffer.slice(..));
+                    rpass.set_index_buffer(index_buffer.slice(..), wgpu::IndexFormat::Uint32);
+                    rpass.draw_indexed(0..indices.len() as u32, 0, 0..1);
                 }
                 InternalDrawGroup::Lines(instances) => {
                     let buf = self
@@ -2103,6 +2390,7 @@ impl GpuState {
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn rasterize_text(
         &mut self,
         text: &str,
@@ -2114,48 +2402,98 @@ impl GpuState {
         is_fixed: bool,
         transform: [f32; 16],
         center: [f32; 2],
-        instances: &mut Vec<GlyphInstance>,
+        draw_order: f32,
+        vertices: &mut Vec<SlugVertex>,
+        indices: &mut Vec<u32>,
     ) {
-        let scale = self.render_scale_factor;
-        let phys_font_size = font_size * scale;
+        let render_scale = self.render_scale_factor;
+        let phys_font_size = font_size * render_scale;
         let metrics = Metrics::new(phys_font_size, phys_font_size * 1.2);
-        let family = if cfg!(target_os = "android") {
-            Family::Name("Roboto")
-        } else {
-            Family::SansSerif
-        };
-        let attrs = Attrs::new().family(family);
+        let attrs = Attrs::new().family(Family::Name(&self.slug_font_family));
         let mut buffer = CosmicBuffer::new(&mut self.font_system, metrics);
-        buffer.set_size(&mut self.font_system, Some(max_width * scale), None);
+        buffer.set_size(&mut self.font_system, Some(max_width * render_scale), None);
         buffer.set_text(&mut self.font_system, text, attrs, Shaping::Advanced);
         buffer.shape_until_scroll(&mut self.font_system, false);
 
-        let inv = 1.0 / scale;
+        let inv_render_scale = 1.0 / render_scale;
+        let dilation = inv_render_scale;
+        let em_dilation = dilation / font_size.max(1.0);
         for run in buffer.layout_runs() {
             for glyph in run.glyphs.iter() {
-                let physical = glyph.physical((x * scale, y * scale), 1.0);
-                if let Some(entry) = self.atlas.get_or_insert(
-                    &self.queue,
-                    &mut self.font_system,
-                    &mut self.swash_cache,
-                    physical.cache_key,
-                    phys_font_size,
-                ) {
-                    if entry.width == 0 || entry.height == 0 {
-                        continue;
-                    }
-                    let gx = (physical.x as f32 + entry.offset_x as f32) * inv;
-                    let gy = (physical.y as f32 - entry.offset_y as f32 + run.line_y) * inv;
-                    instances.push(GlyphInstance {
-                        rect: [gx, gy, entry.width as f32 * inv, entry.height as f32 * inv],
-                        uv_rect: entry.uv,
+                let physical = glyph.physical((x * render_scale, y * render_scale), 1.0);
+                let Some(entry) = self.slug_atlas.glyphs.get(&physical.cache_key.glyph_id) else {
+                    continue;
+                };
+                if entry.bbox == [0.0; 4] {
+                    continue;
+                }
+
+                let baseline_x = physical.x as f32 * inv_render_scale;
+                let baseline_y = (physical.y as f32 + run.line_y) * inv_render_scale;
+                let [x_min, y_min, x_max, y_max] = entry.bbox;
+                let left = baseline_x + x_min * font_size;
+                let right = baseline_x + x_max * font_size;
+                let top = baseline_y - y_max * font_size;
+                let bottom = baseline_y - y_min * font_size;
+
+                let glyph_loc_packed =
+                    (entry.glyph_loc[0] & 0xFFFF) | ((entry.glyph_loc[1] & 0xFFFF) << 16);
+                let band_max_packed =
+                    (entry.band_max[0] & 0xFF) | ((entry.band_max[1] & 0xFF) << 16);
+
+                let corners = [
+                    (
+                        left - dilation,
+                        bottom + dilation,
+                        x_min - em_dilation,
+                        y_min - em_dilation,
+                    ),
+                    (
+                        right + dilation,
+                        bottom + dilation,
+                        x_max + em_dilation,
+                        y_min - em_dilation,
+                    ),
+                    (
+                        right + dilation,
+                        top - dilation,
+                        x_max + em_dilation,
+                        y_max + em_dilation,
+                    ),
+                    (
+                        left - dilation,
+                        top - dilation,
+                        x_min - em_dilation,
+                        y_max + em_dilation,
+                    ),
+                ];
+
+                let base_index = vertices.len() as u32;
+                for (obj_x, obj_y, em_x, em_y) in corners {
+                    vertices.push(SlugVertex {
+                        pos: [obj_x, obj_y, 0.0, 0.0],
+                        tex: [
+                            em_x,
+                            em_y,
+                            f32::from_bits(glyph_loc_packed),
+                            f32::from_bits(band_max_packed),
+                        ],
+                        bnd: entry.band_transform,
                         color,
                         transform,
                         center,
                         flags: if is_fixed { 1u32 } else { 0 },
-                        draw_order: 0.0,
+                        draw_order,
                     });
                 }
+                indices.extend_from_slice(&[
+                    base_index,
+                    base_index + 1,
+                    base_index + 2,
+                    base_index + 2,
+                    base_index + 3,
+                    base_index,
+                ]);
             }
         }
     }
@@ -2163,12 +2501,7 @@ impl GpuState {
     pub fn measure_text(&mut self, text: &str, font_size: f32, max_width: f32) -> (f32, f32) {
         let line_height = font_size * 1.2;
         let metrics = Metrics::new(font_size, line_height);
-        let family = if cfg!(target_os = "android") {
-            Family::Name("Roboto")
-        } else {
-            Family::SansSerif
-        };
-        let attrs = Attrs::new().family(family);
+        let attrs = Attrs::new().family(Family::Name(&self.slug_font_family));
         let mut buffer = CosmicBuffer::new(&mut self.font_system, metrics);
         buffer.set_size(&mut self.font_system, Some(max_width), None);
         buffer.set_text(&mut self.font_system, text, attrs, Shaping::Advanced);

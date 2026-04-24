@@ -17,12 +17,19 @@
         android:version="1" />
     <uses-feature
         android:name="android.hardware.vr.headtracking"
-        android:required="false"
+        android:required="true"
         android:version="1" />
     <uses-feature
         android:name="com.oculus.software.handtracking"
         android:required="false" />
+    <uses-feature
+        android:name="oculus.software.handtracking"
+        android:required="false" />
+    <uses-feature
+        android:name="com.oculus.software.controllers"
+        android:required="false" />
     <uses-permission android:name="com.oculus.permission.HAND_TRACKING" />
+    <uses-permission android:name="horizonos.permission.HAND_TRACKING" />
 
     <application
         android:label="wgpu_example_04_custom_webview"
@@ -33,7 +40,10 @@
             android:value="quest2|questpro|quest3|quest3s" />
         <meta-data
             android:name="com.oculus.supportedInputDevices"
-            android:value="controller|hand_tracking" />
+            android:value="tracked_hand_left,tracked_hand_right,touch_controller_left,touch_controller_right" />
+        <meta-data
+            android:name="com.oculus.requireController"
+            android:value="false" />
         <meta-data
             android:name="com.oculus.vr.focusaware"
             android:value="true" />

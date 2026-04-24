@@ -6,6 +6,7 @@ pub mod html_parser;
 pub mod js_bridge;
 pub mod layout;
 pub mod renderer;
+pub mod slug;
 pub mod types;
 #[cfg(feature = "js")]
 pub mod webgpu_bridge;
@@ -13,6 +14,8 @@ pub mod webgpu_bridge;
 pub mod xr_session;
 
 use std::path::PathBuf;
+#[cfg(target_os = "android")]
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -117,6 +120,11 @@ pub struct WebviewState {
 pub struct App {
     pub state: Option<WebviewState>,
 }
+
+#[cfg(target_os = "android")]
+static ANDROID_ACTIVITY_RESUMED: AtomicBool = AtomicBool::new(false);
+#[cfg(target_os = "android")]
+static ANDROID_ACTIVITY_FOCUSED: AtomicBool = AtomicBool::new(false);
 
 fn asset_name(href: &str) -> &str {
     href.split('?')
@@ -479,8 +487,14 @@ impl App {
             state.js.set_scroll_y(state.scroll_y);
             let style_ov = state.js.style_overrides();
             for (id, props) in &style_ov {
-                let left = props.iter().find(|(k, _)| k == "left").and_then(|(_, v)| css_engine::parse_length(v));
-                let top = props.iter().find(|(k, _)| k == "top").and_then(|(_, v)| css_engine::parse_length(v));
+                let left = props
+                    .iter()
+                    .find(|(k, _)| k == "left")
+                    .and_then(|(_, v)| css_engine::parse_length(v));
+                let top = props
+                    .iter()
+                    .find(|(k, _)| k == "top")
+                    .and_then(|(_, v)| css_engine::parse_length(v));
                 if let (Some(l), Some(t)) = (left, top) {
                     state.prev_style_positions.insert(id.clone(), (l, t));
                 }
@@ -576,13 +590,21 @@ impl App {
                         (
                             props.get("left").and_then(|v| css_engine::parse_length(v)),
                             props.get("top").and_then(|v| css_engine::parse_length(v)),
-                            props.get("background-color").and_then(|v| css_engine::parse_color(v)),
+                            props
+                                .get("background-color")
+                                .and_then(|v| css_engine::parse_color(v)),
                         )
                     } else {
                         (None, None, None)
                     };
                     let new_text = text_ov.get(elem_id).cloned();
-                    PatchData { elem_id: elem_id.clone(), new_left, new_top, new_bg, new_text }
+                    PatchData {
+                        elem_id: elem_id.clone(),
+                        new_left,
+                        new_top,
+                        new_bg,
+                        new_text,
+                    }
                 })
                 .collect()
         };
@@ -726,6 +748,14 @@ impl App {
         if state.xr_session.is_some() || state.xr_session_failed {
             return;
         }
+        #[cfg(target_os = "android")]
+        {
+            let activity_resumed = ANDROID_ACTIVITY_RESUMED.load(Ordering::Relaxed);
+            let activity_focused = ANDROID_ACTIVITY_FOCUSED.load(Ordering::Relaxed);
+            if !(activity_resumed && activity_focused) {
+                return;
+            }
+        }
         log::info!("Creating XR session");
         if let Some(ctx) = state.xr_context.as_ref() {
             match xr_session::XrSession::new(
@@ -828,6 +858,8 @@ pub fn apply_text_overrides(
 
 impl ApplicationHandler for App {
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
+        #[cfg(target_os = "android")]
+        ANDROID_ACTIVITY_RESUMED.store(true, Ordering::Relaxed);
         if self.state.is_some() {
             log::info!("Ignoring duplicate resumed event; keeping existing app state");
             if let Some(state) = self.state.as_ref() {
@@ -989,13 +1021,15 @@ impl ApplicationHandler for App {
             xr_exit_down: false,
         });
 
-        #[cfg(all(target_os = "android", feature = "xr"))]
-        {
-            let state = self.state.as_mut().unwrap();
-            Self::create_xr_session(state);
-        }
-
         window.request_redraw();
+    }
+
+    fn suspended(&mut self, _event_loop: &ActiveEventLoop) {
+        #[cfg(target_os = "android")]
+        {
+            ANDROID_ACTIVITY_RESUMED.store(false, Ordering::Relaxed);
+            ANDROID_ACTIVITY_FOCUSED.store(false, Ordering::Relaxed);
+        }
     }
 
     fn window_event(&mut self, event_loop: &ActiveEventLoop, _id: WindowId, event: WindowEvent) {
@@ -1020,6 +1054,14 @@ impl ApplicationHandler for App {
                 }
                 self.rebuild_layout();
                 self.state.as_ref().unwrap().gpu.window.request_redraw();
+            }
+            WindowEvent::Focused(focused) => {
+                #[cfg(target_os = "android")]
+                ANDROID_ACTIVITY_FOCUSED.store(focused, Ordering::Relaxed);
+
+                if focused {
+                    self.state.as_ref().unwrap().gpu.window.request_redraw();
+                }
             }
             WindowEvent::MouseInput {
                 state: btn_state,
@@ -1051,8 +1093,16 @@ impl ApplicationHandler for App {
                         {
                             let s = self.state.as_mut().unwrap();
                             s.js.dispatch_pointer_down(
-                                &s.layout, mx, my, s.scroll_y, 1, "mouse", 1.0, true,
-                                s.mouse_buttons, button_index,
+                                &s.layout,
+                                mx,
+                                my,
+                                s.scroll_y,
+                                1,
+                                "mouse",
+                                1.0,
+                                true,
+                                s.mouse_buttons,
+                                button_index,
                             );
                             if s.js.is_dirty() && !self.try_patch_visual() {
                                 self.rebuild_layout();
@@ -1066,8 +1116,16 @@ impl ApplicationHandler for App {
                         #[cfg(feature = "js")]
                         {
                             s.js.dispatch_pointer_up(
-                                &s.layout, mx, my, s.scroll_y, 1, "mouse", 0.0, true,
-                                s.mouse_buttons, button_index,
+                                &s.layout,
+                                mx,
+                                my,
+                                s.scroll_y,
+                                1,
+                                "mouse",
+                                0.0,
+                                true,
+                                s.mouse_buttons,
+                                button_index,
                             );
                             if s.js.is_dirty() && !self.try_patch_visual() {
                                 self.rebuild_layout();
@@ -1955,6 +2013,15 @@ impl ApplicationHandler for App {
     }
 
     fn about_to_wait(&mut self, _event_loop: &ActiveEventLoop) {
+        #[cfg(target_os = "android")]
+        {
+            if let Some(window_id) = self.state.as_ref().map(|s| s.gpu.window.id()) {
+                self.window_event(_event_loop, window_id, WindowEvent::RedrawRequested);
+            }
+            return;
+        }
+
+        #[cfg(not(target_os = "android"))]
         if let Some(ref s) = self.state {
             s.gpu.window.request_redraw();
         }
@@ -1978,6 +2045,26 @@ pub fn run() {
 
 #[cfg(target_os = "android")]
 #[no_mangle]
+pub extern "system" fn Java_com_example_custom_1webview_VrActivity_nativeSetResumed(
+    _env: *mut core::ffi::c_void,
+    _class: *mut core::ffi::c_void,
+    resumed: u8,
+) {
+    ANDROID_ACTIVITY_RESUMED.store(resumed != 0, Ordering::Relaxed);
+}
+
+#[cfg(target_os = "android")]
+#[no_mangle]
+pub extern "system" fn Java_com_example_custom_1webview_VrActivity_nativeSetFocused(
+    _env: *mut core::ffi::c_void,
+    _class: *mut core::ffi::c_void,
+    focused: u8,
+) {
+    ANDROID_ACTIVITY_FOCUSED.store(focused != 0, Ordering::Relaxed);
+}
+
+#[cfg(target_os = "android")]
+#[no_mangle]
 pub fn android_main(app: winit::platform::android::activity::AndroidApp) {
     use winit::platform::android::EventLoopBuilderExtAndroid;
 
@@ -1988,6 +2075,9 @@ pub fn android_main(app: winit::platform::android::activity::AndroidApp) {
     std::panic::set_hook(Box::new(|info| {
         log::error!("PANIC: {info}");
     }));
+
+    ANDROID_ACTIVITY_RESUMED.store(false, Ordering::Relaxed);
+    ANDROID_ACTIVITY_FOCUSED.store(false, Ordering::Relaxed);
 
     log::info!("android_main: starting");
 

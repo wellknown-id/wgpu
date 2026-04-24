@@ -5379,6 +5379,7 @@ dependencies = [
  "rquickjs",
  "serde_json",
  "taffy",
+ "ttf-parser 0.25.1",
  "wasm-bindgen",
  "web-sys",
  "wgpu",

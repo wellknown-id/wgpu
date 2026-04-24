@@ -1075,8 +1075,7 @@ impl JsBridge {
                 for old_id in &old_ids {
                     if !ids.contains(old_id) {
                         let _ = self.context.with(|ctx| -> Result<bool> {
-                            let f: Function<'_> =
-                                ctx.globals().get("__dispatchPointerEvent")?;
+                            let f: Function<'_> = ctx.globals().get("__dispatchPointerEvent")?;
                             let result: bool = f.call((
                                 "pointerleave".to_string(),
                                 old_id.clone(),
@@ -1092,8 +1091,7 @@ impl JsBridge {
                 for new_id in &ids {
                     if !old_ids.contains(new_id) {
                         let _ = self.context.with(|ctx| -> Result<bool> {
-                            let f: Function<'_> =
-                                ctx.globals().get("__dispatchPointerEvent")?;
+                            let f: Function<'_> = ctx.globals().get("__dispatchPointerEvent")?;
                             let result: bool = f.call((
                                 "pointerenter".to_string(),
                                 new_id.clone(),
@@ -1327,7 +1325,9 @@ impl JsBridge {
         elems
     }
 
-    pub fn style_overrides_ref(&self) -> std::cell::Ref<'_, HashMap<String, HashMap<String, String>>> {
+    pub fn style_overrides_ref(
+        &self,
+    ) -> std::cell::Ref<'_, HashMap<String, HashMap<String, String>>> {
         std::cell::Ref::map(self.shared.borrow(), |s| &s.style_overrides)
     }
 
