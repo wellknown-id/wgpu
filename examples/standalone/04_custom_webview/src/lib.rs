@@ -2476,6 +2476,10 @@ pub fn android_main(app: winit::platform::android::activity::AndroidApp) {
                 break;
             }
             Err(e) => {
+                if e.to_string().contains("EventLoop can't be recreated") {
+                    log::info!("android_main: event loop already exists; keeping current loop");
+                    break;
+                }
                 log::warn!("event loop build failed ({e}), retrying...");
                 std::thread::sleep(std::time::Duration::from_millis(200));
             }
