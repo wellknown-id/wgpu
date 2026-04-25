@@ -183,6 +183,8 @@ const XR_PANEL_RENDER_HEIGHT: u32 = 2160;
 #[cfg(feature = "xr")]
 const XR_NATIVE_MSAA_SAMPLES: u32 = 4;
 #[cfg(feature = "xr")]
+const XR_NATIVE_TEXT_RENDER_SCALE: f32 = 4.0;
+#[cfg(feature = "xr")]
 const XR_SCROLL_SPEED: f32 = 14.0;
 #[cfg(all(feature = "xr", target_os = "android"))]
 const XR_POINTER_YAW_BIAS_DEGREES: f32 = 5.0;
@@ -202,6 +204,11 @@ fn xr_panel_render_size() -> winit::dpi::PhysicalSize<u32> {
 #[cfg(feature = "xr")]
 fn xr_panel_render_scale_factor() -> f32 {
     XR_PANEL_RENDER_WIDTH as f32 / XR_PANEL_LOGICAL_WIDTH as f32
+}
+
+#[cfg(feature = "xr")]
+fn xr_native_render_scale_factor(base_scale: f32) -> f32 {
+    base_scale.max(XR_NATIVE_TEXT_RENDER_SCALE)
 }
 
 #[cfg(feature = "xr")]
@@ -1933,7 +1940,9 @@ impl ApplicationHandler for App {
                                                                 s.view_size.width as f32,
                                                                 s.view_size.height as f32,
                                                             ],
-                                                            xr_panel_render_scale_factor(),
+                                                            xr_native_render_scale_factor(
+                                                                xr_panel_render_scale_factor(),
+                                                            ),
                                                             [panel_size.width, panel_size.height],
                                                             s.clear_color,
                                                             &hybrid_plan.native_static_commands,
@@ -2227,7 +2236,9 @@ impl ApplicationHandler for App {
                                                                 s.view_size.height as f32
                                                                     / s.view_scale_factor as f32,
                                                             ],
-                                                            s.view_scale_factor as f32,
+                                                            xr_native_render_scale_factor(
+                                                                s.view_scale_factor as f32,
+                                                            ),
                                                             [panel_size.width, panel_size.height],
                                                             s.clear_color,
                                                             &s.static_commands,
