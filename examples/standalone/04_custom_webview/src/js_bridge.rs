@@ -96,6 +96,7 @@ pub struct SharedState {
     pub scroll_y: f32,
     pub animation_callbacks: Vec<rquickjs::Persistent<rquickjs::Function<'static>>>,
     pub webgpu: Option<WebGpuBridge>,
+    pub xr_supported: bool,
     pub xr_request_pending: bool,
     pub xr_end_requested: bool,
     pub xr_view_data: Option<XrViewData>,
@@ -119,6 +120,7 @@ impl JsBridge {
             scroll_y: 0.0,
             animation_callbacks: Vec::new(),
             webgpu: None,
+            xr_supported: false,
             xr_request_pending: false,
             xr_end_requested: false,
             xr_view_data: None,
@@ -197,6 +199,14 @@ impl JsBridge {
                 Function::new(ctx.clone(), move |_ctx: rquickjs::Ctx<'_>| {
                     log::info!("JS requested XR end");
                     shared_clone.borrow_mut().xr_end_requested = true;
+                })?,
+            )?;
+
+            let shared_clone = shared.clone();
+            globals.set(
+                "__hostXrSupported",
+                Function::new(ctx.clone(), move |_ctx: rquickjs::Ctx<'_>| -> bool {
+                    shared_clone.borrow().xr_supported
                 })?,
             )?;
 
@@ -917,10 +927,10 @@ impl JsBridge {
 
                 navigator.xr = {
                     isSessionSupported: function(mode) {
-                        return Promise.resolve(mode === 'immersive-vr' && typeof __hostXrRequestSession !== 'undefined');
+                        return Promise.resolve(mode === 'immersive-vr' && __hostXrSupported());
                     },
                     requestSession: function(mode, opts) {
-                        if (mode === 'immersive-vr' && typeof __hostXrRequestSession !== 'undefined') {
+                        if (mode === 'immersive-vr' && __hostXrSupported()) {
                             __hostXrRequestSession();
                             var session = {
                                 _ended: false,
@@ -1355,6 +1365,10 @@ impl JsBridge {
 
     pub fn set_scroll_y(&self, scroll_y: f32) {
         self.shared.borrow_mut().scroll_y = scroll_y;
+    }
+
+    pub fn set_xr_supported(&self, supported: bool) {
+        self.shared.borrow_mut().xr_supported = supported;
     }
 
     pub fn text_overrides(&self) -> std::cell::Ref<'_, HashMap<String, String>> {

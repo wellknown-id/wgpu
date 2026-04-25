@@ -536,6 +536,16 @@ fn xr_panel_pointer(
 }
 
 impl App {
+    #[cfg(feature = "xr")]
+    fn xr_is_available(state: &WebviewState) -> bool {
+        state.xr_context.is_some() && !state.xr_session_failed
+    }
+
+    #[cfg(all(feature = "js", feature = "xr"))]
+    fn sync_js_xr_supported(state: &mut WebviewState) {
+        state.js.set_xr_supported(Self::xr_is_available(state));
+    }
+
     fn sync_target_view_metrics(state: &mut WebviewState) -> bool {
         #[cfg(all(target_os = "android", feature = "xr"))]
         let (view_size, view_scale_factor) = if state.page_xr_active {
@@ -1265,15 +1275,21 @@ impl App {
                 Ok(session) => {
                     state.xr_session = Some(session);
                     state.xr_session_failed = false;
+                    #[cfg(all(feature = "js", feature = "xr"))]
+                    Self::sync_js_xr_supported(state);
                     log::info!("XR session created");
                 }
                 Err(e) => {
                     state.xr_session_failed = true;
+                    #[cfg(all(feature = "js", feature = "xr"))]
+                    Self::sync_js_xr_supported(state);
                     log::error!("Failed to create XR session: {:?}", e);
                 }
             }
         } else {
             state.xr_session_failed = true;
+            #[cfg(all(feature = "js", feature = "xr"))]
+            Self::sync_js_xr_supported(state);
             log::error!("Cannot create XR session without XR context");
         }
     }
@@ -1298,6 +1314,8 @@ impl App {
             let script = html_parser::extract_script(&html_source);
             let mut new_js = js_bridge::JsBridge::new().expect("failed to init JS bridge");
             new_js.init_webgpu(state.gpu.device.clone(), state.gpu.queue.clone());
+            #[cfg(feature = "xr")]
+            new_js.set_xr_supported(Self::xr_is_available(state));
             if let Some(script) = script.as_deref() {
                 if let Err(e) = new_js.eval_script(script) {
                     log::error!("failed to eval JS: {:?}", e);
@@ -1412,6 +1430,8 @@ impl ApplicationHandler for App {
             match js_bridge::JsBridge::new() {
                 Ok(mut js) => {
                     js.init_webgpu(gpu.device.clone(), gpu.queue.clone());
+                    #[cfg(feature = "xr")]
+                    js.set_xr_supported(xr_context.is_some());
                     if let Some(script) = script.as_deref() {
                         if let Err(e) = js.eval_script(script) {
                             log::error!("failed to eval JS: {:?}", e);
