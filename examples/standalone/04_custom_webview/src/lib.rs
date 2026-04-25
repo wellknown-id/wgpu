@@ -121,6 +121,21 @@ pub struct App {
     pub state: Option<WebviewState>,
 }
 
+#[cfg(all(feature = "xr", target_os = "android"))]
+struct XrHybridFramePlan {
+    native_static_commands: Vec<DrawCommand>,
+    overlay_static_commands: Vec<DrawCommand>,
+    native_ghost_commands: Vec<DrawCommand>,
+    overlay_ghost_commands: Vec<DrawCommand>,
+}
+
+#[cfg(all(feature = "xr", target_os = "android"))]
+impl XrHybridFramePlan {
+    fn overlay_has_content(&self) -> bool {
+        !self.overlay_static_commands.is_empty() || !self.overlay_ghost_commands.is_empty()
+    }
+}
+
 #[cfg(target_os = "android")]
 static ANDROID_ACTIVITY_RESUMED: AtomicBool = AtomicBool::new(false);
 #[cfg(target_os = "android")]
@@ -729,16 +744,35 @@ impl App {
         (static_cmds, ghost_cmds)
     }
 
-    #[cfg(all(feature = "xr", target_os = "android"))]
-    fn split_xr_hybrid_commands(
+    #[cfg(feature = "xr")]
+    fn command_uses_xr_native_transform(command: &DrawCommand) -> bool {
+        let identity = types::mat4_identity();
+        match command {
+            DrawCommand::Rect { transform, .. }
+            | DrawCommand::Border { transform, .. }
+            | DrawCommand::Text { transform, .. } => *transform != identity,
+            DrawCommand::Line { .. } => false,
+        }
+    }
+
+    #[cfg(feature = "xr")]
+    fn should_use_xr_native_page(
         static_commands: &[DrawCommand],
         ghost_commands: &[DrawCommand],
-    ) -> (
-        Vec<DrawCommand>,
-        Vec<DrawCommand>,
-        Vec<DrawCommand>,
-        Vec<DrawCommand>,
-    ) {
+        has_canvases: bool,
+    ) -> bool {
+        !has_canvases
+            && static_commands
+                .iter()
+                .chain(ghost_commands.iter())
+                .any(Self::command_uses_xr_native_transform)
+    }
+
+    #[cfg(all(feature = "xr", target_os = "android"))]
+    fn build_xr_hybrid_frame_plan(
+        static_commands: &[DrawCommand],
+        ghost_commands: &[DrawCommand],
+    ) -> XrHybridFramePlan {
         const XR_TEXT_OVERLAY_MAX_AREA: f32 = 200_000.0;
 
         fn promote_to_overlay(command: &DrawCommand) -> bool {
@@ -775,7 +809,12 @@ impl App {
             }
         }
 
-        (native_static, overlay_static, native_ghost, overlay_ghost)
+        XrHybridFramePlan {
+            native_static_commands: native_static,
+            overlay_static_commands: overlay_static,
+            native_ghost_commands: native_ghost,
+            overlay_ghost_commands: overlay_ghost,
+        }
     }
 
     fn build_cmd_index(
@@ -1775,8 +1814,11 @@ impl ApplicationHandler for App {
 
                                         #[cfg(target_os = "android")]
                                         {
-                                            let use_xr_native = s.current_asset == "css3d.html"
-                                                && canvases.is_empty();
+                                            let use_xr_native = Self::should_use_xr_native_page(
+                                                &s.static_commands,
+                                                &overlay_commands,
+                                                !canvases.is_empty(),
+                                            );
                                             let panel_size = xr_panel_layer_size(s.view_size);
 
                                             match xr.acquire_swapchain_texture() {
@@ -1802,15 +1844,11 @@ impl ApplicationHandler for App {
                                                         },
                                                     );
                                                     if use_xr_native {
-                                                        let (
-                                                            native_static_commands,
-                                                            overlay_static_commands,
-                                                            native_ghost_commands,
-                                                            overlay_panel_commands,
-                                                        ) = Self::split_xr_hybrid_commands(
-                                                            &s.static_commands,
-                                                            &overlay_commands,
-                                                        );
+                                                        let hybrid_plan =
+                                                            Self::build_xr_hybrid_frame_plan(
+                                                                &s.static_commands,
+                                                                &overlay_commands,
+                                                            );
                                                         let (sw, sh) = xr.swapchain_size();
                                                         if s.xr_depth_texture.is_none()
                                                             || s.xr_depth_size != (sw, sh)
@@ -1853,8 +1891,8 @@ impl ApplicationHandler for App {
                                                             xr_panel_render_scale_factor(),
                                                             [panel_size.width, panel_size.height],
                                                             s.clear_color,
-                                                            &native_static_commands,
-                                                            &native_ghost_commands,
+                                                            &hybrid_plan.native_static_commands,
+                                                            &hybrid_plan.native_ghost_commands,
                                                             s.scroll_y,
                                                             xr_native_page_mvp(
                                                                 &frame_data.views[0],
@@ -1863,11 +1901,7 @@ impl ApplicationHandler for App {
                                                                 &frame_data.views[1],
                                                             ),
                                                         );
-                                                        let overlay_has_content =
-                                                            !overlay_static_commands.is_empty()
-                                                                || !overlay_panel_commands
-                                                                    .is_empty();
-                                                        if overlay_has_content {
+                                                        if hybrid_plan.overlay_has_content() {
                                                             let (pw, ph) =
                                                                 xr.panel_swapchain_size();
                                                             if s.xr_panel_depth_texture.is_none()
@@ -1923,8 +1957,10 @@ impl ApplicationHandler for App {
                                                                         ),
                                                                         xr_panel_render_scale_factor(),
                                                                         true,
-                                                                        &overlay_static_commands,
-                                                                        &overlay_panel_commands,
+                                                                        &hybrid_plan
+                                                                            .overlay_static_commands,
+                                                                        &hybrid_plan
+                                                                            .overlay_ghost_commands,
                                                                         [0.0, 0.0, 0.0, 0.0],
                                                                         s.scroll_y,
                                                                         &[],
@@ -2093,8 +2129,11 @@ impl ApplicationHandler for App {
 
                                         #[cfg(not(target_os = "android"))]
                                         {
-                                            let use_xr_native = s.current_asset == "css3d.html"
-                                                && canvases.is_empty();
+                                            let use_xr_native = Self::should_use_xr_native_page(
+                                                &s.static_commands,
+                                                &overlay_commands,
+                                                !canvases.is_empty(),
+                                            );
                                             match xr.acquire_swapchain_image() {
                                                 Ok((texture, _idx)) => {
                                                     let left_view = texture.create_view(
