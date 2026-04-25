@@ -1939,10 +1939,7 @@ impl GpuState {
                 stencil: wgpu::StencilState::default(),
                 bias: wgpu::DepthBiasState::default(),
             }),
-            multisample: wgpu::MultisampleState {
-                count: crate::XR_NATIVE_MSAA_SAMPLES,
-                ..Default::default()
-            },
+            multisample: Default::default(),
             multiview_mask: None,
             cache: None,
         });
@@ -2196,7 +2193,10 @@ impl GpuState {
                 stencil: wgpu::StencilState::default(),
                 bias: wgpu::DepthBiasState::default(),
             }),
-            multisample: Default::default(),
+            multisample: wgpu::MultisampleState {
+                count: crate::XR_NATIVE_MSAA_SAMPLES,
+                ..Default::default()
+            },
             multiview_mask: None,
             cache: None,
         });
