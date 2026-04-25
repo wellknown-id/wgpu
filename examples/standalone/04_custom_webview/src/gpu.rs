@@ -762,16 +762,9 @@ fn vs_rect(in: RectInput) -> RectOutput {
     let is_fixed = (in.flags & 1u) != 0u;
     let scroll = select(page.misc.x, 0.0, is_fixed);
 
-    let w = world_pos_4.w;
     let cx = in.rect.x + in.rect.z * 0.5;
     let cy = in.rect.y + in.rect.w * 0.5 - scroll;
-    let page_pos_4 = vec4<f32>(
-        world_pos_4.x + cx * w,
-        world_pos_4.y + cy * w,
-        world_pos_4.z,
-        w,
-    );
-    let page_pos = page_pos_4.xyz / page_pos_4.w;
+    let page_pos = vec3<f32>(world_pos_4.x + cx, world_pos_4.y + cy, world_pos_4.z);
 
     let panel_x = (page_pos.x / page.page_panel.x - 0.5) * page.page_panel.z;
     let panel_y = (0.5 - page_pos.y / page.page_panel.y) * page.page_panel.w;
@@ -873,18 +866,11 @@ fn vs_glyph(in: GlyphInput) -> GlyphOutput {
     let matrix = mat4x4<f32>(in.transform_0, in.transform_1, in.transform_2, in.transform_3);
     let world_pos_4 = matrix * local_pos;
 
-    let w = world_pos_4.w;
     let is_fixed = (in.flags & 1u) != 0u;
     let scroll = select(page.misc.x, 0.0, is_fixed);
     let cx = in.center.x;
     let cy = in.center.y - scroll;
-    let page_pos_4 = vec4<f32>(
-        world_pos_4.x + cx * w,
-        world_pos_4.y + cy * w,
-        world_pos_4.z,
-        w,
-    );
-    let page_pos = page_pos_4.xyz / page_pos_4.w;
+    let page_pos = vec3<f32>(world_pos_4.x + cx, world_pos_4.y + cy, world_pos_4.z);
 
     let panel_x = (page_pos.x / page.page_panel.x - 0.5) * page.page_panel.z;
     let panel_y = (0.5 - page_pos.y / page.page_panel.y) * page.page_panel.w;
@@ -2897,8 +2883,8 @@ impl GpuState {
         left_target: &wgpu::TextureView,
         right_target: &wgpu::TextureView,
         depth_view: &wgpu::TextureView,
-        page_size: winit::dpi::PhysicalSize<u32>,
-        page_scale_factor: f32,
+        page_logical_size: [f32; 2],
+        raster_scale_factor: f32,
         panel_size: [f32; 2],
         clear_color: [f32; 4],
         static_commands: &[DrawCommand],
@@ -2907,8 +2893,8 @@ impl GpuState {
         left_mvp: [f32; 16],
         right_mvp: [f32; 16],
     ) {
-        if (self.render_scale_factor - page_scale_factor).abs() > f32::EPSILON {
-            self.render_scale_factor = page_scale_factor;
+        if (self.render_scale_factor - raster_scale_factor).abs() > f32::EPSILON {
+            self.render_scale_factor = raster_scale_factor;
             self.static_dirty = true;
         }
         if self.static_dirty {
@@ -2920,8 +2906,8 @@ impl GpuState {
         let mut ghost_groups = self.build_draw_groups(ghost_commands);
         self.offset_draw_orders(&mut ghost_groups, static_max_draw_order + 1.0);
 
-        let logical_width = page_size.width as f32 / page_scale_factor.max(f32::EPSILON);
-        let logical_height = page_size.height as f32 / page_scale_factor.max(f32::EPSILON);
+        let logical_width = page_logical_size[0];
+        let logical_height = page_logical_size[1];
         let page_to_meter = panel_size[0] / logical_width.max(1.0);
         let max_draw_order = self
             .max_draw_order(&ghost_groups)
