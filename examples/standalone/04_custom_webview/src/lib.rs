@@ -536,26 +536,20 @@ fn xr_panel_pointer(
 }
 
 impl App {
-    fn target_view_size(&self, _gpu: &GpuState) -> winit::dpi::PhysicalSize<u32> {
+    fn sync_target_view_metrics(state: &mut WebviewState) -> bool {
         #[cfg(all(target_os = "android", feature = "xr"))]
-        {
-            xr_panel_view_size()
-        }
+        let (view_size, view_scale_factor) = if state.page_xr_active {
+            (xr_panel_view_size(), 1.0)
+        } else {
+            (state.gpu.size, state.gpu.scale_factor)
+        };
         #[cfg(not(all(target_os = "android", feature = "xr")))]
-        {
-            _gpu.size
-        }
-    }
+        let (view_size, view_scale_factor) = (state.gpu.size, state.gpu.scale_factor);
 
-    fn target_view_scale_factor(&self, _gpu: &GpuState) -> f64 {
-        #[cfg(all(target_os = "android", feature = "xr"))]
-        {
-            1.0
-        }
-        #[cfg(not(all(target_os = "android", feature = "xr")))]
-        {
-            _gpu.scale_factor
-        }
+        let changed = state.view_size != view_size || state.view_scale_factor != view_scale_factor;
+        state.view_size = view_size;
+        state.view_scale_factor = view_scale_factor;
+        changed
     }
 
     pub fn rebuild_layout(&mut self) {
@@ -1449,8 +1443,8 @@ impl ApplicationHandler for App {
         #[cfg(not(feature = "js"))]
         let canvas_ops = std::collections::HashMap::new();
 
-        let view_size = self.target_view_size(&gpu);
-        let view_scale_factor = self.target_view_scale_factor(&gpu);
+        let view_size = gpu.size;
+        let view_scale_factor = gpu.scale_factor;
         let scale = view_scale_factor as f32;
         let mut text_cache = TextMeasureCache::default();
         let layout_tree = build_layout(
@@ -1552,16 +1546,7 @@ impl ApplicationHandler for App {
             WindowEvent::Resized(size) => {
                 let state = self.state.as_mut().unwrap();
                 state.gpu.resize(size);
-                #[cfg(all(target_os = "android", feature = "xr"))]
-                {
-                    state.view_size = xr_panel_view_size();
-                    state.view_scale_factor = 1.0;
-                }
-                #[cfg(not(all(target_os = "android", feature = "xr")))]
-                {
-                    state.view_size = state.gpu.size;
-                    state.view_scale_factor = state.gpu.scale_factor;
-                }
+                Self::sync_target_view_metrics(state);
                 self.rebuild_layout();
                 self.state.as_ref().unwrap().gpu.window.request_redraw();
             }
@@ -1805,6 +1790,9 @@ impl ApplicationHandler for App {
                         if s.xr_session.is_none() {
                             Self::create_xr_session(s);
                         }
+                        if Self::sync_target_view_metrics(s) {
+                            Self::rebuild_layout_state(s);
+                        }
                     }
                     if s.js.take_xr_end_request() {
                         s.page_xr_active = false;
@@ -1821,6 +1809,9 @@ impl ApplicationHandler for App {
                         #[cfg(target_os = "android")]
                         {
                             log::info!("Returned to immersive panel");
+                        }
+                        if Self::sync_target_view_metrics(s) {
+                            Self::rebuild_layout_state(s);
                         }
                     }
                 }
@@ -2757,6 +2748,9 @@ impl ApplicationHandler for App {
                             s.xr_right_pointer_pos = None;
                             s.xr_left_pointer_pos = None;
                             s.xr_exit_down = false;
+                            if Self::sync_target_view_metrics(s) {
+                                Self::rebuild_layout_state(s);
+                            }
                             log::info!("XR session stopped");
                         } else {
                             self.state.as_mut().unwrap().xr_session = Some(xr);
