@@ -1677,7 +1677,10 @@ impl GpuState {
                 stencil: wgpu::StencilState::default(),
                 bias: wgpu::DepthBiasState::default(),
             }),
-            multisample: Default::default(),
+            multisample: wgpu::MultisampleState {
+                count: crate::XR_NATIVE_MSAA_SAMPLES,
+                ..Default::default()
+            },
             multiview_mask: None,
             cache: None,
         });
@@ -1792,7 +1795,10 @@ impl GpuState {
                 stencil: wgpu::StencilState::default(),
                 bias: wgpu::DepthBiasState::default(),
             }),
-            multisample: Default::default(),
+            multisample: wgpu::MultisampleState {
+                count: crate::XR_NATIVE_MSAA_SAMPLES,
+                ..Default::default()
+            },
             multiview_mask: None,
             cache: None,
         });
@@ -1854,7 +1860,10 @@ impl GpuState {
                 stencil: wgpu::StencilState::default(),
                 bias: wgpu::DepthBiasState::default(),
             }),
-            multisample: Default::default(),
+            multisample: wgpu::MultisampleState {
+                count: crate::XR_NATIVE_MSAA_SAMPLES,
+                ..Default::default()
+            },
             multiview_mask: None,
             cache: None,
         });
@@ -2882,6 +2891,7 @@ impl GpuState {
         &mut self,
         left_target: &wgpu::TextureView,
         right_target: &wgpu::TextureView,
+        msaa_color_view: Option<&wgpu::TextureView>,
         depth_view: &wgpu::TextureView,
         page_logical_size: [f32; 2],
         raster_scale_factor: f32,
@@ -3000,11 +3010,13 @@ impl GpuState {
             (left_target, &left_page_bg, &left_glyph_bg),
             (right_target, &right_page_bg, &right_glyph_bg),
         ] {
+            let color_view = msaa_color_view.unwrap_or(target);
+            let resolve_target = msaa_color_view.map(|_| target);
             let mut rpass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("xr native page pass"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: target,
-                    resolve_target: None,
+                    view: color_view,
+                    resolve_target,
                     ops: wgpu::Operations {
                         load: wgpu::LoadOp::Clear(wgpu::Color {
                             r: clear_color[0] as f64,

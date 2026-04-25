@@ -101,6 +101,12 @@ pub struct WebviewState {
     #[cfg(feature = "xr")]
     pub xr_panel_depth_size: (u32, u32),
     #[cfg(feature = "xr")]
+    pub xr_native_msaa_color_texture: Option<wgpu::Texture>,
+    #[cfg(feature = "xr")]
+    pub xr_native_msaa_depth_texture: Option<wgpu::Texture>,
+    #[cfg(feature = "xr")]
+    pub xr_native_msaa_size: (u32, u32),
+    #[cfg(feature = "xr")]
     pub xr_panel_target: Option<gpu::OffscreenRenderTarget>,
     #[cfg(feature = "xr")]
     pub page_xr_active: bool,
@@ -171,9 +177,11 @@ const XR_PANEL_LOGICAL_WIDTH: u32 = 1920;
 #[cfg(feature = "xr")]
 const XR_PANEL_LOGICAL_HEIGHT: u32 = 1080;
 #[cfg(feature = "xr")]
-const XR_PANEL_RENDER_WIDTH: u32 = 3072;
+const XR_PANEL_RENDER_WIDTH: u32 = 3840;
 #[cfg(feature = "xr")]
-const XR_PANEL_RENDER_HEIGHT: u32 = 1728;
+const XR_PANEL_RENDER_HEIGHT: u32 = 2160;
+#[cfg(feature = "xr")]
+const XR_NATIVE_MSAA_SAMPLES: u32 = 4;
 #[cfg(feature = "xr")]
 const XR_SCROLL_SPEED: f32 = 14.0;
 #[cfg(all(feature = "xr", target_os = "android"))]
@@ -219,6 +227,48 @@ fn xr_panel_local_pose() -> xr::Posef {
             z: -XR_PANEL_DISTANCE,
         },
     }
+}
+
+#[cfg(feature = "xr")]
+fn ensure_xr_native_msaa_targets(state: &mut WebviewState, width: u32, height: u32) {
+    if state.xr_native_msaa_color_texture.is_some()
+        && state.xr_native_msaa_depth_texture.is_some()
+        && state.xr_native_msaa_size == (width, height)
+    {
+        return;
+    }
+
+    let color = state.gpu.device.create_texture(&wgpu::TextureDescriptor {
+        label: Some("xr native msaa color"),
+        size: wgpu::Extent3d {
+            width,
+            height,
+            depth_or_array_layers: 1,
+        },
+        mip_level_count: 1,
+        sample_count: XR_NATIVE_MSAA_SAMPLES,
+        dimension: wgpu::TextureDimension::D2,
+        format: wgpu::TextureFormat::Rgba8UnormSrgb,
+        usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+        view_formats: &[],
+    });
+    let depth = state.gpu.device.create_texture(&wgpu::TextureDescriptor {
+        label: Some("xr native msaa depth"),
+        size: wgpu::Extent3d {
+            width,
+            height,
+            depth_or_array_layers: 1,
+        },
+        mip_level_count: 1,
+        sample_count: XR_NATIVE_MSAA_SAMPLES,
+        dimension: wgpu::TextureDimension::D2,
+        format: wgpu::TextureFormat::Depth32Float,
+        usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+        view_formats: &[],
+    });
+    state.xr_native_msaa_color_texture = Some(color);
+    state.xr_native_msaa_depth_texture = Some(depth);
+    state.xr_native_msaa_size = (width, height);
 }
 
 #[cfg(all(feature = "xr", target_os = "android"))]
@@ -1112,6 +1162,12 @@ impl ApplicationHandler for App {
             #[cfg(feature = "xr")]
             xr_panel_depth_size: (0, 0),
             #[cfg(feature = "xr")]
+            xr_native_msaa_color_texture: None,
+            #[cfg(feature = "xr")]
+            xr_native_msaa_depth_texture: None,
+            #[cfg(feature = "xr")]
+            xr_native_msaa_size: (0, 0),
+            #[cfg(feature = "xr")]
             xr_panel_target: None,
             #[cfg(feature = "xr")]
             page_xr_active: false,
@@ -1794,8 +1850,8 @@ impl ApplicationHandler for App {
                                             });
                                         }
 
-                                        let bridge_ref = s.js.webgpu_bridge();
-                                        let canvases: Vec<([f32; 4], &wgpu::TextureView)> =
+                                        let owned_canvases: Vec<([f32; 4], wgpu::TextureView)> = {
+                                            let bridge_ref = s.js.webgpu_bridge();
                                             if let Some(ref bridge) = *bridge_ref {
                                                 let elem_rects = s.layout.collect_element_rects();
                                                 bridge
@@ -1805,12 +1861,18 @@ impl ApplicationHandler for App {
                                                         let tv =
                                                             bridge.get_canvas_texture_view(id)?;
                                                         let lr = elem_rects.get(id)?;
-                                                        Some(([lr.x, lr.y, lr.w, lr.h], tv))
+                                                        Some(([lr.x, lr.y, lr.w, lr.h], tv.clone()))
                                                     })
                                                     .collect()
                                             } else {
                                                 Vec::new()
-                                            };
+                                            }
+                                        };
+                                        let canvases: Vec<([f32; 4], &wgpu::TextureView)> =
+                                            owned_canvases
+                                                .iter()
+                                                .map(|(rect, view)| (*rect, view))
+                                                .collect();
 
                                         #[cfg(target_os = "android")]
                                         {
@@ -1850,32 +1912,14 @@ impl ApplicationHandler for App {
                                                                 &overlay_commands,
                                                             );
                                                         let (sw, sh) = xr.swapchain_size();
-                                                        if s.xr_depth_texture.is_none()
-                                                            || s.xr_depth_size != (sw, sh)
-                                                        {
-                                                            let dt = s.gpu.device.create_texture(
-                                                                &wgpu::TextureDescriptor {
-                                                                    label: Some("xr depth"),
-                                                                    size: wgpu::Extent3d {
-                                                                        width: sw,
-                                                                        height: sh,
-                                                                        depth_or_array_layers: 1,
-                                                                    },
-                                                                    mip_level_count: 1,
-                                                                    sample_count: 1,
-                                                                    dimension:
-                                                                        wgpu::TextureDimension::D2,
-                                                                    format:
-                                                                        wgpu::TextureFormat::Depth32Float,
-                                                                    usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
-                                                                    view_formats: &[],
-                                                                },
-                                                            );
-                                                            s.xr_depth_texture = Some(dt);
-                                                            s.xr_depth_size = (sw, sh);
-                                                        }
+                                                        ensure_xr_native_msaa_targets(s, sw, sh);
+                                                        let msaa_color_view = s
+                                                            .xr_native_msaa_color_texture
+                                                            .as_ref()
+                                                            .unwrap()
+                                                            .create_view(&Default::default());
                                                         let depth_view = s
-                                                            .xr_depth_texture
+                                                            .xr_native_msaa_depth_texture
                                                             .as_ref()
                                                             .unwrap()
                                                             .create_view(&Default::default());
@@ -1883,6 +1927,7 @@ impl ApplicationHandler for App {
                                                         s.gpu.render_xr_native_views(
                                                             &left_view,
                                                             &right_view,
+                                                            Some(&msaa_color_view),
                                                             &depth_view,
                                                             [
                                                                 s.view_size.width as f32,
@@ -2158,32 +2203,14 @@ impl ApplicationHandler for App {
                                                     );
                                                     if use_xr_native {
                                                         let (sw, sh) = xr.swapchain_size();
-                                                        if s.xr_depth_texture.is_none()
-                                                            || s.xr_depth_size != (sw, sh)
-                                                        {
-                                                            let dt = s.gpu.device.create_texture(
-                                                                &wgpu::TextureDescriptor {
-                                                                    label: Some("xr depth"),
-                                                                    size: wgpu::Extent3d {
-                                                                        width: sw,
-                                                                        height: sh,
-                                                                        depth_or_array_layers: 1,
-                                                                    },
-                                                                    mip_level_count: 1,
-                                                                    sample_count: 1,
-                                                                    dimension:
-                                                                        wgpu::TextureDimension::D2,
-                                                                    format:
-                                                                        wgpu::TextureFormat::Depth32Float,
-                                                                    usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
-                                                                    view_formats: &[],
-                                                                },
-                                                            );
-                                                            s.xr_depth_texture = Some(dt);
-                                                            s.xr_depth_size = (sw, sh);
-                                                        }
+                                                        ensure_xr_native_msaa_targets(s, sw, sh);
+                                                        let msaa_color_view = s
+                                                            .xr_native_msaa_color_texture
+                                                            .as_ref()
+                                                            .unwrap()
+                                                            .create_view(&Default::default());
                                                         let depth_view = s
-                                                            .xr_depth_texture
+                                                            .xr_native_msaa_depth_texture
                                                             .as_ref()
                                                             .unwrap()
                                                             .create_view(&Default::default());
@@ -2192,6 +2219,7 @@ impl ApplicationHandler for App {
                                                         s.gpu.render_xr_native_views(
                                                             &left_view,
                                                             &right_view,
+                                                            Some(&msaa_color_view),
                                                             &depth_view,
                                                             [
                                                                 s.view_size.width as f32
