@@ -28,7 +28,7 @@ members = [
     "wgpu",
     "xtask", "tmp_htmlsize",
 ]
-exclude = []
+exclude = ["kest"]
 default-members = [
     "benches",
     "examples/features",

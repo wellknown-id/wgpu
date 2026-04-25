@@ -2318,6 +2318,32 @@ dependencies = [
 ]
 
 [[package]]
+name = "kest"
+version = "0.1.0"
+dependencies = [
+ "android_logger",
+ "anyhow",
+ "ash",
+ "bytemuck",
+ "console_error_panic_hook",
+ "cosmic-text",
+ "env_logger",
+ "html5ever",
+ "log",
+ "markup5ever_rcdom",
+ "openxr",
+ "pollster",
+ "rquickjs",
+ "serde_json",
+ "taffy",
+ "ttf-parser 0.25.1",
+ "wasm-bindgen",
+ "web-sys",
+ "wgpu",
+ "winit",
+]
+
+[[package]]
 name = "khronos-egl"
 version = "6.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5364,25 +5390,7 @@ dependencies = [
 name = "wgpu-example-04-custom-webview"
 version = "0.1.0"
 dependencies = [
- "android_logger",
- "anyhow",
- "ash",
- "bytemuck",
- "console_error_panic_hook",
- "cosmic-text",
- "env_logger",
- "html5ever",
- "log",
- "markup5ever_rcdom",
- "openxr",
- "pollster",
- "rquickjs",
- "serde_json",
- "taffy",
- "ttf-parser 0.25.1",
- "wasm-bindgen",
- "web-sys",
- "wgpu",
+ "kest",
  "winit",
 ]
 
