@@ -80,6 +80,26 @@ struct XrPageUniform {
     misc: [f32; 4],
 }
 
+#[cfg(feature = "xr")]
+#[repr(C)]
+#[derive(Clone, Copy, Pod, Zeroable)]
+struct XrTexRectInstance {
+    rect: [f32; 4],
+    transform: [f32; 16],
+    flags: u32,
+    draw_order: f32,
+    _pad: [u32; 2],
+}
+
+#[cfg(feature = "xr")]
+pub struct XrTextureLayer {
+    pub view: wgpu::TextureView,
+    pub rect: [f32; 4],
+    pub transform: [f32; 16],
+    pub is_fixed: bool,
+    pub draw_order: f32,
+}
+
 #[repr(C)]
 #[derive(Clone, Copy, Pod, Zeroable)]
 struct RectInstance {
@@ -1102,6 +1122,77 @@ fn fs_line(in: LineOutput) -> @location(0) vec4<f32> {
 "#;
 
 #[cfg(feature = "xr")]
+const XR_TEXRECT_SHADER: &str = r#"
+struct XrPageUniform {
+    mvp: mat4x4<f32>,
+    page_panel: vec4<f32>,
+    misc: vec4<f32>,
+};
+
+fn linearize(c: vec3<f32>, srgb: f32) -> vec3<f32> {
+    return mix(c, pow(c, vec3<f32>(2.2)), srgb);
+}
+
+@group(0) @binding(0) var<uniform> page: XrPageUniform;
+@group(1) @binding(0) var layer_tex: texture_2d<f32>;
+@group(1) @binding(1) var layer_sampler: sampler;
+
+struct TexRectInput {
+    @location(0) pos: vec2<f32>,
+    @location(1) uv: vec2<f32>,
+    @location(2) rect: vec4<f32>,
+    @location(3) transform_0: vec4<f32>,
+    @location(4) transform_1: vec4<f32>,
+    @location(5) transform_2: vec4<f32>,
+    @location(6) transform_3: vec4<f32>,
+    @location(7) flags: u32,
+    @location(8) draw_order: f32,
+};
+
+struct TexRectOutput {
+    @builtin(position) pos: vec4<f32>,
+    @location(0) uv: vec2<f32>,
+};
+
+@vertex
+fn vs_texrect(in: TexRectInput) -> TexRectOutput {
+    var out: TexRectOutput;
+    let local_pos = vec4<f32>(
+        in.pos.x * in.rect.z - in.rect.z * 0.5,
+        in.pos.y * in.rect.w - in.rect.w * 0.5,
+        0.0,
+        1.0,
+    );
+    let matrix = mat4x4<f32>(in.transform_0, in.transform_1, in.transform_2, in.transform_3);
+    let world_pos_4 = matrix * local_pos;
+
+    let is_fixed = (in.flags & 1u) != 0u;
+    let scroll = select(page.misc.x, 0.0, is_fixed);
+    let cx = in.rect.x + in.rect.z * 0.5;
+    let cy = in.rect.y + in.rect.w * 0.5 - scroll;
+    let page_pos = vec3<f32>(world_pos_4.x + cx, world_pos_4.y + cy, world_pos_4.z);
+
+    let panel_x = (page_pos.x / page.page_panel.x - 0.5) * page.page_panel.z;
+    let panel_y = (0.5 - page_pos.y / page.page_panel.y) * page.page_panel.w;
+    let panel_z = page_pos.z * page.misc.z;
+    let clip_pos = page.mvp * vec4<f32>(panel_x, panel_y, panel_z, 1.0);
+    out.pos = vec4<f32>(
+        clip_pos.xy,
+        clip_pos.z - in.draw_order * page.misc.w * clip_pos.w,
+        clip_pos.w,
+    );
+    out.uv = in.uv;
+    return out;
+}
+
+@fragment
+fn fs_texrect(in: TexRectOutput) -> @location(0) vec4<f32> {
+    let sample = textureSample(layer_tex, layer_sampler, in.uv);
+    return vec4<f32>(linearize(sample.rgb, page.misc.y), sample.a);
+}
+"#;
+
+#[cfg(feature = "xr")]
 const XR_PANEL_SHADER: &str = r#"
 struct PanelUniform {
     mvp: mat4x4<f32>,
@@ -1200,6 +1291,8 @@ pub struct GpuState {
     xr_glyph_pipeline: wgpu::RenderPipeline,
     #[cfg(feature = "xr")]
     xr_line_pipeline: wgpu::RenderPipeline,
+    #[cfg(feature = "xr")]
+    xr_texrect_pipeline: wgpu::RenderPipeline,
     #[cfg(feature = "xr")]
     xr_panel_pipeline: wgpu::RenderPipeline,
     #[cfg(feature = "xr")]
@@ -2200,6 +2293,74 @@ impl GpuState {
             multiview_mask: None,
             cache: None,
         });
+        #[cfg(feature = "xr")]
+        let xr_texrect_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("xr texrect shader"),
+            source: wgpu::ShaderSource::Wgsl(Cow::Borrowed(XR_TEXRECT_SHADER)),
+        });
+        #[cfg(feature = "xr")]
+        let xr_texrect_pl = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("xr texrect pl"),
+            bind_group_layouts: &[Some(&xr_page_bgl), Some(&texrect_bgl)],
+            immediate_size: 0,
+        });
+        #[cfg(feature = "xr")]
+        let xr_texrect_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("xr texrect pipeline"),
+            layout: Some(&xr_texrect_pl),
+            vertex: wgpu::VertexState {
+                module: &xr_texrect_shader,
+                entry_point: Some("vs_texrect"),
+                compilation_options: Default::default(),
+                buffers: &[
+                    wgpu::VertexBufferLayout {
+                        array_stride: std::mem::size_of::<Vertex>() as u64,
+                        step_mode: wgpu::VertexStepMode::Vertex,
+                        attributes: &wgpu::vertex_attr_array![0 => Float32x2, 1 => Float32x2],
+                    },
+                    wgpu::VertexBufferLayout {
+                        array_stride: std::mem::size_of::<XrTexRectInstance>() as u64,
+                        step_mode: wgpu::VertexStepMode::Instance,
+                        attributes: &wgpu::vertex_attr_array![
+                            2 => Float32x4,
+                            3 => Float32x4,
+                            4 => Float32x4,
+                            5 => Float32x4,
+                            6 => Float32x4,
+                            7 => Uint32,
+                            8 => Float32,
+                        ],
+                    },
+                ],
+            },
+            fragment: Some(wgpu::FragmentState {
+                module: &xr_texrect_shader,
+                entry_point: Some("fs_texrect"),
+                compilation_options: Default::default(),
+                targets: &[Some(wgpu::ColorTargetState {
+                    format: wgpu::TextureFormat::Rgba8UnormSrgb,
+                    blend: Some(wgpu::BlendState::ALPHA_BLENDING),
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
+            }),
+            primitive: wgpu::PrimitiveState {
+                topology: wgpu::PrimitiveTopology::TriangleList,
+                ..Default::default()
+            },
+            depth_stencil: Some(wgpu::DepthStencilState {
+                format: wgpu::TextureFormat::Depth32Float,
+                depth_write_enabled: Some(true),
+                depth_compare: Some(wgpu::CompareFunction::LessEqual),
+                stencil: wgpu::StencilState::default(),
+                bias: wgpu::DepthBiasState::default(),
+            }),
+            multisample: wgpu::MultisampleState {
+                count: crate::XR_NATIVE_MSAA_SAMPLES,
+                ..Default::default()
+            },
+            multiview_mask: None,
+            cache: None,
+        });
 
         #[cfg(feature = "xr")]
         let xr_panel_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
@@ -2390,6 +2551,8 @@ impl GpuState {
             xr_glyph_pipeline,
             #[cfg(feature = "xr")]
             xr_line_pipeline,
+            #[cfg(feature = "xr")]
+            xr_texrect_pipeline,
             #[cfg(feature = "xr")]
             xr_panel_pipeline,
             #[cfg(feature = "xr")]
@@ -3042,6 +3205,142 @@ impl GpuState {
             });
             self.render_xr_groups(&self.cached_static_groups, page_bg, glyph_bg, &mut rpass);
             self.render_xr_groups(&ghost_groups, page_bg, glyph_bg, &mut rpass);
+        }
+
+        self.queue.submit(std::iter::once(encoder.finish()));
+    }
+
+    #[cfg(feature = "xr")]
+    #[allow(clippy::too_many_arguments)]
+    pub fn render_xr_textured_layers(
+        &self,
+        left_target: &wgpu::TextureView,
+        right_target: &wgpu::TextureView,
+        msaa_color_view: Option<&wgpu::TextureView>,
+        depth_view: &wgpu::TextureView,
+        page_logical_size: [f32; 2],
+        panel_size: [f32; 2],
+        scroll_y: f32,
+        left_mvp: [f32; 16],
+        right_mvp: [f32; 16],
+        layers: &[XrTextureLayer],
+    ) {
+        if layers.is_empty() {
+            return;
+        }
+
+        let logical_width = page_logical_size[0];
+        let logical_height = page_logical_size[1];
+        let page_to_meter = panel_size[0] / logical_width.max(1.0);
+        let max_draw_order = layers
+            .iter()
+            .map(|layer| layer.draw_order)
+            .fold(1.0_f32, f32::max);
+        let draw_order_depth_step = 0.001 / max_draw_order;
+        let make_uniform = |mvp| XrPageUniform {
+            mvp,
+            page_panel: [logical_width, logical_height, panel_size[0], panel_size[1]],
+            misc: [scroll_y, 1.0, page_to_meter, draw_order_depth_step],
+        };
+
+        let left_uniform = self
+            .device
+            .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("xr texrect left uniform"),
+                contents: bytemuck::bytes_of(&make_uniform(left_mvp)),
+                usage: wgpu::BufferUsages::UNIFORM,
+            });
+        let right_uniform = self
+            .device
+            .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("xr texrect right uniform"),
+                contents: bytemuck::bytes_of(&make_uniform(right_mvp)),
+                usage: wgpu::BufferUsages::UNIFORM,
+            });
+        let left_page_bg = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("xr texrect left bg"),
+            layout: &self.xr_page_bgl,
+            entries: &[wgpu::BindGroupEntry {
+                binding: 0,
+                resource: left_uniform.as_entire_binding(),
+            }],
+        });
+        let right_page_bg = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("xr texrect right bg"),
+            layout: &self.xr_page_bgl,
+            entries: &[wgpu::BindGroupEntry {
+                binding: 0,
+                resource: right_uniform.as_entire_binding(),
+            }],
+        });
+
+        let mut encoder = self
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("xr textured layer encoder"),
+            });
+        for (target, page_bg) in [(left_target, &left_page_bg), (right_target, &right_page_bg)] {
+            let color_view = msaa_color_view.unwrap_or(target);
+            let resolve_target = msaa_color_view.map(|_| target);
+            let mut rpass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("xr textured layer pass"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: color_view,
+                    resolve_target,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Load,
+                        store: wgpu::StoreOp::Store,
+                    },
+                    depth_slice: None,
+                })],
+                depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                    view: depth_view,
+                    depth_ops: Some(wgpu::Operations {
+                        load: wgpu::LoadOp::Load,
+                        store: wgpu::StoreOp::Store,
+                    }),
+                    stencil_ops: None,
+                }),
+                timestamp_writes: None,
+                occlusion_query_set: None,
+                multiview_mask: None,
+            });
+            rpass.set_pipeline(&self.xr_texrect_pipeline);
+            rpass.set_bind_group(0, page_bg, &[]);
+            rpass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
+            for layer in layers {
+                let instance = XrTexRectInstance {
+                    rect: layer.rect,
+                    transform: layer.transform,
+                    flags: if layer.is_fixed { 1 } else { 0 },
+                    draw_order: layer.draw_order,
+                    _pad: [0; 2],
+                };
+                let instance_buf =
+                    self.device
+                        .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                            label: Some("xr texrect instance"),
+                            contents: bytemuck::cast_slice(&[instance]),
+                            usage: wgpu::BufferUsages::VERTEX,
+                        });
+                let tex_bg = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+                    label: Some("xr texrect texture bg"),
+                    layout: &self.texrect_bgl,
+                    entries: &[
+                        wgpu::BindGroupEntry {
+                            binding: 0,
+                            resource: wgpu::BindingResource::TextureView(&layer.view),
+                        },
+                        wgpu::BindGroupEntry {
+                            binding: 1,
+                            resource: wgpu::BindingResource::Sampler(&self.texrect_sampler),
+                        },
+                    ],
+                });
+                rpass.set_bind_group(1, Some(&tex_bg), &[]);
+                rpass.set_vertex_buffer(1, instance_buf.slice(..));
+                rpass.draw(0..6, 0..1);
+            }
         }
 
         self.queue.submit(std::iter::once(encoder.finish()));

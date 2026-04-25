@@ -109,6 +109,8 @@ pub struct WebviewState {
     #[cfg(feature = "xr")]
     pub xr_panel_target: Option<gpu::OffscreenRenderTarget>,
     #[cfg(feature = "xr")]
+    pub xr_promoted_targets: std::collections::HashMap<String, gpu::OffscreenRenderTarget>,
+    #[cfg(feature = "xr")]
     pub page_xr_active: bool,
     #[cfg(feature = "xr")]
     pub xr_right_select_down: bool,
@@ -140,6 +142,25 @@ impl XrHybridFramePlan {
     fn overlay_has_content(&self) -> bool {
         !self.overlay_static_commands.is_empty() || !self.overlay_ghost_commands.is_empty()
     }
+}
+
+#[cfg(feature = "xr")]
+struct XrNativeFramePlan {
+    native_static_commands: Vec<DrawCommand>,
+    native_ghost_commands: Vec<DrawCommand>,
+    promoted_layers: Vec<gpu::XrTextureLayer>,
+}
+
+#[cfg(feature = "xr")]
+struct XrPromotedLayerCandidate {
+    key: String,
+    commands: Vec<DrawCommand>,
+    bounds: types::LayoutRect,
+    transform: [f32; 16],
+    is_fixed: bool,
+    contains_text: bool,
+    draw_order: f32,
+    first_order: usize,
 }
 
 #[cfg(target_os = "android")]
@@ -185,6 +206,8 @@ const XR_NATIVE_MSAA_SAMPLES: u32 = 4;
 #[cfg(feature = "xr")]
 const XR_NATIVE_TEXT_RENDER_SCALE: f32 = 4.0;
 #[cfg(feature = "xr")]
+const XR_PROMOTED_LAYER_SCALE_BOOST: f32 = 1.5;
+#[cfg(feature = "xr")]
 const XR_SCROLL_SPEED: f32 = 14.0;
 #[cfg(all(feature = "xr", target_os = "android"))]
 const XR_POINTER_YAW_BIAS_DEGREES: f32 = 5.0;
@@ -209,6 +232,11 @@ fn xr_panel_render_scale_factor() -> f32 {
 #[cfg(feature = "xr")]
 fn xr_native_render_scale_factor(base_scale: f32) -> f32 {
     base_scale.max(XR_NATIVE_TEXT_RENDER_SCALE)
+}
+
+#[cfg(feature = "xr")]
+fn xr_promoted_layer_render_scale_factor(base_scale: f32) -> f32 {
+    xr_native_render_scale_factor(base_scale) * XR_PROMOTED_LAYER_SCALE_BOOST
 }
 
 #[cfg(feature = "xr")]
@@ -874,6 +902,317 @@ impl App {
         }
     }
 
+    #[cfg(feature = "xr")]
+    fn command_element_id(command: &DrawCommand) -> Option<&str> {
+        match command {
+            DrawCommand::Rect { element_id, .. }
+            | DrawCommand::Border { element_id, .. }
+            | DrawCommand::Text { element_id, .. } => element_id.as_deref(),
+            DrawCommand::Line { .. } => None,
+        }
+    }
+
+    #[cfg(feature = "xr")]
+    fn command_transform(command: &DrawCommand) -> Option<[f32; 16]> {
+        match command {
+            DrawCommand::Rect { transform, .. }
+            | DrawCommand::Border { transform, .. }
+            | DrawCommand::Text { transform, .. } => Some(*transform),
+            DrawCommand::Line { .. } => None,
+        }
+    }
+
+    #[cfg(feature = "xr")]
+    fn command_is_fixed(command: &DrawCommand) -> bool {
+        match command {
+            DrawCommand::Rect { is_fixed, .. }
+            | DrawCommand::Border { is_fixed, .. }
+            | DrawCommand::Text { is_fixed, .. } => *is_fixed,
+            DrawCommand::Line { .. } => false,
+        }
+    }
+
+    #[cfg(feature = "xr")]
+    fn union_rect(a: &types::LayoutRect, b: &types::LayoutRect) -> types::LayoutRect {
+        let min_x = a.x.min(b.x);
+        let min_y = a.y.min(b.y);
+        let max_x = (a.x + a.w).max(b.x + b.w);
+        let max_y = (a.y + a.h).max(b.y + b.h);
+        types::LayoutRect {
+            x: min_x,
+            y: min_y,
+            w: max_x - min_x,
+            h: max_y - min_y,
+        }
+    }
+
+    #[cfg(feature = "xr")]
+    fn command_bounds(gpu: &mut GpuState, command: &DrawCommand) -> Option<types::LayoutRect> {
+        match command {
+            DrawCommand::Rect { rect, .. } | DrawCommand::Border { rect, .. } => Some(rect.clone()),
+            DrawCommand::Text {
+                text,
+                x,
+                y,
+                max_width,
+                font_size,
+                ..
+            } => {
+                let (w, h) = gpu.measure_text(text, *font_size, *max_width);
+                Some(types::LayoutRect { x: *x, y: *y, w, h })
+            }
+            DrawCommand::Line {
+                x0,
+                y0,
+                x1,
+                y1,
+                width,
+                ..
+            } => Some(types::LayoutRect {
+                x: x0.min(*x1) - width * 0.5,
+                y: y0.min(*y1) - width * 0.5,
+                w: (x1 - x0).abs() + *width,
+                h: (y1 - y0).abs() + *width,
+            }),
+        }
+    }
+
+    #[cfg(feature = "xr")]
+    fn normalize_layer_command(command: &DrawCommand, origin_x: f32, origin_y: f32) -> DrawCommand {
+        let identity = types::mat4_identity();
+        match command {
+            DrawCommand::Rect {
+                rect,
+                color,
+                border_radius,
+                element_id,
+                ..
+            } => DrawCommand::Rect {
+                rect: types::LayoutRect {
+                    x: rect.x - origin_x,
+                    y: rect.y - origin_y,
+                    w: rect.w,
+                    h: rect.h,
+                },
+                color: *color,
+                border_radius: *border_radius,
+                element_id: element_id.clone(),
+                transform: identity,
+                is_fixed: true,
+            },
+            DrawCommand::Border {
+                rect,
+                color,
+                width,
+                radius,
+                element_id,
+                ..
+            } => DrawCommand::Border {
+                rect: types::LayoutRect {
+                    x: rect.x - origin_x,
+                    y: rect.y - origin_y,
+                    w: rect.w,
+                    h: rect.h,
+                },
+                color: *color,
+                width: *width,
+                radius: *radius,
+                element_id: element_id.clone(),
+                transform: identity,
+                is_fixed: true,
+            },
+            DrawCommand::Text {
+                text,
+                x,
+                y,
+                max_width,
+                color,
+                font_size,
+                element_id,
+                center,
+                ..
+            } => DrawCommand::Text {
+                text: text.clone(),
+                x: *x - origin_x,
+                y: *y - origin_y,
+                max_width: *max_width,
+                color: *color,
+                font_size: *font_size,
+                element_id: element_id.clone(),
+                is_fixed: true,
+                transform: identity,
+                center: [center[0] - origin_x, center[1] - origin_y],
+            },
+            DrawCommand::Line {
+                x0,
+                y0,
+                x1,
+                y1,
+                color,
+                width,
+            } => DrawCommand::Line {
+                x0: *x0 - origin_x,
+                y0: *y0 - origin_y,
+                x1: *x1 - origin_x,
+                y1: *y1 - origin_y,
+                color: *color,
+                width: *width,
+            },
+        }
+    }
+
+    #[cfg(feature = "xr")]
+    fn collect_promoted_layer_candidates(
+        gpu: &mut GpuState,
+        commands: &[DrawCommand],
+    ) -> (Vec<DrawCommand>, Vec<XrPromotedLayerCandidate>) {
+        let identity = types::mat4_identity();
+        let mut groups = Vec::<XrPromotedLayerCandidate>::new();
+        let mut group_index = std::collections::HashMap::<String, usize>::new();
+        let mut invalid_ids = std::collections::HashSet::<String>::new();
+
+        for (order, command) in commands.iter().enumerate() {
+            let Some(id) = Self::command_element_id(command) else {
+                continue;
+            };
+            let Some(transform) = Self::command_transform(command) else {
+                continue;
+            };
+            if transform == identity {
+                continue;
+            }
+            let Some(bounds) = Self::command_bounds(gpu, command) else {
+                continue;
+            };
+            let is_fixed = Self::command_is_fixed(command);
+            let key = id.to_string();
+
+            let group_idx = if let Some(&idx) = group_index.get(&key) {
+                let existing = &groups[idx];
+                if existing.transform != transform || existing.is_fixed != is_fixed {
+                    invalid_ids.insert(key.clone());
+                    continue;
+                }
+                idx
+            } else {
+                let idx = groups.len();
+                group_index.insert(key.clone(), idx);
+                groups.push(XrPromotedLayerCandidate {
+                    key: key.clone(),
+                    commands: Vec::new(),
+                    bounds: bounds.clone(),
+                    transform,
+                    is_fixed,
+                    contains_text: false,
+                    draw_order: order as f32 + 1.0,
+                    first_order: order,
+                });
+                idx
+            };
+
+            let group = &mut groups[group_idx];
+            group.commands.push(command.clone());
+            group.bounds = Self::union_rect(&group.bounds, &bounds);
+            group.contains_text |= matches!(command, DrawCommand::Text { .. });
+            group.draw_order = order as f32 + 1.0;
+        }
+
+        let promotable_ids = groups
+            .iter()
+            .filter(|group| group.contains_text && !invalid_ids.contains(&group.key))
+            .map(|group| group.key.clone())
+            .collect::<std::collections::HashSet<_>>();
+
+        let native_commands = commands
+            .iter()
+            .filter(|command| {
+                Self::command_element_id(command)
+                    .map(|id| !promotable_ids.contains(id))
+                    .unwrap_or(true)
+            })
+            .cloned()
+            .collect();
+
+        let mut promoted_layers = groups
+            .into_iter()
+            .filter(|group| group.contains_text && !invalid_ids.contains(&group.key))
+            .collect::<Vec<_>>();
+        promoted_layers.sort_by_key(|group| group.first_order);
+
+        (native_commands, promoted_layers)
+    }
+
+    #[cfg(feature = "xr")]
+    fn build_xr_native_frame_plan(
+        state: &mut WebviewState,
+        static_commands: &[DrawCommand],
+        ghost_commands: &[DrawCommand],
+        layer_scale_factor: f32,
+    ) -> XrNativeFramePlan {
+        let (native_static_commands, mut promoted_layers) =
+            Self::collect_promoted_layer_candidates(&mut state.gpu, static_commands);
+        let (native_ghost_commands, ghost_layers) =
+            Self::collect_promoted_layer_candidates(&mut state.gpu, ghost_commands);
+        promoted_layers.extend(ghost_layers);
+        promoted_layers.sort_by_key(|group| group.first_order);
+
+        let mut xr_layers = Vec::new();
+        for layer in promoted_layers {
+            let width = (layer.bounds.w * layer_scale_factor).ceil().max(1.0) as u32;
+            let height = (layer.bounds.h * layer_scale_factor).ceil().max(1.0) as u32;
+            let needs_recreate = state
+                .xr_promoted_targets
+                .get(&layer.key)
+                .map(|target| target.size.width != width || target.size.height != height)
+                .unwrap_or(true);
+            if needs_recreate {
+                state.xr_promoted_targets.insert(
+                    layer.key.clone(),
+                    state.gpu.create_render_target(width, height),
+                );
+            }
+
+            let local_commands = layer
+                .commands
+                .iter()
+                .map(|command| {
+                    Self::normalize_layer_command(command, layer.bounds.x, layer.bounds.y)
+                })
+                .collect::<Vec<_>>();
+
+            state.gpu.static_dirty = true;
+            if let Some(target) = state.xr_promoted_targets.get(&layer.key) {
+                state.gpu.render_to_target(
+                    target,
+                    layer_scale_factor,
+                    &local_commands,
+                    &[],
+                    [0.0, 0.0, 0.0, 0.0],
+                    0.0,
+                    &[],
+                );
+                xr_layers.push(gpu::XrTextureLayer {
+                    view: target.texture.create_view(&Default::default()),
+                    rect: [
+                        layer.bounds.x,
+                        layer.bounds.y,
+                        layer.bounds.w,
+                        layer.bounds.h,
+                    ],
+                    transform: layer.transform,
+                    is_fixed: layer.is_fixed,
+                    draw_order: layer.draw_order,
+                });
+            }
+        }
+
+        XrNativeFramePlan {
+            native_static_commands,
+            native_ghost_commands,
+            promoted_layers: xr_layers,
+        }
+    }
+
     fn build_cmd_index(
         static_cmds: &[DrawCommand],
         ghost_cmds: &[DrawCommand],
@@ -1176,6 +1515,8 @@ impl ApplicationHandler for App {
             xr_native_msaa_size: (0, 0),
             #[cfg(feature = "xr")]
             xr_panel_target: None,
+            #[cfg(feature = "xr")]
+            xr_promoted_targets: std::collections::HashMap::new(),
             #[cfg(feature = "xr")]
             page_xr_active: false,
             #[cfg(feature = "xr")]
@@ -1918,6 +2259,21 @@ impl ApplicationHandler for App {
                                                                 &s.static_commands,
                                                                 &overlay_commands,
                                                             );
+                                                        let native_scale =
+                                                            xr_native_render_scale_factor(
+                                                                xr_panel_render_scale_factor(),
+                                                            );
+                                                        let promoted_scale =
+                                                            xr_promoted_layer_render_scale_factor(
+                                                                xr_panel_render_scale_factor(),
+                                                            );
+                                                        let native_plan =
+                                                            Self::build_xr_native_frame_plan(
+                                                                s,
+                                                                &hybrid_plan.native_static_commands,
+                                                                &hybrid_plan.native_ghost_commands,
+                                                                promoted_scale,
+                                                            );
                                                         let (sw, sh) = xr.swapchain_size();
                                                         ensure_xr_native_msaa_targets(s, sw, sh);
                                                         let msaa_color_view = s
@@ -1940,13 +2296,11 @@ impl ApplicationHandler for App {
                                                                 s.view_size.width as f32,
                                                                 s.view_size.height as f32,
                                                             ],
-                                                            xr_native_render_scale_factor(
-                                                                xr_panel_render_scale_factor(),
-                                                            ),
+                                                            native_scale,
                                                             [panel_size.width, panel_size.height],
                                                             s.clear_color,
-                                                            &hybrid_plan.native_static_commands,
-                                                            &hybrid_plan.native_ghost_commands,
+                                                            &native_plan.native_static_commands,
+                                                            &native_plan.native_ghost_commands,
                                                             s.scroll_y,
                                                             xr_native_page_mvp(
                                                                 &frame_data.views[0],
@@ -1954,6 +2308,25 @@ impl ApplicationHandler for App {
                                                             xr_native_page_mvp(
                                                                 &frame_data.views[1],
                                                             ),
+                                                        );
+                                                        s.gpu.render_xr_textured_layers(
+                                                            &left_view,
+                                                            &right_view,
+                                                            Some(&msaa_color_view),
+                                                            &depth_view,
+                                                            [
+                                                                s.view_size.width as f32,
+                                                                s.view_size.height as f32,
+                                                            ],
+                                                            [panel_size.width, panel_size.height],
+                                                            s.scroll_y,
+                                                            xr_native_page_mvp(
+                                                                &frame_data.views[0],
+                                                            ),
+                                                            xr_native_page_mvp(
+                                                                &frame_data.views[1],
+                                                            ),
+                                                            &native_plan.promoted_layers,
                                                         );
                                                         if hybrid_plan.overlay_has_content() {
                                                             let (pw, ph) =
@@ -2211,6 +2584,23 @@ impl ApplicationHandler for App {
                                                         },
                                                     );
                                                     if use_xr_native {
+                                                        let native_scale =
+                                                            xr_native_render_scale_factor(
+                                                                s.view_scale_factor as f32,
+                                                            );
+                                                        let static_commands =
+                                                            s.static_commands.clone();
+                                                        let promoted_scale =
+                                                            xr_promoted_layer_render_scale_factor(
+                                                                s.view_scale_factor as f32,
+                                                            );
+                                                        let native_plan =
+                                                            Self::build_xr_native_frame_plan(
+                                                                s,
+                                                                &static_commands,
+                                                                &overlay_commands,
+                                                                promoted_scale,
+                                                            );
                                                         let (sw, sh) = xr.swapchain_size();
                                                         ensure_xr_native_msaa_targets(s, sw, sh);
                                                         let msaa_color_view = s
@@ -2236,13 +2626,11 @@ impl ApplicationHandler for App {
                                                                 s.view_size.height as f32
                                                                     / s.view_scale_factor as f32,
                                                             ],
-                                                            xr_native_render_scale_factor(
-                                                                s.view_scale_factor as f32,
-                                                            ),
+                                                            native_scale,
                                                             [panel_size.width, panel_size.height],
                                                             s.clear_color,
-                                                            &s.static_commands,
-                                                            &overlay_commands,
+                                                            &native_plan.native_static_commands,
+                                                            &native_plan.native_ghost_commands,
                                                             s.scroll_y,
                                                             xr_native_page_mvp(
                                                                 &frame_data.views[0],
@@ -2250,6 +2638,27 @@ impl ApplicationHandler for App {
                                                             xr_native_page_mvp(
                                                                 &frame_data.views[1],
                                                             ),
+                                                        );
+                                                        s.gpu.render_xr_textured_layers(
+                                                            &left_view,
+                                                            &right_view,
+                                                            Some(&msaa_color_view),
+                                                            &depth_view,
+                                                            [
+                                                                s.view_size.width as f32
+                                                                    / s.view_scale_factor as f32,
+                                                                s.view_size.height as f32
+                                                                    / s.view_scale_factor as f32,
+                                                            ],
+                                                            [panel_size.width, panel_size.height],
+                                                            s.scroll_y,
+                                                            xr_native_page_mvp(
+                                                                &frame_data.views[0],
+                                                            ),
+                                                            xr_native_page_mvp(
+                                                                &frame_data.views[1],
+                                                            ),
+                                                            &native_plan.promoted_layers,
                                                         );
                                                         let _ =
                                                             s.gpu.device.poll(wgpu::PollType::Poll);
